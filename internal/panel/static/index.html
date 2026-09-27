@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TLS Relay — Admin Console</title>
+  <link rel="stylesheet" href="static/css/variables.css" />
+  <link rel="stylesheet" href="static/css/base.css" />
+  <link rel="stylesheet" href="static/css/layout.css" />
+  <link rel="stylesheet" href="static/css/components.css" />
+  <link rel="stylesheet" href="static/css/charts.css" />
+  <link rel="stylesheet" href="static/css/responsive.css" />
+
+  <!-- Tab Page Modular CSS Stylesheets -->
+  <link rel="stylesheet" href="static/css/pages/dashboard.css" />
+  <link rel="stylesheet" href="static/css/pages/domains.css" />
+  <link rel="stylesheet" href="static/css/pages/users.css" />
+  <link rel="stylesheet" href="static/css/pages/blacklist.css" />
+  <link rel="stylesheet" href="static/css/pages/settings.css" />
+  <link rel="stylesheet" href="static/css/pages/usage.css" />
+  <link rel="stylesheet" href="static/css/pages/request-logs.css" />
+</head>
+
+<body>
+
+  <!-- =====================================================================
+     LOGIN PAGE (shown when not authenticated)
+     ===================================================================== -->
+  <div id="login-page" class="page hidden">
+    <div class="login-container">
+      <div class="login-card">
+        <div class="login-header">
+          <div class="brand-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+          </div>
+          <h1>TLS Relay Administration</h1>
+          <p class="login-sub">Secure Management Console</p>
+        </div>
+
+        <form id="login-form">
+          <div class="form-group">
+            <label for="login-user">Username</label>
+            <input id="login-user" type="text" autocomplete="username" placeholder="Enter username" required />
+          </div>
+
+          <div class="form-group">
+            <label for="login-pass">Password</label>
+            <input id="login-pass" type="password" autocomplete="current-password" placeholder="Enter password"
+              required />
+          </div>
+
+          <div id="login-error" class="alert alert-error hidden"></div>
+
+          <button type="submit" class="btn btn-primary btn-full" id="login-btn">
+            Sign In
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+     MAIN DASHBOARD (shown when authenticated)
+     ===================================================================== -->
+  <div id="dashboard" class="page hidden">
+    <!-- Top Navigation Header -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="topbar-brand">
+          <div class="brand-badge">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+          </div>
+          <div class="brand-title">
+            <span class="title-main">TLS SNI Relay</span>
+            <span class="title-sub">Console</span>
+          </div>
+        </div>
+
+        <div class="topbar-actions topbar-actions-wrap">
+          <button id="theme-toggle-btn" class="btn btn-secondary btn-sm" title="Toggle Light/Dark Theme">
+            <svg id="theme-icon-sun" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+            <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+            <span id="theme-text">Theme</span>
+          </button>
+
+          <button id="logout-btn" class="btn btn-secondary btn-sm">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+            Sign Out
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="main-container">
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="dashboard">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          Dashboard
+        </button>
+
+        <button class="tab-btn" data-tab="domains">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          Domain Rules
+        </button>
+
+        <button class="tab-btn" data-tab="users">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          Users
+        </button>
+
+        <button class="tab-btn" data-tab="blacklist">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          Global Blacklist
+        </button>
+
+        <button class="tab-btn" data-tab="request-logs">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          Request Logs
+        </button>
+
+        <button class="tab-btn" data-tab="usage">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"></line>
+            <line x1="12" y1="20" x2="12" y2="4"></line>
+            <line x1="6" y1="20" x2="6" y2="14"></line>
+            <line x1="2" y1="20" x2="22" y2="20"></line>
+          </svg>
+          Usage
+        </button>
+
+        <button class="tab-btn" data-tab="settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+            </path>
+          </svg>
+          Settings
+        </button>
+      </nav>
+
+      <!-- ================================================================
+         TAB PANELS (Dynamically populated from static/pages/*.html)
+         ================================================================ -->
+      <section id="tab-dashboard" class="tab-panel active" data-page-src="static/pages/dashboard.html"></section>
+      <section id="tab-domains" class="tab-panel hidden" data-page-src="static/pages/domains.html"></section>
+      <section id="tab-users" class="tab-panel hidden" data-page-src="static/pages/users.html"></section>
+      <section id="tab-blacklist" class="tab-panel hidden" data-page-src="static/pages/blacklist.html"></section>
+      <section id="tab-request-logs" class="tab-panel hidden" data-page-src="static/pages/request-logs.html"></section>
+      <section id="tab-usage" class="tab-panel hidden" data-page-src="static/pages/usage.html"></section>
+      <section id="tab-settings" class="tab-panel hidden" data-page-src="static/pages/settings.html"></section>
+    </main>
+  </div>
+
+  <!-- Sticky Floating Bulk Action Bar -->
+  <div id="bulk-bar" class="bulk-action-bar hidden">
+    <span id="bulk-count-text">0 selected</span>
+    <div class="bulk-actions-group">
+      <button id="bulk-assign-group-btn" class="btn btn-secondary btn-sm">Add to group...</button>
+      <button id="bulk-assign-mode-btn" class="btn btn-secondary btn-sm">Change Mode...</button>
+      <button id="bulk-assign-egress-btn" class="btn btn-secondary btn-sm">Set Egress Proxy...</button>
+      <button id="bulk-delete-btn" class="btn btn-danger btn-sm">Delete selected</button>
+      <button id="bulk-clear-btn" class="btn btn-secondary btn-sm">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Apple-Style Custom Modal Dialog (Confirm & Prompt) -->
+  <div id="custom-modal-overlay" class="modal-overlay hidden">
+    <div class="modal-card modal-confirm-width">
+      <div class="custom-modal-icon" id="custom-modal-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
+      </div>
+      <div class="card-header">
+        <h3 id="custom-modal-title">Confirm Action</h3>
+        <p id="custom-modal-message" class="card-desc settings-margin-top-sm"></p>
+      </div>
+      <div id="custom-modal-input-container" class="form-group modal-confirm-input-wrap hidden">
+        <input type="text" id="custom-modal-input" placeholder="Enter value..." />
+      </div>
+      <div class="form-actions modal-confirm-actions gap-sm">
+        <button type="button" class="btn btn-secondary" id="custom-modal-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="custom-modal-confirm-btn">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk Assign Group Custom Modal -->
+  <div id="bulk-group-modal-overlay" class="modal-overlay hidden">
+    <div class="modal-card modal-confirm-width">
+      <div class="card-header">
+        <h3>Bulk Assign Group</h3>
+        <p class="card-desc" id="bulk-group-modal-desc">Assign selected domain rules to a group.</p>
+      </div>
+      <div class="form-group modal-confirm-input-wrap">
+        <label>Group Selection</label>
+        <div class="group-selector-mode-bar group-selector-mode-bar-wrap">
+          <button type="button" class="btn btn-secondary btn-xs group-mode-btn active" id="bulk-group-mode-select-btn"
+            data-mode="select">📁 Select Existing</button>
+          <button type="button" class="btn btn-secondary btn-xs group-mode-btn" id="bulk-group-mode-create-btn"
+            data-mode="create">➕ Create New</button>
+        </div>
+
+        <div id="bulk-group-select-wrap" class="custom-select-wrap">
+          <div class="custom-select-trigger" id="bulk-group-select-trigger" tabindex="0">
+            <span id="bulk-group-select-label">Default (No Group)</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+          <div class="custom-select-dropdown hidden" id="bulk-group-select-dropdown">
+            <div class="custom-select-search-wrap">
+              <input type="text" id="bulk-group-select-search" placeholder="Search existing groups..."
+                autocomplete="off" />
+            </div>
+            <div class="custom-select-options" id="bulk-group-select-options"></div>
+          </div>
+        </div>
+
+        <div id="bulk-group-create-wrap" class="hidden">
+          <input type="text" id="bulk-group-input" placeholder="Enter new group name..." />
+        </div>
+        <input type="hidden" id="bulk-group-val" value="" />
+      </div>
+      <div class="form-actions gap-sm">
+        <button type="button" class="btn btn-secondary" id="bulk-group-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="bulk-group-confirm-btn">Apply Group</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk Set Egress Proxy Custom Modal -->
+  <div id="bulk-egress-modal-overlay" class="modal-overlay hidden">
+    <div class="modal-card modal-confirm-width">
+      <div class="card-header">
+        <h3>Bulk Set Outbound Egress Proxy</h3>
+        <p class="card-desc" id="bulk-egress-modal-desc">Set egress proxy routing mode for selected domains.</p>
+      </div>
+      <div class="form-group modal-egress-margin">
+        <label>Proxy Mode Selection</label>
+        <div class="radio-group settings-margin-top-sm">
+          <label class="radio-label">
+            <input type="radio" name="bulk-egress-radio" value="default" checked />
+            <span>Default (Use Global EGRESS_PROXY_ENABLED)</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="bulk-egress-radio" value="true" />
+            <span>Force SOCKS5 Proxy</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="bulk-egress-radio" value="false" />
+            <span>Force Direct (Bypass Proxy)</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-actions gap-sm">
+        <button type="button" class="btn btn-secondary" id="bulk-egress-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="bulk-egress-confirm-btn">Apply Egress Proxy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk Change Mode Custom Modal -->
+  <div id="bulk-mode-modal-overlay" class="modal-overlay hidden">
+    <div class="modal-card modal-confirm-width">
+      <div class="card-header">
+        <h3>Bulk Change Domain Mode</h3>
+        <p class="card-desc" id="bulk-mode-modal-desc">Set domain mode for selected domains.</p>
+      </div>
+      <div class="form-group modal-egress-margin">
+        <label>Mode Selection</label>
+        <div class="radio-group settings-margin-top-sm">
+          <label class="radio-label">
+            <input type="radio" name="bulk-mode-radio" value="proxy" checked />
+            <span>Proxy (Relay traffic)</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="bulk-mode-radio" value="direct" />
+            <span>Direct (Bypass relay)</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="bulk-mode-radio" value="block" />
+            <span>Block (Refuse connection)</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-actions gap-sm">
+        <button type="button" class="btn btn-secondary" id="bulk-mode-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="bulk-mode-confirm-btn">Apply Mode</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Quick Add Domain from Log Modal -->
+  <div id="quick-add-domain-modal" class="modal-overlay hidden">
+    <div class="modal-card modal-quick-add-width">
+      <div class="card-header flex-between">
+        <div>
+          <h3>Quick Add Domain Rule</h3>
+          <p class="card-desc">Add this domain directly to your domain rules.</p>
+        </div>
+        <button class="btn-close" id="close-quick-add-domain">&times;</button>
+      </div>
+      <form id="quick-add-domain-form">
+        <div class="form-group">
+          <label for="quick-add-domain-name">Domain</label>
+          <input id="quick-add-domain-name" type="text" placeholder="e.g. example.com" required />
+          <span class="form-hint">You can also enter <code>*.example.com</code> for wildcard.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label modal-quick-add-label-wrap">
+            <input type="checkbox" id="quick-add-domain-include-subdomains" />
+            <span>Include subdomains (<code>*.domain</code>)</span>
+          </label>
+          <span class="form-hint">Also add a wildcard rule covering all subdomains.</span>
+        </div>
+
+        <div class="form-group">
+          <label>Group Name (Optional)</label>
+          <div class="group-selector-mode-bar group-selector-mode-bar-wrap">
+            <button type="button" class="btn btn-secondary btn-xs group-mode-btn active"
+              id="quick-group-mode-select-btn" data-mode="select">
+              📁 Select Existing Group
+            </button>
+            <button type="button" class="btn btn-secondary btn-xs group-mode-btn" id="quick-group-mode-create-btn"
+              data-mode="create">
+              ➕ Create New Group
+            </button>
+          </div>
+
+          <!-- Mode 1: Select Existing Group (Searchable Dropdown) -->
+          <div id="quick-group-select-mode-wrap" class="custom-select-wrap">
+            <div class="custom-select-trigger" id="quick-group-select-trigger" tabindex="0">
+              <span id="quick-group-select-label">Default (No Group)</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <div class="custom-select-dropdown hidden" id="quick-group-select-dropdown">
+              <div class="custom-select-search-wrap">
+                <input type="text" id="quick-group-select-search" placeholder="Search existing groups..."
+                  autocomplete="off" />
+              </div>
+              <div class="custom-select-options" id="quick-group-select-options">
+                <!-- Dynamic group options populated by JS -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Mode 2: Create New Group (Manual Input) -->
+          <div id="quick-group-create-mode-wrap" class="hidden">
+            <input id="quick-domain-group-name-input" type="text"
+              placeholder="Enter new group name (e.g. Developers, Production)" />
+          </div>
+
+          <input type="hidden" id="quick-add-domain-group" value="" />
+        </div>
+
+        <div class="form-group">
+          <label>Domain Mode</label>
+          <div class="proxy-badge-group domain-mode-radio-group-wrap" id="quick-add-domain-mode-radio-group">
+            <label class="proxy-badge-label proxy-default" title="Proxy connection">
+              <input type="radio" name="quick-add-domain-mode-radio" value="proxy" checked />
+              <span>Proxy</span>
+            </label>
+            <label class="proxy-badge-label proxy-direct" title="Direct connection">
+              <input type="radio" name="quick-add-domain-mode-radio" value="direct" />
+              <span>Direct</span>
+            </label>
+            <label class="proxy-badge-label proxy-custom proxy-custom-error" title="Block connection">
+              <input type="radio" name="quick-add-domain-mode-radio" value="block" />
+              <span>Block</span>
+            </label>
+          </div>
+          <input type="hidden" id="quick-add-domain-mode" value="proxy" />
+        </div>
+
+        <div class="form-group" id="quick-add-domain-ports-group">
+          <label for="quick-add-domain-ports">Allowed Destination Ports</label>
+          <input id="quick-add-domain-ports" type="text" value="443" placeholder="443, 8443 — or — all" />
+          <span class="form-hint">Comma-separated ports or <code>all</code>.</span>
+        </div>
+
+        <div class="form-group" id="quick-add-domain-egress-group">
+          <label>Egress Proxy</label>
+          <div class="proxy-badge-group domain-mode-radio-group-wrap" id="quick-add-domain-egress-radio-group">
+            <label class="proxy-badge-label proxy-direct" title="Direct connection">
+              <input type="radio" name="quick-add-domain-egress-radio" value="false" />
+              <span>Direct</span>
+            </label>
+            <label class="proxy-badge-label proxy-default" title="Default proxy setting">
+              <input type="radio" name="quick-add-domain-egress-radio" value="default" checked />
+              <span>Default Proxy</span>
+            </label>
+            <label class="proxy-badge-label proxy-custom" title="Force SOCKS5 proxy">
+              <input type="radio" name="quick-add-domain-egress-radio" value="true" />
+              <span>Custom Proxy</span>
+            </label>
+          </div>
+          <input type="hidden" id="quick-add-domain-egress" value="default" />
+        </div>
+
+        <div id="quick-add-domain-error" class="alert alert-error hidden"></div>
+        <div id="quick-add-domain-success" class="alert alert-success hidden"></div>
+
+        <div class="form-actions modal-quick-add-actions gap-sm">
+          <button type="button" class="btn btn-secondary" id="cancel-quick-add-domain">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="quick-add-domain-btn">Add Domain Rule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Domain Usage Modal Overlay -->
+  <div id="domain-usage-modal" class="modal-overlay hidden">
+    <div class="modal-card modal-card-lg">
+      <div class="card-header flex-between">
+        <div>
+          <h3 id="domain-usage-modal-title">Domain Usage Statistics</h3>
+          <p class="card-desc">Daily/Monthly bandwidth trends and top consumers.</p>
+        </div>
+        <button class="btn-close" id="close-domain-usage-modal">&times;</button>
+      </div>
+
+      <!-- Time range / mode toggles -->
+      <div class="modal-domain-usage-toggles">
+        <div class="segmented-control" id="domain-usage-range-toggle">
+          <button type="button" class="segmented-btn active" data-range="daily">Daily (30 Days)</button>
+          <button type="button" class="segmented-btn" data-range="monthly">Monthly (12 Months)</button>
+        </div>
+      </div>
+
+      <!-- Chart container -->
+      <div id="domain-usage-chart-wrap" class="usage-chart-wrap modal-domain-usage-chart-wrap">
+        <p id="domain-usage-empty" class="empty-state hidden">No usage recorded for this domain yet.</p>
+      </div>
+      <div id="domain-usage-legend" class="usage-legend"></div>
+
+      <!-- Top Consumers Table -->
+      <h4>Top User Consumers</h4>
+      <div class="table-responsive modal-domain-usage-table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Sent (Upload)</th>
+              <th>Received (Download)</th>
+              <th>Total Usage</th>
+            </tr>
+          </thead>
+          <tbody id="domain-usage-users-tbody"></tbody>
+        </table>
+        <p id="domain-usage-users-empty" class="empty-state modal-domain-usage-users-empty hidden">No registered user usage
+          recorded for this domain.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="static/js/core.js"></script>
+  <script src="static/js/auth.js"></script>
+  <script src="static/js/domains.js"></script>
+  <script src="static/js/users.js"></script>
+  <script src="static/js/blacklist.js"></script>
+  <script src="static/js/presence.js"></script>
+  <script src="static/js/settings.js"></script>
+  <script src="static/js/usage.js"></script>
+  <script src="static/js/requestlogs.js"></script>
+  <script src="static/js/dashboard.js"></script>
+  <script src="static/js/init.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,23 @@
+# TLS relay binary & archive
+tls-relay
+tls-relay-*
+tls-relay.tar.gz
+
+# Log files
+logs/
+*.log
+
+# Vendor directory
+vendor/
+
+# Build artifacts
+*.test
+*.out
+*.tar.gz
+.vscode
+
+# Environment file with secrets — never commit this
+.env
+
+# OS metadata
+.DS_Store

@@ -1,0 +1,144 @@
+listen:
+  addr: "0.0.0.0"
+  ports: [443]
+  # Plain HTTP ports. Port matching panel.addr (default 80) is shared with admin panel via Host dispatch.
+  http_ports: [80]
+
+# Destination ports the relay is permitted to forward to.
+# Connections targeting any other port are rejected immediately.
+allowed_dest_ports: [443, 8443, 2053, 2083, 2087, 2096, 9443]
+
+# What to do when a connecting domain has no explicit rule configured.
+# "reject"            — drop the connection (safest, default).
+# "allow_default_port" — fall back to the global allowed_dest_ports list.
+unknown_domain_policy: "allow_default_port"
+
+timeouts:
+  # Maximum time to wait for the TLS ClientHello from a new client.
+  client_hello: 5s
+  # Maximum time to wait for initial HTTP request headers from a new client.
+  http_header: 5s
+  # Close the relay if no bytes flow in either direction within this period.
+  idle: 300s
+  # Hard cap on total relay duration; 0 disables the cap.
+  max_connection_duration: 0s
+  # OS-level TCP keepalive probe interval. Enables the OS to detect dead
+  # connections (e.g. silent network drops, NAT timeouts) faster than the
+  # idle timeout, so ghost-online presence entries are cleaned up promptly.
+  # Set to 0s to disable TCP keepalive entirely.
+  tcp_keepalive: 30s
+
+limits:
+  # Maximum number of concurrently relayed connections across all clients.
+  max_global_connections: 10000
+  # Maximum number of concurrently relayed connections from a single client IP.
+  # Note: browsers/apps often open multiple parallel TLS connections, and idle
+  # connections are held open until the idle timeout (default 300s). A value of
+  # 200 accommodates normal multi-tab/multi-device usage without false positives.
+  max_connections_per_ip: 200
+
+logging:
+  # Log file path. Leave empty ("") to write to stdout.
+  path: "/var/log/tls-relay/relay.log"
+  # Output format: "json" (recommended for log aggregators) or "text".
+  format: json
+  rotation:
+    # Rotate the log file after it exceeds this size (in megabytes).
+    max_size_mb: 100
+    # Number of rotated log files to keep.
+    max_backups: 7
+    # Delete rotated files older than this many days.
+    max_age_days: 14
+    # Compress rotated files with gzip.
+    compress: true
+  request_logs:
+    enabled: true
+    retention: 24h
+
+security:
+  # Reject connections to RFC-1918 private addresses, loopback, link-local,
+  # CGNAT (100.64.0.0/10), multicast, and unspecified addresses.
+  block_private_ips: true
+  # Reject connections that would loop back to the relay server itself.
+  block_own_ips: true
+  # Additional CIDRs to block, e.g. cloud metadata endpoints.
+  extra_blocked_cidrs: []
+  # Example:
+  # extra_blocked_cidrs:
+  #   - "169.254.169.254/32"   # AWS/GCP/Azure metadata
+  #   - "fd00::/8"             # ULA IPv6
+
+shutdown:
+  # After receiving SIGTERM/SIGINT, wait up to this long for in-flight
+  # connections to finish before forcing exit.
+  grace_period: 10s
+
+# ---------------------------------------------------------------------------
+# Admin panel — web UI for managing domain rules and IP access control.
+# Credentials are set via PANEL_ADMIN_USER / PANEL_ADMIN_PASSWORD env vars.
+# ---------------------------------------------------------------------------
+panel:
+  addr: "0.0.0.0:80"
+  path: "/admin"
+
+# ---------------------------------------------------------------------------
+# Custom DNS resolver
+# ---------------------------------------------------------------------------
+dns:
+  # Address and port to listen on (both UDP and TCP).
+  addr: "0.0.0.0:53"
+
+  # The relay server's own public IP. Queries for configured domains from
+  # allowed client IPs receive an A record pointing here.
+  # Leave empty ("") to disable authoritative answers (forward-only mode).
+  relay_ip: ""          # e.g. "203.0.113.10"
+
+  # Upstream resolver for all other queries.
+  upstream_addr: "1.1.1.1:53"
+
+  # TTL (seconds) for authoritative A record answers.
+  ttl: 30
+
+  rate_limit:
+    # Per-source-IP token bucket: sustained queries per second.
+    qps: 20
+    # Per-source-IP burst size (queries above QPS allowed momentarily).
+    burst: 40
+
+  # Allow unregistered/unauthorized IPs to resolve domains that are NOT in relay rules.
+  # Security note: Enables general DNS resolution for external clients. Stricter rate limits apply.
+  unauthorized_passthrough:
+    enabled: false
+    rate_limit:
+      qps: 5
+      burst: 10
+
+  # Cap the EDNS0 UDP buffer size advertised in responses to limit amplification.
+  # RFC 6891 minimum is 512; 1232 is a safe modern default.
+  edns_buf_size: 1232
+
+# ---------------------------------------------------------------------------
+# Access mode — "public" (everyone can use) or "user" (registered IPs only).
+# "user" mode is the secure default: only IPs registered via the magic link
+# are permitted to connect to the relay or receive DNS responses.
+# Can also be overridden at runtime via the ACCESS_MODE environment variable.
+# ---------------------------------------------------------------------------
+access_mode: "user"
+
+# ---------------------------------------------------------------------------
+# SQLite — persistent source of truth for users, domain rules, blacklist.
+# ---------------------------------------------------------------------------
+sqlite:
+  path: "/var/lib/tls-relay/data.db"
+
+# ---------------------------------------------------------------------------
+# Magic Link — separate HTTP listener for user IP registration.
+# ---------------------------------------------------------------------------
+magic_link:
+  addr: "0.0.0.0:80"  # Merged into the panel server; no longer a separate listener.
+
+# ---------------------------------------------------------------------------
+# User defaults
+# ---------------------------------------------------------------------------
+users:
+  default_max_ips: 3

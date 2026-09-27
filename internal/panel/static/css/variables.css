@@ -1,0 +1,113 @@
+/* =========================================================================
+   TLS Relay Admin Panel — variables.css
+   Color schemes, typography, shadow definitions and theme overrides.
+   ========================================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* Apple Neutral & Dark Slate Palette */
+  --bg-app:            #000000;
+  --bg-surface:        #141416;
+  --bg-elevated:       #1c1c1e;
+  --bg-hover:          #242426;
+  --bg-active:         #2c2c2e;
+
+  /* Translucent Glass Properties */
+  --glass-bg:          rgba(20, 20, 22, 0.75);
+  --glass-border:      rgba(255, 255, 255, 0.09);
+  --glass-blur:        blur(24px) saturate(180%);
+
+  /* Borders & Hairlines */
+  --border-subtle:     rgba(255, 255, 255, 0.08);
+  --border-medium:     rgba(255, 255, 255, 0.14);
+  --border-focus:      #0a84ff;
+
+  /* Accent Colors — Apple HIG Inspired */
+  --primary:           #0a84ff;
+  --primary-hover:     #0071e3;
+  --primary-light:     rgba(10, 132, 255, 0.12);
+
+  --success:           #30d158;
+  --success-bg:        rgba(48, 209, 88, 0.12);
+  --success-border:    rgba(48, 209, 88, 0.25);
+
+  --danger:            #ff453a;
+  --danger-hover:      #d73a31;
+  --danger-bg:         rgba(255, 69, 58, 0.12);
+  --danger-border:     rgba(255, 69, 58, 0.25);
+
+  --warning:           #ff9f0a;
+  --warning-bg:        rgba(255, 159, 10, 0.12);
+
+  /* Typography Colors */
+  --text-primary:      #f5f5f7;
+  --text-secondary:    #a1a1a6;
+  --text-muted:        #6e6e73;
+  --text-hint:         #545458;
+
+  /* Radii & Shadows */
+  --radius-xs:         4px;
+  --radius-sm:         8px;
+  --radius-md:         12px;
+  --radius-lg:         16px;
+  --radius-xl:         22px;
+  --radius-full:       9999px;
+
+  --shadow-sm:         0 2px 6px rgba(0, 0, 0, 0.25);
+  --shadow-md:         0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-lg:         0 16px 40px rgba(0, 0, 0, 0.6);
+  --shadow-focus:      0 0 0 3px rgba(10, 132, 255, 0.35);
+
+  /* Transitions */
+  --transition-fast:   0.15s ease;
+  --transition-normal: 0.25s ease;
+
+  --font-sans:         -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", 'Inter', system-ui, sans-serif;
+  --font-mono:         "SF Mono", Menlo, Monaco, Consolas, 'JetBrains Mono', monospace;
+}
+
+[data-theme="light"] {
+  /* Apple Light Neutral Palette — High Contrast & Readability */
+  --bg-app:            #f4f5f8;
+  --bg-surface:        #ffffff;
+  --bg-elevated:       #f8f9fa;
+  --bg-hover:          #eaecef;
+  --bg-active:         #dfe2e6;
+
+  /* Translucent Glass Properties */
+  --glass-bg:          rgba(255, 255, 255, 0.94);
+  --glass-border:      rgba(0, 0, 0, 0.12);
+
+  /* Borders & Hairlines */
+  --border-subtle:     #e2e8f0;
+  --border-medium:     #cbd5e1;
+  --border-focus:      #0071e3;
+
+  /* Accent Colors */
+  --primary:           #0066cc;
+  --primary-hover:     #0052a3;
+  --primary-light:     rgba(0, 102, 204, 0.1);
+
+  --success:           #16a34a;
+  --success-bg:        rgba(22, 163, 74, 0.12);
+  --success-border:    rgba(22, 163, 74, 0.25);
+
+  --danger:            #dc2626;
+  --danger-hover:      #b91c1c;
+  --danger-bg:         rgba(220, 38, 38, 0.12);
+  --danger-border:     rgba(220, 38, 38, 0.25);
+
+  --warning:           #d97706;
+  --warning-bg:        rgba(217, 119, 6, 0.12);
+
+  /* Typography Colors — High Contrast */
+  --text-primary:      #0f172a;
+  --text-secondary:    #334155;
+  --text-muted:        #64748b;
+  --text-hint:         #475569;
+
+  --shadow-sm:         0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md:         0 4px 14px rgba(0, 0, 0, 0.1);
+  --shadow-lg:         0 10px 30px rgba(0, 0, 0, 0.15);
+}

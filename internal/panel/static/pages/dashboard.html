@@ -1,0 +1,158 @@
+<!-- Overview Metrics Bar -->
+<div class="metrics-grid metrics-grid-6">
+  <div class="metric-card">
+    <div class="metric-label">Active Connections</div>
+    <div class="metric-value" id="stat-active-conns">0</div>
+    <div class="metric-foot">Live TCP relay sessions</div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Online Users</div>
+    <div class="metric-value text-success" id="stat-online-users">0</div>
+    <div class="metric-foot">Currently active users</div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Total Domain Rules</div>
+    <div class="metric-value" id="stat-domain-count">0</div>
+    <div class="metric-foot">Configured proxy destinations</div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Users</div>
+    <div class="metric-value" id="stat-user-count">0</div>
+    <div class="metric-foot">Registered user accounts</div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Blocked</div>
+    <div class="metric-value text-danger" id="stat-blacklist-count">0</div>
+    <div class="metric-foot">Blocked IPs/CIDRs</div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Uptime</div>
+    <div class="metric-value" id="stat-uptime">0s</div>
+    <div class="metric-foot">Server running time</div>
+  </div>
+</div>
+
+<!-- Global Dashboard Time Range Filter Bar -->
+<div class="card card-m-bottom">
+  <div class="card-header flex-between">
+    <div>
+      <h3>Statistics Time Range</h3>
+      <p class="card-desc">Select time window for request counters and historical trends.</p>
+    </div>
+    <div class="flex-align-center-gap-sm">
+      <div class="segmented-control" id="dashboard-range-btns">
+        <button type="button" class="segmented-btn active" data-range="today">Today</button>
+        <button type="button" class="segmented-btn" data-range="7d">7 Days</button>
+        <button type="button" class="segmented-btn" data-range="30d">30 Days</button>
+        <button type="button" class="segmented-btn" data-range="monthly">Monthly</button>
+      </div>
+      <button type="button" id="refresh-dashboard-btn" class="btn btn-secondary btn-sm"
+        title="Refresh Dashboard Stats">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Stat Badges Grid -->
+  <div class="metrics-stat-grid">
+    <!-- DNS Metrics -->
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">DNS Queries Total</div>
+      <div class="metric-value" id="stat-dns-total">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">DNS Authorized</div>
+      <div class="metric-value text-success" id="stat-dns-authorized">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">DNS Passthrough</div>
+      <div class="metric-value" id="stat-dns-passthrough">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">DNS Blocked</div>
+      <div class="metric-value text-danger" id="stat-dns-blocked">0</div>
+    </div>
+
+    <!-- TLS Metrics -->
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">TLS Total Bandwidth</div>
+      <div class="metric-value" id="stat-tls-bytes-total">0 B</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">TLS Connections Total</div>
+      <div class="metric-value" id="stat-tls-total">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">Registered TLS connections</div>
+      <div class="metric-value text-success" id="stat-tls-registered">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">Unregistered TLS connections</div>
+      <div class="metric-value text-warning" id="stat-tls-unregistered">0</div>
+    </div>
+
+    <!-- HTTP Metrics -->
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">HTTP Total Bandwidth</div>
+      <div class="metric-value" id="stat-http-bytes-total">0 B</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">HTTP Relay Requests</div>
+      <div class="metric-value" id="stat-http-total">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">Registered HTTP connections</div>
+      <div class="metric-value text-success" id="stat-http-registered">0</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">Unregistered HTTP connections</div>
+      <div class="metric-value text-warning" id="stat-http-unregistered">0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom Charts Section: DNS, TLS & HTTP side-by-side in grid -->
+<div class="dashboard-charts-grid">
+  <div class="card">
+    <div class="card-header">
+      <h3>DNS Query Trends</h3>
+      <p class="card-desc">Daily breakdown of authorized vs passthrough/blocked DNS queries.</p>
+    </div>
+    <div id="dns-stats-chart" class="usage-chart-wrap">
+      <p class="empty-state" id="dns-stats-empty">No DNS request statistics for this period.</p>
+    </div>
+    <div id="dns-stats-legend" class="usage-legend"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>TLS Connection Trends</h3>
+      <p class="card-desc">Daily breakdown of registered vs unregistered TLS relay connections.</p>
+    </div>
+    <div id="tls-stats-chart" class="usage-chart-wrap">
+      <p class="empty-state" id="tls-stats-empty">No TLS request statistics for this period.</p>
+    </div>
+    <div id="tls-stats-legend" class="usage-legend"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>HTTP Relay Trends</h3>
+      <p class="card-desc">Daily breakdown of registered vs unregistered HTTP relay requests.</p>
+    </div>
+    <div id="http-stats-chart" class="usage-chart-wrap">
+      <p class="empty-state" id="http-stats-empty">No HTTP request statistics for this period.</p>
+    </div>
+    <div id="http-stats-legend" class="usage-legend"></div>
+  </div>
+</div>

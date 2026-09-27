@@ -1,0 +1,131 @@
+<!-- Logging Config Bar -->
+<div class="card reqlog-config-bar-wrap">
+  <div class="reqlog-config-bar-inner">
+    <div class="reqlog-config-bar-left">
+      <div class="reqlog-config-status-wrap">
+        <span class="reqlog-config-status-label">Logging Status:</span>
+        <div class="radio-group reqlog-config-radio-group" id="tab-reqlog-status-control">
+          <label class="radio-label reqlog-config-radio-label">
+            <input type="radio" name="tab-reqlog-status-radio" value="true" checked />
+            <span>Enabled</span>
+          </label>
+          <label class="radio-label reqlog-config-radio-label">
+            <input type="radio" name="tab-reqlog-status-radio" value="false" />
+            <span>Disabled</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="reqlog-config-retention-wrap">
+        <span class="reqlog-config-retention-label">Retention:</span>
+        <input type="text" id="tab-reqlog-retention-input" placeholder="e.g. 5m, 1h, 24h"
+          class="reqlog-config-retention-input" />
+        <div class="settings-retention-presets-wrap" id="tab-retention-presets">
+          <button type="button" class="btn btn-secondary btn-xs preset-btn" data-val="5m">5m</button>
+          <button type="button" class="btn btn-secondary btn-xs preset-btn" data-val="15m">15m</button>
+          <button type="button" class="btn btn-secondary btn-xs preset-btn" data-val="1h">1h</button>
+          <button type="button" class="btn btn-secondary btn-xs preset-btn" data-val="24h">24h</button>
+          <button type="button" class="btn btn-secondary btn-xs preset-btn" data-val="7d">7d</button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <button class="btn btn-primary btn-sm" id="tab-reqlog-save-settings-btn">Save Logging Config</button>
+    </div>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="card">
+  <div class="card-header reqlog-header-wrap">
+    <div>
+      <h3>Request Logs</h3>
+      <p class="card-desc">Live request activity log for DNS queries and TLS Relay sessions. Auto-updates every
+        10 seconds.</p>
+    </div>
+    <div class="flex-center-gap-sm">
+      <button id="refresh-request-logs-btn" class="btn btn-secondary btn-sm" title="Refresh logs now">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+        Refresh Now
+      </button>
+      <button id="clear-request-logs-btn" class="btn btn-danger btn-sm">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+        Clear Request Logs
+      </button>
+    </div>
+  </div>
+
+  <form id="reqlog-filter-form" class="reqlog-filter-form-wrap">
+    <div class="reqlog-filter-grid">
+      <div class="form-group">
+        <label for="reqlog-filter-domain">Domain Search</label>
+        <input type="text" id="reqlog-filter-domain" placeholder="e.g. google.com" />
+      </div>
+
+      <div class="form-group">
+        <label for="reqlog-filter-ip">Client IP</label>
+        <input type="text" id="reqlog-filter-ip" placeholder="e.g. 1.2.3.4" />
+      </div>
+
+      <div class="form-group">
+        <label for="reqlog-filter-user">Username</label>
+        <input type="text" id="reqlog-filter-user" placeholder="e.g. ali" />
+      </div>
+
+      <div class="form-group">
+        <label for="reqlog-filter-type">Request Type</label>
+        <select id="reqlog-filter-type">
+          <option value="">All Types</option>
+          <option value="DNS">DNS</option>
+          <option value="TLS">TLS</option>
+          <option value="HTTP">HTTP</option>
+        </select>
+      </div>
+    </div>
+  </form>
+</div>
+
+<!-- Logs Table Card -->
+<div class="card">
+  <div class="table-container">
+    <table class="data-table" id="reqlog-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Client IP</th>
+          <th>Type</th>
+          <th>Route</th>
+          <th>Domain</th>
+          <th>Port</th>
+          <th>Status</th>
+          <th>Timestamp</th>
+          <th class="reqlog-table-port-header"></th>
+        </tr>
+      </thead>
+      <tbody id="reqlog-tbody">
+        <tr>
+          <td colspan="9" class="text-muted reqlog-table-center-cell">Loading logs...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination Controls -->
+  <div class="pagination-bar pagination-border-wrap">
+    <span class="text-muted" id="reqlog-pagination-info">Showing 0-0 of 0</span>
+    <div class="pagination-btns-wrap">
+      <button class="btn btn-secondary btn-sm" id="reqlog-prev-page" disabled>Previous</button>
+      <button class="btn btn-secondary btn-sm" id="reqlog-next-page" disabled>Next</button>
+    </div>
+  </div>
+</div>

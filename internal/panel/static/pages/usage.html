@@ -1,0 +1,189 @@
+<!-- Usage Summary & Time Filter Bar -->
+<div class="card card-m-bottom">
+  <div class="card-header flex-between">
+    <div>
+      <h3>Usage Summary &amp; Range</h3>
+      <p class="card-desc">Overview of bandwidth consumption and DNS query activity over selected time window.
+      </p>
+    </div>
+    <div class="flex-align-center-gap-sm">
+      <div class="segmented-control" id="usage-range-btns">
+        <button type="button" class="segmented-btn active" data-range="today">Today</button>
+        <button type="button" class="segmented-btn" data-range="7d">7 Days</button>
+        <button type="button" class="segmented-btn" data-range="30d">30 Days</button>
+        <button type="button" class="segmented-btn" data-range="monthly">Monthly</button>
+      </div>
+      <button type="button" id="refresh-usage-btn" class="btn btn-secondary btn-sm" title="Refresh Usage Stats">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="usage-metrics-grid">
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">Total Bandwidth</div>
+      <div class="metric-value" id="usage-summary-bandwidth">0 B</div>
+    </div>
+    <div class="metric-card metric-card-p-lg">
+      <div class="metric-label">Total DNS Queries</div>
+      <div class="metric-value text-success" id="usage-summary-dns">0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Per-User / Per-Domain Traffic Breakdown Card -->
+<div class="card">
+  <div class="card-header flex-between">
+    <div>
+      <h3>Usage Breakdown</h3>
+      <p class="card-desc">Cumulative traffic statistics by user or domain rule with sorting and pagination.</p>
+    </div>
+    <div class="segmented-control" id="usage-breakdown-subtab-toggle">
+      <button type="button" class="segmented-btn active" data-subtab="user">👤 By User</button>
+      <button type="button" class="segmented-btn" data-subtab="domain">🌐 By Domain</button>
+    </div>
+  </div>
+
+  <!-- Subtab 1: By User -->
+  <div id="usage-subtab-user">
+    <div class="table-responsive">
+      <table class="data-table" id="usage-user-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="username">Username <span class="sort-icon"
+                id="usage-sort-username"></span></th>
+            <th class="sortable" data-sort="sent">Total Sent <span class="sort-icon"
+                id="usage-sort-sent"></span></th>
+            <th class="sortable" data-sort="received">Total Received <span class="sort-icon"
+                id="usage-sort-received"></span></th>
+            <th class="sortable" data-sort="total">Total Combined <span class="sort-icon"
+                id="usage-sort-total">▲</span></th>
+            <th class="sortable" data-sort="dns">DNS Queries <span class="sort-icon" id="usage-sort-dns"></span>
+            </th>
+            <th class="text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usage-user-tbody"></tbody>
+      </table>
+    </div>
+    <p class="empty-state hidden" id="usage-user-empty">No users or usage data yet.</p>
+
+    <!-- User Pagination -->
+    <div class="flex-between m-top-lg">
+      <span class="text-hint" id="usage-user-page-info">Showing 0-0 of 0</span>
+      <div class="pagination-btns-wrap">
+        <button type="button" class="btn btn-secondary btn-xs" id="usage-user-prev-btn">&laquo;
+          Previous</button>
+        <button type="button" class="btn btn-secondary btn-xs" id="usage-user-next-btn">Next &raquo;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Subtab 2: By Domain -->
+  <div id="usage-subtab-domain" class="hidden">
+    <div class="table-responsive">
+      <table class="data-table" id="usage-domain-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="domain">Domain Rule <span class="sort-icon"
+                id="usage-dom-sort-domain"></span></th>
+            <th class="sortable" data-sort="sent">Total Sent <span class="sort-icon"
+                id="usage-dom-sort-sent"></span></th>
+            <th class="sortable" data-sort="received">Total Received <span class="sort-icon"
+                id="usage-dom-sort-received"></span></th>
+            <th class="sortable" data-sort="total">Total Combined <span class="sort-icon"
+                id="usage-dom-sort-total">▲</span></th>
+            <th class="text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usage-domain-tbody"></tbody>
+      </table>
+    </div>
+    <p class="empty-state hidden" id="usage-domain-empty">No domain usage data recorded yet.</p>
+
+    <!-- Domain Pagination -->
+    <div class="flex-between m-top-lg">
+      <span class="text-hint" id="usage-domain-page-info">Showing 0-0 of 0</span>
+      <div class="pagination-btns-wrap">
+        <button type="button" class="btn btn-secondary btn-xs" id="usage-domain-prev-btn">&laquo;
+          Previous</button>
+        <button type="button" class="btn btn-secondary btn-xs" id="usage-domain-next-btn">Next &raquo;</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Inline user chart panel (hidden until 'View Chart' clicked) -->
+<div id="usage-user-chart-panel" class="card hidden">
+  <div class="card-header flex-between">
+    <div>
+      <h3 id="usage-user-chart-title">User Traffic & DNS Activity</h3>
+      <p class="card-desc">Detailed usage metrics for this user.</p>
+    </div>
+    <div class="flex-center-gap-sm">
+      <div class="segmented-control" id="user-usage-day-btns">
+        <button type="button" class="segmented-btn active" data-range="today">Today</button>
+        <button type="button" class="segmented-btn" data-range="7d">7 Days</button>
+        <button type="button" class="segmented-btn" data-range="30d">30 Days</button>
+        <button type="button" class="segmented-btn" data-range="monthly">Monthly</button>
+      </div>
+      <button type="button" class="btn btn-secondary btn-sm" id="close-user-usage-chart">Close</button>
+    </div>
+  </div>
+
+  <!-- User Summary Badges Grid -->
+  <div class="usage-user-chart-panel-metrics">
+    <div class="metric-card usage-user-chart-panel-metric-card">
+      <div class="metric-label">Total Bandwidth</div>
+      <div class="metric-value" id="user-stat-bandwidth">0 B</div>
+    </div>
+    <div class="metric-card usage-user-chart-panel-metric-card">
+      <div class="metric-label">Total DNS Queries</div>
+      <div class="metric-value text-success" id="user-stat-dns">0</div>
+    </div>
+  </div>
+
+  <div id="user-usage-chart" class="usage-chart-wrap">
+    <p class="empty-state" id="user-usage-empty">No usage data for this user yet.</p>
+  </div>
+  <div id="user-usage-legend" class="usage-legend"></div>
+
+  <!-- Top Domains for this user -->
+  <div class="usage-user-chart-domains-header">
+    <div class="flex-between usage-user-chart-domains-title-row">
+      <h4 class="usage-user-chart-domains-title">Domain Usage for User</h4>
+    </div>
+    <div class="table-responsive">
+      <table class="data-table" id="user-domains-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="domain">Domain Rule <span class="sort-icon"
+                id="udom-sort-domain"></span></th>
+            <th class="sortable" data-sort="sent">Sent (Upload) <span class="sort-icon"
+                id="udom-sort-sent"></span></th>
+            <th class="sortable" data-sort="received">Received (Download) <span class="sort-icon"
+                id="udom-sort-received"></span></th>
+            <th class="sortable" data-sort="total">Total Usage <span class="sort-icon"
+                id="udom-sort-total">▲</span></th>
+          </tr>
+        </thead>
+        <tbody id="user-usage-domains-tbody"></tbody>
+      </table>
+      <p id="user-usage-domains-empty" class="empty-state usage-user-chart-domains-empty">No per-domain
+        traffic recorded for this user.</p>
+    </div>
+    <!-- User Domain Pagination -->
+    <div class="flex-between m-top-sm">
+      <span class="text-hint" id="user-dom-page-info">Showing 0-0 of 0</span>
+      <div class="pagination-btns-wrap">
+        <button type="button" class="btn btn-secondary btn-xs" id="user-dom-prev-btn">&laquo; Previous</button>
+        <button type="button" class="btn btn-secondary btn-xs" id="user-dom-next-btn">Next &raquo;</button>
+      </div>
+    </div>
+  </div>
+</div>

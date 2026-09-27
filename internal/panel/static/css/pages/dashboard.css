@@ -1,0 +1,62 @@
+/* =========================================================================
+   TLS Relay Admin Panel — pages/dashboard.css
+   Dashboard Overview specific styling: metrics grids, stat badges, trend charts.
+   ========================================================================= */
+
+.metrics-grid-6 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.metrics-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.metric-card-p-lg {
+  padding: 1.25rem 1.5rem;
+}
+
+.dashboard-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.usage-chart-wrap {
+  width: 100%;
+  min-height: 180px;
+  overflow-x: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.usage-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  margin-top: 0.75rem;
+  font-size: 0.825rem;
+  color: var(--text-secondary);
+}
+
+.usage-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.usage-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
