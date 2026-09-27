@@ -55,11 +55,11 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          LDFLAGS="-s -w -trimpath \
+          LDFLAGS="-s -w \
             -X 'main.version=${{ steps.vars.outputs.TAG }}' \
             -X 'main.commit=${{ github.sha }}' \
             -X 'main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
-          go build -ldflags "$LDFLAGS" -o tls-relay ./cmd/relay
+          go build -trimpath -ldflags "$LDFLAGS" -o tls-relay ./cmd/relay
 
       - name: Package Release Asset
         run: |
