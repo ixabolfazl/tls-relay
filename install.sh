@@ -226,12 +226,80 @@ fi
 
 rm -rf "${TMP_DIR}"
 
+# Validate IPv4 format
+is_valid_ipv4() {
+    local ip="$1"
+    local rx='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    if [[ $ip =~ $rx ]]; then
+        local IFS='.'
+        read -r -a octets <<< "$ip"
+        for oct in "${octets[@]}"; do
+            (( oct >= 0 && oct <= 255 )) || return 1
+        done
+        return 0
+    fi
+    return 1
+}
+
+# Check if IP is a public (non-private/non-loopback/non-bogon) IPv4
+is_public_ipv4() {
+    local ip="$1"
+    is_valid_ipv4 "$ip" || return 1
+    case "$ip" in
+        10.*|192.168.*|127.*|169.254.*|0.*) return 1 ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 1 ;;
+        100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Fetch server public IP using a resilient multi-layer strategy
+get_public_ip() {
+    local ip=""
+
+    # 1. Local interface route check (instantaneous, works offline if server has public IP)
+    local local_ip
+    local_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+    if is_public_ipv4 "${local_ip}"; then
+        echo "${local_ip}"
+        return 0
+    fi
+
+    # 2. DNS query (fast, bypasses HTTP filters/censorship)
+    if command -v dig >/dev/null 2>&1; then
+        local dns_ip
+        dns_ip=$(dig +short +time=2 +tries=1 myip.opendns.com @208.67.222.222 2>/dev/null | tr -d '"' | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+        if is_public_ipv4 "${dns_ip}"; then
+            echo "${dns_ip}"
+            return 0
+        fi
+    fi
+
+    # 3. HTTP endpoints with strict regex validation
+    local endpoints=(
+        "https://checkip.amazonaws.com"
+        "https://cloudflare.com/cdn-cgi/trace"
+        "https://api4.ipify.org"
+        "https://icanhazip.com"
+        "https://ifconfig.me/ip"
+    )
+
+    for url in "${endpoints[@]}"; do
+        local resp extracted
+        resp=$(curl -4s --connect-timeout 2 --max-time 4 "$url" 2>/dev/null)
+        extracted=$(echo "$resp" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+        if is_public_ipv4 "${extracted}"; then
+            echo "${extracted}"
+            return 0
+        fi
+    done
+
+    echo ""
+}
+
 # 11. Public IP Detection & Configuration
 echo -e "${CYAN}Detecting server public IP...${NC}"
-DETECTED_IP=$(curl -4s --connect-timeout 4 https://api.ipify.org 2>/dev/null || \
-              curl -4s --connect-timeout 4 https://icanhazip.com 2>/dev/null || \
-              curl -4s --connect-timeout 4 https://ifconfig.me 2>/dev/null || echo "")
-DETECTED_IP=$(echo "${DETECTED_IP}" | tr -d '[:space:]')
+DETECTED_IP=$(get_public_ip)
 [[ -z "${DETECTED_IP}" ]] && DETECTED_IP="127.0.0.1"
 
 PUBLIC_IP="${DETECTED_IP}"
