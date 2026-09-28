@@ -70,8 +70,7 @@ jobs:
             tls-relay \
             tls-relay.sh \
             tls-relay.service \
-            config.yaml \
-            .env.example
+            config.yaml
 
           sha256sum "${PACKAGE_NAME}" > "${PACKAGE_NAME}.sha256"
 
@@ -110,7 +109,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag_step.outputs.TAG }}
-          name: Release ${{ steps.tag_step.outputs.TAG }}
+          name: ${{ steps.tag_step.outputs.TAG }}
           draft: false
           prerelease: false
           generate_release_notes: true
