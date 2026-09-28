@@ -402,7 +402,7 @@ You can choose whether to keep the existing SQLite database.
 
 ## Build From Source
 
-Go `1.22+` is required.
+Go `1.22+` is required. The build automatically downloads the official standalone Tailwind CSS CLI executable into `.bin/` on first run to compile and embed the admin panel CSS.
 
 Clone the repository:
 
@@ -411,7 +411,13 @@ git clone https://github.com/ixabolfazl/tls-relay.git
 cd tls-relay
 ```
 
-Build:
+Build CSS (optional, called automatically by `make build` and `make test`):
+
+```bash
+make css
+```
+
+Build for the current platform:
 
 ```bash
 make build
@@ -430,7 +436,7 @@ Create release packages:
 make package
 ```
 
-Run tests:
+Run all unit tests:
 
 ```bash
 make test

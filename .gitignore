@@ -3,6 +3,10 @@ tls-relay
 tls-relay-*
 tls-relay.tar.gz
 
+# Generated static assets
+internal/panel/static/css/app.css
+.bin/
+
 # Log files
 logs/
 *.log
@@ -15,9 +19,6 @@ vendor/
 *.out
 *.tar.gz
 .vscode
-
-# Environment file with secrets — never commit this
-.env
 
 # OS metadata
 .DS_Store

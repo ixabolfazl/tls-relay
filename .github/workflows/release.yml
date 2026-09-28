@@ -33,6 +33,25 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Cache Tailwind CLI
+        id: cache-tailwind
+        uses: actions/cache@v4
+        with:
+          path: .bin/tailwindcss
+          key: tailwind-cli-v3.4.17-linux-x64
+
+      - name: Setup Tailwind CLI
+        if: steps.cache-tailwind.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .bin
+          curl -sL -o .bin/tailwindcss https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64
+          chmod +x .bin/tailwindcss
+
+      - name: Ensure CLI Executable & Build CSS
+        run: |
+          chmod +x .bin/tailwindcss || true
+          make css
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:

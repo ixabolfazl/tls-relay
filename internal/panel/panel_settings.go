@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
+	"github.com/ixabolfazl/tls-relay/internal/config"
+	"github.com/ixabolfazl/tls-relay/internal/relay"
 )
 
 type settingsResponse struct {
@@ -490,20 +492,50 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, s.currentSettings())
 }
 
-func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	ed := s.egressDialer
-	s.mu.RUnlock()
+type testProxyRequest struct {
+	Addr     string `json:"addr"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
 
-	if ed == nil {
-		jsonErr(w, "Egress proxy dialer is not initialized", http.StatusBadRequest)
-		return
-	}
+func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
+	var req testProxyRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	latency, err := ed.TestConnection(ctx, "1.1.1.1:53")
+	var latency time.Duration
+	var err error
+
+	req.Addr = strings.TrimSpace(req.Addr)
+	if req.Addr != "" {
+		tempEd, dialerErr := relay.NewEgressDialer(config.EgressProxyConfig{
+			Enabled:  true,
+			Addr:     req.Addr,
+			User:     strings.TrimSpace(req.User),
+			Password: req.Password,
+		})
+		if dialerErr != nil {
+			jsonOK(w, map[string]interface{}{
+				"ok":    false,
+				"error": dialerErr.Error(),
+			})
+			return
+		}
+		latency, err = tempEd.TestConnection(ctx, "1.1.1.1:53")
+	} else {
+		s.mu.RLock()
+		ed := s.egressDialer
+		s.mu.RUnlock()
+
+		if ed == nil {
+			jsonErr(w, "Egress proxy dialer is not initialized", http.StatusBadRequest)
+			return
+		}
+		latency, err = ed.TestConnection(ctx, "1.1.1.1:53")
+	}
+
 	if err != nil {
 		slog.Warn("proxy test connection failed", "error", err)
 		jsonOK(w, map[string]interface{}{

@@ -666,9 +666,17 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	}
 
 	// Static files endpoint
-	staticPattern := "GET " + prefix + "/static/"
-	stripPrefix := prefix + "/static/"
-	mux.Handle(staticPattern, http.StripPrefix(stripPrefix, http.FileServer(http.FS(staticFS))))
+	fileServer := http.FileServer(http.FS(staticFS))
+	mux.Handle("GET "+prefix+"/static/", http.StripPrefix(prefix+"/static/", fileServer))
+	if prefix == "" {
+		mux.Handle("GET /css/", fileServer)
+		mux.Handle("GET /js/", fileServer)
+		mux.Handle("GET /pages/", fileServer)
+	} else {
+		mux.Handle("GET "+prefix+"/css/", http.StripPrefix(prefix, fileServer))
+		mux.Handle("GET "+prefix+"/js/", http.StripPrefix(prefix, fileServer))
+		mux.Handle("GET "+prefix+"/pages/", http.StripPrefix(prefix, fileServer))
+	}
 
 	// Serve index.html for root or custom panel path
 	if prefix == "" {

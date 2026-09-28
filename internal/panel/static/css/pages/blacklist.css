@@ -1,9 +1,0 @@
-/* =========================================================================
-   TLS Relay Admin Panel — pages/blacklist.css
-   Global Blacklist specific styling: entry cards, IP table format.
-   ========================================================================= */
-
-#tab-blacklist textarea {
-  font-family: var(--font-mono, monospace);
-  font-size: 0.875rem;
-}

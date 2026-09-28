@@ -92,7 +92,7 @@ type wildcardEntry struct {
 // RuleStore holds the in-memory domain rules and exposes a thread-safe Lookup.
 type RuleStore struct {
 	snapshot    atomic.Pointer[domainSnapshot]
-	globalPorts atomic.Pointer[[]int] // global allowed_dest_ports from config, for "all" fallback
+	globalPorts atomic.Pointer[[]int]  // global allowed_dest_ports from config, for "all" fallback
 	policy      atomic.Pointer[string] // "reject" | "allow_default_port"
 }
 

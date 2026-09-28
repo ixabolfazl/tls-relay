@@ -1,53 +1,6 @@
-<!-- Add Blacklist Entry Card -->
-<div class="card">
-  <div class="card-header">
-    <h3>Add Blacklist Entries</h3>
-    <p class="card-desc">Block IP addresses or CIDR ranges globally (applies in all access modes).</p>
-  </div>
-  <form id="add-blacklist-form">
-    <div class="form-group full-width">
-      <label for="blacklist-entry">IP Address or CIDR Subnet</label>
-      <textarea id="blacklist-entry" rows="3" placeholder="203.0.113.5&#10;198.51.100.0/24&#10;2001:db8::/32"
-        required></textarea>
-      <span class="form-hint">
-        Supports IPv4 and IPv6 addresses or subnet blocks (e.g. <code>192.168.1.10</code> or
-        <code>10.0.0.0/16</code>).
-      </span>
-    </div>
-    <div id="add-blacklist-error" class="alert alert-error hidden"></div>
-    <div id="add-blacklist-success" class="alert alert-success hidden"></div>
-    <div class="form-actions">
-      <button type="submit" class="btn btn-primary">Add Blacklist Entry/Entries</button>
-    </div>
-  </form>
-</div>
-
-<!-- Blacklist List Card -->
-<div class="card">
-  <div class="card-header flex-between">
-    <div>
-      <h3>Current Blacklist</h3>
-      <p class="card-desc">Active IP and subnet blocks.</p>
-    </div>
-    <div class="search-box">
-      <input type="text" id="blacklist-search" placeholder="Filter entries..." />
-    </div>
-  </div>
-  <div id="blacklist-list-wrap">
-    <p class="empty-state hidden" id="blacklist-empty">No blacklist entries configured.</p>
-    <div class="table-responsive">
-      <table class="data-table" id="blacklist-table">
-        <thead>
-          <tr>
-            <th class="checkbox-cell"><input type="checkbox" id="blacklist-select-all"
-                title="Select all visible entries" /></th>
-            <th>IP Address / CIDR Subnet</th>
-            <th>Added</th>
-            <th class="text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="blacklist-tbody"></tbody>
-      </table>
-    </div>
+<!-- Blacklist View Partial -->
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-txt">Global Blacklist</h1>
   </div>
 </div>
