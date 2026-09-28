@@ -221,33 +221,36 @@ type MagicLinkHandlerRegistrar = PortalHandlerRegistrar
 
 // Server is the admin panel HTTP server.
 type Server struct {
-	addr         string
-	mu           sync.RWMutex
-	pathPrefix   string // normalized active path prefix: e.g. "" for root "/", or "/admin"
-	activeMux    atomic.Pointer[http.ServeMux]
-	timezone     atomic.Pointer[string]
-	passHash     []byte
-	username     string
-	serverDomain string
-	ruleStore    *rules.RuleStore
-	accessStore  *access.AccessStore
-	sqlStore     *sqlitestore.Store
-	connTracker  *relay.ConnTracker
-	reqLogger    *requestlog.Logger
-	limits       *relay.LimitTracker
-	dnsServer    *dnsresolver.Server
-	egressDialer *relay.EgressDialer
-	refresher    Refresher
-	sessions     *sessionStore
-	loginLimiter *loginLimiter
-	startTime    time.Time
-	httpServer   *http.Server
-	portalSrv    PortalHandlerRegistrar
+	addr            string
+	mu              sync.RWMutex
+	pathPrefix      string // normalized active path prefix: e.g. "" for root "/", or "/admin"
+	activeMux       atomic.Pointer[http.ServeMux]
+	timezone        atomic.Pointer[string]
+	passHash        []byte
+	username        string
+	serverDomain    string
+	ruleStore       *rules.RuleStore
+	accessStore     *access.AccessStore
+	sqlStore        *sqlitestore.Store
+	connTracker     *relay.ConnTracker
+	reqLogger       *requestlog.Logger
+	limits          *relay.LimitTracker
+	dnsServer       *dnsresolver.Server
+	egressDialer    *relay.EgressDialer
+	allowList       *relay.PortAllowList
+	listenPorts     []int
+	listenHTTPPorts []int
+	restartHandler  func()
+	refresher       Refresher
+	sessions        *sessionStore
+	loginLimiter    *loginLimiter
+	startTime       time.Time
+	httpServer      *http.Server
+	portalSrv       PortalHandlerRegistrar
 }
 
-// New creates a Server. Username and password are read from environment
-// variables PANEL_ADMIN_USER and PANEL_ADMIN_PASSWORD. If not set, the panel
-// will refuse all logins and log a warning.
+// New creates a Server. Username and password are read from SQLite if stored,
+// or fallback to environment variables PANEL_ADMIN_USER and PANEL_ADMIN_PASSWORD.
 func New(
 	addr string,
 	pathPrefix string,
@@ -258,17 +261,28 @@ func New(
 ) (*Server, error) {
 	user := os.Getenv("PANEL_ADMIN_USER")
 	pass := os.Getenv("PANEL_ADMIN_PASSWORD")
-	if user == "" || pass == "" {
-		slog.Warn("PANEL_ADMIN_USER or PANEL_ADMIN_PASSWORD is not set; panel login will be disabled")
-	}
 
 	var hash []byte
-	if pass != "" {
+	// Check SQLite for persisted admin credentials
+	if sq != nil {
+		if dbUser, found, _ := sq.GetSetting(context.Background(), "panel_admin_user"); found && strings.TrimSpace(dbUser) != "" {
+			user = strings.TrimSpace(dbUser)
+		}
+		if dbHash, found, _ := sq.GetSetting(context.Background(), "panel_admin_password_hash"); found && strings.TrimSpace(dbHash) != "" {
+			hash = []byte(strings.TrimSpace(dbHash))
+		}
+	}
+
+	if len(hash) == 0 && pass != "" {
 		var err error
 		hash, err = bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, fmt.Errorf("hashing panel password: %w", err)
 		}
+	}
+
+	if user == "" || len(hash) == 0 {
+		slog.Warn("PANEL_ADMIN_USER or PANEL_ADMIN_PASSWORD is not set; panel login will be disabled until configured")
 	}
 
 	var initialDomain string
@@ -297,6 +311,87 @@ func New(
 	}
 
 	return s, nil
+}
+
+// SetPortAllowList registers a PortAllowList for runtime allowed destination ports management.
+func (s *Server) SetPortAllowList(pal *relay.PortAllowList) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowList = pal
+}
+
+// SetListenPorts registers the active TLS listen ports for status display.
+func (s *Server) SetListenPorts(ports []int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listenPorts = ports
+}
+
+// SetListenHTTPPorts registers the active HTTP listen ports for status display.
+func (s *Server) SetListenHTTPPorts(ports []int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listenHTTPPorts = ports
+}
+
+// SetRestartHandler registers the callback to invoke when a service restart is requested from the panel.
+func (s *Server) SetRestartHandler(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restartHandler = fn
+}
+
+// AdminUsername returns the current admin username.
+func (s *Server) AdminUsername() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.username
+}
+
+// UpdateAdminCredentials validates the current password and sets a new username and password.
+func (s *Server) UpdateAdminCredentials(ctx context.Context, currentPass, newUser, newPass string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.passHash) > 0 {
+		if err := bcrypt.CompareHashAndPassword(s.passHash, []byte(currentPass)); err != nil {
+			return fmt.Errorf("invalid current password")
+		}
+	}
+
+	newUser = strings.TrimSpace(newUser)
+	if newUser == "" {
+		newUser = s.username
+	}
+	if newUser == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+
+	newPass = strings.TrimSpace(newPass)
+	if newPass == "" {
+		return fmt.Errorf("new password cannot be empty")
+	}
+	if len(newPass) < 6 {
+		return fmt.Errorf("new password must be at least 6 characters")
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing new password: %w", err)
+	}
+
+	if s.sqlStore != nil {
+		if err := s.sqlStore.SetSetting(ctx, "panel_admin_user", newUser); err != nil {
+			return fmt.Errorf("saving admin user: %w", err)
+		}
+		if err := s.sqlStore.SetSetting(ctx, "panel_admin_password_hash", string(newHash)); err != nil {
+			return fmt.Errorf("saving admin password: %w", err)
+		}
+	}
+
+	s.username = newUser
+	s.passHash = newHash
+	return nil
 }
 
 // SetConnTracker registers a ConnTracker for live user presence monitoring.
@@ -671,6 +766,9 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	// Settings.
 	mux.HandleFunc(route("GET", "/api/settings"), s.auth(s.handleGetSettings))
 	mux.HandleFunc(route("PUT", "/api/settings"), s.auth(s.handleUpdateSettings))
+	mux.HandleFunc(route("POST", "/api/settings/test-proxy"), s.auth(s.handleTestProxy))
+	mux.HandleFunc(route("PUT", "/api/admin/credentials"), s.auth(s.handleUpdateAdminCredentials))
+	mux.HandleFunc(route("POST", "/api/service/restart"), s.auth(s.handleServiceRestart))
 	mux.HandleFunc(route("GET", "/api/request-stats/daily"), s.auth(s.handleGetRequestStatsDaily))
 }
 
@@ -731,13 +829,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.username == "" || len(s.passHash) == 0 {
+	s.mu.RLock()
+	currentUsername := s.username
+	currentPassHash := s.passHash
+	s.mu.RUnlock()
+
+	if currentUsername == "" || len(currentPassHash) == 0 {
 		slog.Warn("admin panel login attempted but credentials are unconfigured", "remote_addr", r.RemoteAddr)
 		jsonErr(w, "Admin credentials not configured on the server.", http.StatusForbidden)
 		return
 	}
 
-	if req.Username != s.username || bcrypt.CompareHashAndPassword(s.passHash, []byte(req.Password)) != nil {
+	if req.Username != currentUsername || bcrypt.CompareHashAndPassword(currentPassHash, []byte(req.Password)) != nil {
 		locked, rem := s.loginLimiter.recordFailure(clientIP)
 		slog.Warn("admin panel login failed: invalid credentials", "username", req.Username, "remote_addr", r.RemoteAddr, "client_ip", clientIP)
 		if locked {

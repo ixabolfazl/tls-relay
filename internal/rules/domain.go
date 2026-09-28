@@ -92,21 +92,40 @@ type wildcardEntry struct {
 // RuleStore holds the in-memory domain rules and exposes a thread-safe Lookup.
 type RuleStore struct {
 	snapshot    atomic.Pointer[domainSnapshot]
-	globalPorts []int                  // global allowed_dest_ports from config, for "all" fallback
+	globalPorts atomic.Pointer[[]int] // global allowed_dest_ports from config, for "all" fallback
 	policy      atomic.Pointer[string] // "reject" | "allow_default_port"
 }
 
 // NewRuleStore creates a RuleStore with an empty initial state.
 func NewRuleStore(globalPorts []int, policy string) *RuleStore {
-	rs := &RuleStore{
-		globalPorts: globalPorts,
-	}
+	rs := &RuleStore{}
+	portsCopy := make([]int, len(globalPorts))
+	copy(portsCopy, globalPorts)
+	rs.globalPorts.Store(&portsCopy)
 	rs.policy.Store(&policy)
 	rs.snapshot.Store(&domainSnapshot{
 		exact:     make(map[string]DomainRule),
 		wildcards: nil,
 	})
 	return rs
+}
+
+// SetGlobalPorts updates the global allowed destination ports atomically.
+func (rs *RuleStore) SetGlobalPorts(ports []int) {
+	portsCopy := make([]int, len(ports))
+	copy(portsCopy, ports)
+	rs.globalPorts.Store(&portsCopy)
+}
+
+// GlobalPorts returns a copy of the current global allowed destination ports.
+func (rs *RuleStore) GlobalPorts() []int {
+	p := rs.globalPorts.Load()
+	if p == nil {
+		return nil
+	}
+	out := make([]int, len(*p))
+	copy(out, *p)
+	return out
 }
 
 // Swap replaces the full rule table atomically. rawRules maps each key (exact
@@ -243,9 +262,11 @@ func (rs *RuleStore) LookupRule(hostname string) (DomainRule, bool) {
 func (rs *RuleStore) portAllowed(rule DomainRule, port int) bool {
 	if rule.Ports.All {
 		// Fall back to global allowed_dest_ports.
-		for _, p := range rs.globalPorts {
-			if p == port {
-				return true
+		if gp := rs.globalPorts.Load(); gp != nil {
+			for _, p := range *gp {
+				if p == port {
+					return true
+				}
 			}
 		}
 		return false
@@ -278,9 +299,11 @@ func (rs *RuleStore) IsPortAllowedByPolicy(port int) bool {
 	if rs.UnknownDomainPolicy() != "allow_default_port" {
 		return false
 	}
-	for _, p := range rs.globalPorts {
-		if p == port {
-			return true
+	if gp := rs.globalPorts.Load(); gp != nil {
+		for _, p := range *gp {
+			if p == port {
+				return true
+			}
 		}
 	}
 	return false

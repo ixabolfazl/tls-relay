@@ -213,7 +213,6 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/tls-relay
-EnvironmentFile=/opt/tls-relay/.env
 ExecStart=/opt/tls-relay/tls-relay -config /opt/tls-relay/config.yaml
 Restart=always
 RestartSec=3s
@@ -310,78 +309,82 @@ if [[ -t 0 && "${NONINTERACTIVE:-0}" != "1" ]]; then
 fi
 echo -e "${GREEN}✓${NC} Using Public IP: ${BOLD}${PUBLIC_IP}${NC}"
 
-# 12. Outbound SOCKS5 Egress Proxy Configuration
-EGRESS_ENABLED="false"
-EGRESS_ADDR="127.0.0.1:1080"
-EGRESS_USER=""
-EGRESS_PASS=""
-
-if [[ -f "${INSTALL_DIR}/.env" ]]; then
-    # Read existing proxy configuration if updating
-    EGRESS_ENABLED=$(grep -E '^EGRESS_PROXY_ENABLED=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "false")
-    EGRESS_ADDR=$(grep -E '^EGRESS_PROXY_ADDR=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "127.0.0.1:1080")
-    EGRESS_USER=$(grep -E '^EGRESS_PROXY_USER=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "")
-    EGRESS_PASS=$(grep -E '^EGRESS_PROXY_PASSWORD=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "")
-else
-    # Fresh install: prompt interactively
-    if [[ -t 0 && "${NONINTERACTIVE:-0}" != "1" ]]; then
-        echo ""
-        read -rp "Do you want to enable Outbound SOCKS5 Egress Proxy (e.g. Cloudflare WARP)? (y/N): " ask_proxy
-        if [[ "${ask_proxy,,}" == "y" ]]; then
-            EGRESS_ENABLED="true"
-            read -rp "SOCKS5 Proxy Address [default: 127.0.0.1:1080]: " input_egress_addr
-            EGRESS_ADDR="${input_egress_addr:-127.0.0.1:1080}"
-            read -rp "SOCKS5 Username (optional, press Enter if none): " EGRESS_USER
-            read -rp "SOCKS5 Password (optional, press Enter if none): " EGRESS_PASS
-            echo -e "${GREEN}✓${NC} Outbound SOCKS5 proxy configured: ${BOLD}${EGRESS_ADDR}${NC}"
-        else
-            echo -e "${CYAN}Outbound SOCKS5 proxy disabled (direct connection).${NC}"
-        fi
-    fi
-fi
-
-# 13. Setup .env file
+# 12. Admin Credentials Configuration
 ADMIN_USER="admin"
 ADMIN_PASS=""
 ADMIN_PATH=""
-IS_NEW_INSTALL=0
 
-if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
-    IS_NEW_INSTALL=1
-    ADMIN_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    # Generate random admin panel path for security (e.g. /k8mX2a9L)
-    RANDOM_SLUG=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 8)
-    ADMIN_PATH="/${RANDOM_SLUG}"
-    cat > "${INSTALL_DIR}/.env" << EOF
-PANEL_ADMIN_USER=${ADMIN_USER}
-PANEL_ADMIN_PASSWORD=${ADMIN_PASS}
-PANEL_PATH=${ADMIN_PATH}
-RELAY_IP=${PUBLIC_IP}
-ACCESS_MODE=user
-EGRESS_PROXY_ENABLED=${EGRESS_ENABLED}
-EGRESS_PROXY_ADDR=${EGRESS_ADDR}
-EGRESS_PROXY_USER=${EGRESS_USER}
-EGRESS_PROXY_PASSWORD=${EGRESS_PASS}
-EOF
-    chmod 600 "${INSTALL_DIR}/.env"
-else
-    # Preserve existing credentials and path
-    ADMIN_USER=$(grep -E '^PANEL_ADMIN_USER=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "admin")
-    ADMIN_PASS=$(grep -E '^PANEL_ADMIN_PASSWORD=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "")
-    ADMIN_PATH=$(grep -E '^PANEL_PATH=' "${INSTALL_DIR}/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "/admin")
-    [[ -z "${ADMIN_PATH}" ]] && ADMIN_PATH="/admin"
-    # Update RELAY_IP
-    if grep -q '^RELAY_IP=' "${INSTALL_DIR}/.env"; then
-        sed -i "s|^RELAY_IP=.*|RELAY_IP=${PUBLIC_IP}|" "${INSTALL_DIR}/.env"
+echo ""
+echo -e "${CYAN}Configuring Admin Panel Credentials...${NC}"
+
+# Check if admin user is already initialized in SQLite database
+DB_EXISTS=0
+if [[ -f "${DATA_DIR}/data.db" ]]; then
+    DB_EXISTS=1
+fi
+
+if [[ -t 0 && "${NONINTERACTIVE:-0}" != "1" ]]; then
+    if [[ ${DB_EXISTS} -eq 1 ]]; then
+        echo -e "${YELLOW}Existing database found at ${DATA_DIR}/data.db.${NC}"
+        read -rp "Do you want to update/reset admin credentials? (y/N): " update_creds
+        if [[ "${update_creds,,}" == "y" ]]; then
+            read -rp "Admin Username [default: admin]: " input_user
+            ADMIN_USER="${input_user:-admin}"
+            read -rp "Admin Password (leave empty to auto-generate): " input_pass
+            if [[ -z "${input_pass}" ]]; then
+                ADMIN_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)
+                echo -e "${YELLOW}Generated secure password:${NC} ${BOLD}${ADMIN_PASS}${NC}"
+            else
+                ADMIN_PASS="${input_pass}"
+            fi
+            echo -e "${CYAN}Updating admin credentials in database...${NC}"
+            "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}" -pass "${ADMIN_PASS}"
+            echo -e "${GREEN}✓ Admin credentials updated.${NC}"
+        fi
     else
-        echo "RELAY_IP=${PUBLIC_IP}" >> "${INSTALL_DIR}/.env"
+        read -rp "Admin Username [default: admin]: " input_user
+        ADMIN_USER="${input_user:-admin}"
+        read -rp "Admin Password (leave empty to auto-generate): " input_pass
+        if [[ -z "${input_pass}" ]]; then
+            ADMIN_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)
+            echo -e "${YELLOW}Generated secure password:${NC} ${BOLD}${ADMIN_PASS}${NC}"
+        else
+            ADMIN_PASS="${input_pass}"
+        fi
+        echo -e "${CYAN}Initializing admin credentials in database...${NC}"
+        "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}" -pass "${ADMIN_PASS}"
+        echo -e "${GREEN}✓ Admin credentials initialized.${NC}"
+    fi
+else
+    # Non-interactive mode (automated installs)
+    if [[ ${DB_EXISTS} -eq 0 ]]; then
+        ADMIN_USER="${ADMIN_USER:-admin}"
+        if [[ -z "${ADMIN_PASS}" ]]; then
+            ADMIN_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)
+        fi
+        "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}" -pass "${ADMIN_PASS}"
     fi
 fi
 
-# Update config.yaml with detected public IP
+# Remove legacy .env file if present to eliminate plaintext credential storage
+rm -f "${INSTALL_DIR}/.env" 2>/dev/null || true
+
+# 13. Update config.yaml with detected public IP and secure panel path
 if [[ -f "${INSTALL_DIR}/config.yaml" ]]; then
+    # Update relay_ip with detected or specified public IP
     sed -i -E "s|^([[:space:]]*relay_ip:).*|\1 \"${PUBLIC_IP}\"|" "${INSTALL_DIR}/config.yaml" 2>/dev/null || true
+
+    # Preserve or generate secure random panel path
+    CURRENT_PATH=$(sed -n '/^panel:/,/^[a-zA-Z]/p' "${INSTALL_DIR}/config.yaml" 2>/dev/null | grep -E '^[[:space:]]*path:' | awk '{print $2}' | tr -d '"' | tr -d "'")
+    if [[ -z "${CURRENT_PATH}" || "${CURRENT_PATH}" == "/admin" ]]; then
+        RANDOM_SLUG=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 8)
+        ADMIN_PATH="/${RANDOM_SLUG}"
+        sed -i -E '/^panel:/,/^[a-zA-Z]/ s|^([[:space:]]*path:).*|\1 "'"${ADMIN_PATH}"'"|' "${INSTALL_DIR}/config.yaml" 2>/dev/null || true
+    else
+        ADMIN_PATH="${CURRENT_PATH}"
+    fi
 fi
+[[ -z "${ADMIN_PATH}" ]] && ADMIN_PATH="/admin"
 
 # 13. Enable and Start Systemd Service
 echo -e "${CYAN}Reloading systemd and enabling tls-relay service...${NC}"
@@ -427,7 +430,6 @@ if [[ -n "${ADMIN_PASS}" ]]; then
     echo -e "  ${BOLD}Password         :${NC} ${YELLOW}${ADMIN_PASS}${NC}"
 fi
 echo -e "  ${BOLD}Config Location  :${NC} ${INSTALL_DIR}/config.yaml"
-echo -e "  ${BOLD}Env Credentials  :${NC} ${INSTALL_DIR}/.env"
 echo -e "  ${BOLD}SQLite Database  :${NC} ${DATA_DIR}/data.db"
 echo ""
 echo -e "  ${BOLD}Active Network Ports:${NC}"

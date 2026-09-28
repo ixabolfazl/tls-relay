@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"time"
 	_ "time/tzdata"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
 	"github.com/ixabolfazl/tls-relay/internal/config"
@@ -42,10 +45,21 @@ func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	showVersion := flag.Bool("version", false, "display version and build information")
 	flag.BoolVar(showVersion, "v", false, "display version and build information (shorthand)")
+	initAdmin := flag.Bool("init-admin", false, "initialize or reset admin credentials in database")
+	adminUser := flag.String("user", "admin", "admin username for -init-admin")
+	adminPass := flag.String("pass", "", "admin password for -init-admin")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("tls-relay %s (commit: %s, built: %s)\n", version, commit, buildDate)
+		os.Exit(0)
+	}
+
+	if *initAdmin {
+		if err := handleInitAdmin(*cfgPath, *adminUser, *adminPass); err != nil {
+			fmt.Fprintf(os.Stderr, "error initializing admin credentials: %v\n", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 
@@ -113,6 +127,48 @@ func run(cfgPath string) error {
 	envPolicy := os.Getenv("UNKNOWN_DOMAIN_POLICY")
 	dbPolicy, hasPolicy := dbSettings["unknown_domain_policy"]
 	cfg.UnknownDomainPolicy = config.ResolveSetting(envPolicy, dbPolicy, hasPolicy, cfg.UnknownDomainPolicy)
+
+	// Resolve allowed destination ports from SQLite if configured
+	if dbPorts, hasPorts := dbSettings["allowed_dest_ports"]; hasPorts && strings.TrimSpace(dbPorts) != "" {
+		var parsedPorts []int
+		if err := json.Unmarshal([]byte(dbPorts), &parsedPorts); err == nil && len(parsedPorts) > 0 {
+			cfg.AllowedDestPorts = parsedPorts
+		}
+	}
+
+	// Resolve listen ports from SQLite if configured
+	if dbListenPorts, hasListenPorts := dbSettings["listen_ports"]; hasListenPorts && strings.TrimSpace(dbListenPorts) != "" {
+		var parsedPorts []int
+		if err := json.Unmarshal([]byte(dbListenPorts), &parsedPorts); err == nil && len(parsedPorts) > 0 {
+			cfg.Listen.Ports = parsedPorts
+		}
+	}
+
+	// Resolve listen http ports from SQLite if configured
+	if dbHTTPPorts, hasHTTPPorts := dbSettings["listen_http_ports"]; hasHTTPPorts && strings.TrimSpace(dbHTTPPorts) != "" {
+		var parsedPorts []int
+		if err := json.Unmarshal([]byte(dbHTTPPorts), &parsedPorts); err == nil && len(parsedPorts) > 0 {
+			cfg.Listen.HTTPPorts = parsedPorts
+		}
+	}
+
+	// Resolve egress proxy configuration (Env > SQLite > Config)
+	envEgressEnabled := os.Getenv("EGRESS_PROXY_ENABLED")
+	dbEgressEnabled, hasEgressEnabled := dbSettings["egress_proxy_enabled"]
+	egressEnabledStr := config.ResolveSetting(envEgressEnabled, dbEgressEnabled, hasEgressEnabled, fmt.Sprintf("%t", cfg.EgressProxy.Enabled))
+	cfg.EgressProxy.Enabled = egressEnabledStr == "true" || egressEnabledStr == "1"
+
+	envEgressAddr := os.Getenv("EGRESS_PROXY_ADDR")
+	dbEgressAddr, hasEgressAddr := dbSettings["egress_proxy_addr"]
+	cfg.EgressProxy.Addr = config.ResolveSetting(envEgressAddr, dbEgressAddr, hasEgressAddr, cfg.EgressProxy.Addr)
+
+	envEgressUser := os.Getenv("EGRESS_PROXY_USER")
+	dbEgressUser, hasEgressUser := dbSettings["egress_proxy_user"]
+	cfg.EgressProxy.User = config.ResolveSetting(envEgressUser, dbEgressUser, hasEgressUser, cfg.EgressProxy.User)
+
+	envEgressPass := os.Getenv("EGRESS_PROXY_PASSWORD")
+	dbEgressPass, hasEgressPass := dbSettings["egress_proxy_password"]
+	cfg.EgressProxy.Password = config.ResolveSetting(envEgressPass, dbEgressPass, hasEgressPass, cfg.EgressProxy.Password)
 
 	slog.Info("tls-relay starting",
 		"listen_addr", cfg.Listen.Addr,
@@ -263,7 +319,18 @@ func run(cfgPath string) error {
 	panelSrv.SetRequestLogger(reqLogger)
 	panelSrv.SetLimitTracker(limits)
 	panelSrv.SetEgressDialer(egressDialer)
+	panelSrv.SetPortAllowList(allowList)
+	panelSrv.SetListenPorts(cfg.Listen.Ports)
+	panelSrv.SetListenHTTPPorts(cfg.Listen.HTTPPorts)
 	_ = panelSrv.SetTimezone(cfg.Timezone)
+
+	restartCh := make(chan struct{}, 1)
+	panelSrv.SetRestartHandler(func() {
+		select {
+		case restartCh <- struct{}{}:
+		default:
+		}
+	})
 
 	// -----------------------------------------------------------------------
 	// Build Public Portal Service and embed its routes into the panel mux.
@@ -375,6 +442,8 @@ func run(cfgPath string) error {
 	select {
 	case sig := <-sigCh:
 		slog.Info("received signal, shutting down", "signal", sig.String())
+	case <-restartCh:
+		slog.Info("received restart request via admin panel, performing graceful restart")
 	case listenerErr = <-errs:
 		slog.Error("listener error", "error", listenerErr)
 	}
@@ -441,4 +510,45 @@ func parseDurationWithDays(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration must be positive")
 	}
 	return dur, nil
+}
+
+func handleInitAdmin(cfgPath, username, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = "admin"
+	}
+	password = strings.TrimSpace(password)
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
+	if len(password) < 6 {
+		return fmt.Errorf("password must be at least 6 characters")
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	sqlStore, err := sqlitestore.New(cfg.SQLite.Path)
+	if err != nil {
+		return fmt.Errorf("opening SQLite database at %q: %w", cfg.SQLite.Path, err)
+	}
+	defer sqlStore.Close()
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+
+	ctx := context.Background()
+	if err := sqlStore.SetSetting(ctx, "panel_admin_user", username); err != nil {
+		return fmt.Errorf("saving admin user: %w", err)
+	}
+	if err := sqlStore.SetSetting(ctx, "panel_admin_password_hash", string(hash)); err != nil {
+		return fmt.Errorf("saving admin password hash: %w", err)
+	}
+
+	fmt.Printf("Admin credentials initialized successfully for user: %s\n", username)
+	return nil
 }

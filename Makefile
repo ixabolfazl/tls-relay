@@ -22,10 +22,10 @@ build-linux-arm64:
 ## package: package linux release tarballs
 package: build-linux build-linux-arm64
 	@mkdir -p dist
-	@cp $(BINARY)-linux-amd64 dist/$(BINARY) && cp config.yaml .env.example tls-relay.service tls-relay.sh dist/
-	@tar -czvf tls-relay-linux-amd64.tar.gz -C dist $(BINARY) config.yaml .env.example tls-relay.service tls-relay.sh
+	@cp $(BINARY)-linux-amd64 dist/$(BINARY) && cp config.yaml tls-relay.service tls-relay.sh dist/
+	@tar -czvf tls-relay-linux-amd64.tar.gz -C dist $(BINARY) config.yaml tls-relay.service tls-relay.sh
 	@cp $(BINARY)-linux-arm64 dist/$(BINARY)
-	@tar -czvf tls-relay-linux-arm64.tar.gz -C dist $(BINARY) config.yaml .env.example tls-relay.service tls-relay.sh
+	@tar -czvf tls-relay-linux-arm64.tar.gz -C dist $(BINARY) config.yaml tls-relay.service tls-relay.sh
 	@rm -rf dist
 	@sha256sum tls-relay-linux-amd64.tar.gz > tls-relay-linux-amd64.tar.gz.sha256
 	@sha256sum tls-relay-linux-arm64.tar.gz > tls-relay-linux-arm64.tar.gz.sha256

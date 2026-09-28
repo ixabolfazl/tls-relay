@@ -6,25 +6,66 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync"
 )
 
-// PortAllowList is an immutable set of destination ports that the relay is
+// PortAllowList is a thread-safe set of destination ports that the relay is
 // permitted to forward to.
-type PortAllowList map[int]struct{}
+type PortAllowList struct {
+	mu    sync.RWMutex
+	ports map[int]struct{}
+	list  []int
+}
 
 // NewPortAllowList constructs an allow-list from a slice of port numbers.
-func NewPortAllowList(ports []int) PortAllowList {
-	m := make(PortAllowList, len(ports))
-	for _, p := range ports {
-		m[p] = struct{}{}
-	}
-	return m
+func NewPortAllowList(ports []int) *PortAllowList {
+	pal := &PortAllowList{}
+	pal.SetPorts(ports)
+	return pal
 }
 
 // Allowed returns true if the port is in the allow-list.
-func (pal PortAllowList) Allowed(port int) bool {
-	_, ok := pal[port]
+func (pal *PortAllowList) Allowed(port int) bool {
+	if pal == nil {
+		return false
+	}
+	pal.mu.RLock()
+	defer pal.mu.RUnlock()
+	_, ok := pal.ports[port]
 	return ok
+}
+
+// SetPorts updates the allowed ports dynamically at runtime.
+func (pal *PortAllowList) SetPorts(ports []int) {
+	if pal == nil {
+		return
+	}
+	m := make(map[int]struct{}, len(ports))
+	list := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p > 0 && p <= 65535 {
+			if _, exists := m[p]; !exists {
+				m[p] = struct{}{}
+				list = append(list, p)
+			}
+		}
+	}
+	pal.mu.Lock()
+	pal.ports = m
+	pal.list = list
+	pal.mu.Unlock()
+}
+
+// Ports returns a copy of the currently allowed destination ports.
+func (pal *PortAllowList) Ports() []int {
+	if pal == nil {
+		return nil
+	}
+	pal.mu.RLock()
+	defer pal.mu.RUnlock()
+	out := make([]int, len(pal.list))
+	copy(out, pal.list)
+	return out
 }
 
 // -----------------------------------------------------------------------

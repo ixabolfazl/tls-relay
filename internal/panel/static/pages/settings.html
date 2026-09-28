@@ -108,9 +108,154 @@
     </div>
     <div id="settings-limits-msg" class="alert settings-margin-top-md hidden"></div>
   </div>
+
+  <!-- Admin Credentials Card -->
+  <div class="card">
+    <div class="card-header">
+      <h3>Admin Credentials</h3>
+      <p class="card-desc">Change the administrator username and password. Changes take effect immediately.</p>
+    </div>
+    <form id="admin-credentials-form">
+      <div class="form-group">
+        <label for="admin-current-pass">Current Password <span class="text-danger">*</span></label>
+        <input type="password" id="admin-current-pass" placeholder="Enter current admin password" required autocomplete="current-password" />
+      </div>
+      <div class="form-group settings-margin-top-sm">
+        <label for="admin-new-user">Admin Username</label>
+        <input type="text" id="admin-new-user" placeholder="admin" autocomplete="username" />
+        <span class="form-hint">Leave blank to keep the current username.</span>
+      </div>
+      <div class="form-group settings-margin-top-sm">
+        <label for="admin-new-pass">New Password <span class="text-danger">*</span></label>
+        <input type="password" id="admin-new-pass" placeholder="At least 6 characters" required autocomplete="new-password" minlength="6" />
+      </div>
+      <div class="form-group settings-margin-top-sm">
+        <label for="admin-confirm-pass">Confirm New Password <span class="text-danger">*</span></label>
+        <input type="password" id="admin-confirm-pass" placeholder="Repeat new password" required autocomplete="new-password" minlength="6" />
+      </div>
+      <div class="form-actions settings-margin-top-md">
+        <button type="submit" class="btn btn-primary" id="admin-credentials-save-btn">Update Admin Credentials</button>
+      </div>
+    </form>
+    <div id="admin-credentials-msg" class="alert settings-margin-top-md hidden"></div>
+  </div>
 </div>
 
-<!-- 2. General Group -->
+<!-- 2. Network & Ports Group -->
+<h2 class="settings-section-heading">🌐 Network &amp; Ports</h2>
+<div class="settings-cards-grid">
+  <!-- Allowed Destination Ports Card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="d-flex align-center justify-between">
+        <h3>Allowed Destination Ports</h3>
+        <span class="badge badge-success">Hot-Reloadable</span>
+      </div>
+      <p class="card-desc">Permitted target ports for relayed connections (when policy is "Allow" or rule uses "all"). Takes effect immediately without restarting.</p>
+    </div>
+    <div class="form-group">
+      <label for="settings-allowed-ports">Permitted Ports (comma-separated)</label>
+      <input type="text" id="settings-allowed-ports" placeholder="e.g. 443, 8443, 2053, 2083, 2087, 2096, 9443" />
+      <div class="settings-retention-presets-wrap settings-margin-top-sm" id="port-presets">
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="443">+ 443 (HTTPS)</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="80">+ 80 (HTTP)</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="8443">+ 8443</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="2053">+ 2053</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="2083">+ 2083</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="2087">+ 2087</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="2096">+ 2096</button>
+        <button type="button" class="btn btn-secondary btn-xs port-preset-btn" data-port="9443">+ 9443</button>
+      </div>
+      <span class="form-hint">Connections targeting any port not in this list are rejected immediately. Default: <code>443, 8443, 2053, 2083, 2087, 2096, 9443</code>.</span>
+    </div>
+    <div class="form-actions settings-margin-top-lg">
+      <button class="btn btn-primary" id="settings-allowed-ports-save-btn">Save Allowed Ports</button>
+    </div>
+    <div id="settings-allowed-ports-msg" class="alert settings-margin-top-md hidden"></div>
+  </div>
+
+  <!-- Server Listen Ports Card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="d-flex align-center justify-between">
+        <h3>Server Listen Ports</h3>
+        <span class="badge badge-warning">Requires Restart</span>
+      </div>
+      <p class="card-desc">Local network ports bound by the relay server. Changing these ports requires restarting the service to take effect.</p>
+    </div>
+    <div class="form-group">
+      <label for="settings-listen-ports">TLS Listen Ports (comma-separated)</label>
+      <input type="text" id="settings-listen-ports" placeholder="e.g. 443" />
+      <span class="form-hint">Port(s) where TLS SNI relay listens for incoming client connections (default: <code>443</code>).</span>
+    </div>
+    <div class="form-group settings-margin-top-md">
+      <label for="settings-listen-http-ports">HTTP / Panel Listen Ports</label>
+      <input type="text" id="settings-listen-http-ports" placeholder="e.g. 80" />
+      <span class="form-hint">Port(s) for HTTP relay, portal landing page, and admin panel dispatch (default: <code>80</code>).</span>
+    </div>
+    <div class="form-actions settings-margin-top-lg">
+      <button class="btn btn-primary" id="settings-listen-ports-save-btn">Save Listen Ports</button>
+    </div>
+    <div id="settings-listen-ports-msg" class="alert settings-margin-top-md hidden"></div>
+  </div>
+</div>
+
+<!-- 3. Outbound SOCKS5 Proxy Group -->
+<h2 class="settings-section-heading">🚀 Outbound SOCKS5 Proxy</h2>
+<div class="settings-cards-grid">
+  <div class="card">
+    <div class="card-header">
+      <div class="d-flex align-center justify-between">
+        <h3>Egress SOCKS5 Proxy Settings</h3>
+        <span class="badge badge-success">Hot-Reloadable</span>
+      </div>
+      <p class="card-desc">Route outbound traffic through an external SOCKS5 proxy. Can be enabled globally or per domain rule. Takes effect immediately.</p>
+    </div>
+    <div class="form-group">
+      <label>Global Proxy Status</label>
+      <div class="radio-group settings-margin-top-sm" id="settings-proxy-status-control">
+        <label class="radio-label">
+          <input type="radio" name="settings-proxy-radio" value="true" />
+          <span>Enabled (Active)</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="settings-proxy-radio" value="false" checked />
+          <span>Disabled (Direct Outbound)</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group settings-margin-top-md">
+      <label for="settings-proxy-addr">Proxy Server Address <span class="text-danger">*</span></label>
+      <input type="text" id="settings-proxy-addr" placeholder="e.g. 127.0.0.1:1080 or socks.example.com:1080" />
+      <span class="form-hint">IP address or hostname and port of the SOCKS5 proxy server.</span>
+    </div>
+
+    <div class="form-group settings-margin-top-md">
+      <label for="settings-proxy-user">Username (Optional)</label>
+      <input type="text" id="settings-proxy-user" placeholder="Proxy username (if required)" autocomplete="off" />
+    </div>
+
+    <div class="form-group settings-margin-top-md">
+      <label for="settings-proxy-password">Password (Optional)</label>
+      <input type="password" id="settings-proxy-password" placeholder="••••••••" autocomplete="new-password" />
+      <span class="form-hint" id="settings-proxy-password-hint">Leave blank to keep existing password.</span>
+    </div>
+
+    <div class="form-actions settings-margin-top-lg gap-sm">
+      <button class="btn btn-primary" id="settings-proxy-save-btn">Save Proxy Settings</button>
+      <button class="btn btn-secondary" id="settings-proxy-test-btn" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+        Test Connection
+      </button>
+    </div>
+    <div id="settings-proxy-msg" class="alert settings-margin-top-md hidden"></div>
+  </div>
+</div>
+
+<!-- 4. General Group -->
 <h2 class="settings-section-heading">⚙️ General</h2>
 <div class="settings-cards-grid">
   <!-- Timezone Card -->
@@ -182,7 +327,42 @@
   </div>
 </div>
 
-<!-- 3. Logging Group -->
+<!-- 5. Service Control Group -->
+<h2 class="settings-section-heading">⚡ Service Control</h2>
+<div class="settings-cards-grid">
+  <div class="card">
+    <div class="card-header">
+      <div class="d-flex align-center justify-between">
+        <h3>Service Management</h3>
+        <span class="status-badge status-active">● Active</span>
+      </div>
+      <p class="card-desc">Control and restart the TLS Relay background service safely from the console.</p>
+    </div>
+    <div class="form-group">
+      <label>Service Uptime</label>
+      <div class="settings-panel-addr-wrap">
+        <code id="service-uptime-badge" class="code-badge">—</code>
+        <span class="form-hint">Uptime since last service start.</span>
+      </div>
+    </div>
+    <div class="form-group settings-margin-top-md">
+      <p class="text-muted-secondary">
+        Restarting the service reloads all configuration files and binds newly configured listen ports. The process performs a graceful handover and automatically recovers within <strong>2 seconds</strong>.
+      </p>
+    </div>
+    <div class="form-actions settings-margin-top-lg">
+      <button class="btn btn-warning" id="settings-restart-service-btn" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+        </svg>
+        Restart Service
+      </button>
+    </div>
+    <div id="settings-restart-msg" class="alert settings-margin-top-md hidden"></div>
+  </div>
+</div>
+
+<!-- 6. Logging Group -->
 <h2 class="settings-section-heading">📜 Logging</h2>
 <div class="settings-cards-grid">
   <!-- Request Logging Settings Card -->
@@ -231,7 +411,7 @@
   </div>
 </div>
 
-<!-- 4. Backup & Data Group -->
+<!-- 7. Backup & Data Group -->
 <h2 class="settings-section-heading">💾 Backup &amp; Data</h2>
 <div class="settings-cards-grid-3">
   <!-- Backup, Export & Import Settings -->
@@ -266,7 +446,7 @@
           stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
           <polyline points="17 21 17 13 7 13 7 21"></polyline>
-          <polyline points="7 3 7 8 15 8"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
         </svg>
         Download Database Backup (.db)
       </button>
@@ -309,6 +489,32 @@
     <div class="form-actions gap-sm">
       <button class="btn btn-secondary" id="path-modal-cancel">Cancel</button>
       <button class="btn btn-primary" id="path-modal-confirm">Apply &amp; Redirect</button>
+    </div>
+  </div>
+</div>
+
+<!-- Service Restart Confirmation & Progress Modal -->
+<div id="service-restart-modal" class="modal-overlay hidden">
+  <div class="modal-card modal-confirm-width">
+    <div class="custom-modal-icon text-warning">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+      </svg>
+    </div>
+    <div class="card-header" id="restart-modal-content">
+      <h3>Restart TLS Relay Service?</h3>
+      <p class="card-desc settings-margin-top-sm">
+        The server will initiate a graceful shutdown and restart automatically via systemd. Active connections will finish cleanly. Service will be back in ~2-3 seconds.
+      </p>
+      <div class="form-actions modal-confirm-actions gap-sm settings-margin-top-lg">
+        <button type="button" class="btn btn-secondary" id="service-restart-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-warning" id="service-restart-confirm-btn">Yes, Restart Now</button>
+      </div>
+    </div>
+    <div id="restart-modal-progress" class="hidden text-center py-4">
+      <div class="spinner spinner-lg m-auto"></div>
+      <h4 class="settings-margin-top-md" id="restart-countdown-title">Restarting service...</h4>
+      <p class="text-muted-secondary text-sm" id="restart-countdown-desc">Reconnecting in <strong id="restart-countdown-timer">4</strong>s...</p>
     </div>
   </div>
 </div>

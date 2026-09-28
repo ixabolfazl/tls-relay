@@ -100,12 +100,25 @@ get_public_ip() {
     echo ""
 }
 
-# Read env variable safely
+# Read env variable safely (legacy fallback)
 get_env_val() {
     local key="$1"
     if [[ -f "${ENV_FILE}" ]]; then
         grep -E "^${key}=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'"
     fi
+}
+
+# Read config.yaml value safely
+get_config_val() {
+    local key="$1"
+    grep -E "^[[:space:]]*${key}:" "${CONFIG_FILE}" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'"
+}
+
+# Get panel path from config.yaml
+get_panel_path() {
+    local p
+    p=$(sed -n '/^panel:/,/^[a-zA-Z]/p' "${CONFIG_FILE}" 2>/dev/null | grep -E '^[[:space:]]*path:' | awk '{print $2}' | tr -d '"' | tr -d "'")
+    echo "${p:-/admin}"
 }
 
 # Generate secure random string
@@ -143,13 +156,14 @@ show_status() {
     fi
 
     local pub_ip
-    pub_ip=$(get_env_val "RELAY_IP")
+    pub_ip=$(get_config_val "relay_ip")
+    [[ -z "${pub_ip}" ]] && pub_ip=$(get_env_val "RELAY_IP")
     [[ -z "${pub_ip}" ]] && pub_ip=$(get_public_ip)
     local admin_path
-    admin_path=$(get_env_val "PANEL_PATH")
-    [[ -z "${admin_path}" ]] && admin_path="/admin"
+    admin_path=$(get_panel_path)
     local access_mode
-    access_mode=$(get_env_val "ACCESS_MODE")
+    access_mode=$(get_config_val "access_mode")
+    [[ -z "${access_mode}" ]] && access_mode=$(get_env_val "ACCESS_MODE")
     [[ -z "${access_mode}" ]] && access_mode="user"
 
     echo -e "Public IP      : ${BOLD}${pub_ip:-Unknown}${NC}"
@@ -207,22 +221,16 @@ view_logs() {
 # View & reset admin credentials
 manage_credentials() {
     echo -e "\n${BOLD}${CYAN}=== Admin Panel Credentials ===${NC}"
-    local curr_user curr_pass
-    curr_user=$(get_env_val "PANEL_ADMIN_USER")
-    curr_pass=$(get_env_val "PANEL_ADMIN_PASSWORD")
-    local panel_path
-    panel_path=$(get_env_val "PANEL_PATH")
-    [[ -z "${panel_path}" ]] && panel_path="/admin"
-    local pub_ip
-    pub_ip=$(get_env_val "RELAY_IP")
+    local admin_path pub_ip
+    admin_path=$(get_panel_path)
+    pub_ip=$(get_config_val "relay_ip")
     [[ -z "${pub_ip}" ]] && pub_ip=$(get_public_ip)
 
-    echo -e "Admin Panel URL: ${BOLD}${GREEN}http://${pub_ip}${panel_path}${NC}"
-    echo -e "Current User   : ${GREEN}${curr_user:-admin}${NC}"
-    echo -e "Current Pass   : ${YELLOW}${curr_pass:-(not set)}${NC}"
-    echo -e "Login Path     : ${CYAN}${panel_path}${NC}"
+    echo -e "Admin Panel URL: ${BOLD}${GREEN}http://${pub_ip}${admin_path}${NC}"
+    echo -e "Login Path     : ${CYAN}${admin_path}${NC}"
+    echo -e "Credentials    : Stored securely in SQLite database (bcrypt hash)"
     echo ""
-    echo -e "1) Reset with random password"
+    echo -e "1) Reset admin password with random secure password"
     echo -e "2) Set custom username and password"
     echo -e "3) Reset Admin Login Path (generate random secret URL)"
     echo -e "4) Set custom Admin Login Path"
@@ -234,45 +242,26 @@ manage_credentials() {
         1)
             local new_pass
             new_pass=$(gen_random_password 16)
-            sed -i "s/^PANEL_ADMIN_PASSWORD=.*/PANEL_ADMIN_PASSWORD=${new_pass}/" "${ENV_FILE}"
-            echo -e "${GREEN}✓ Password updated to:${NC} ${BOLD}${new_pass}${NC}"
-            read -rp "Restart service now to apply? (Y/n): " ans
-            if [[ "${ans,,}" != "n" ]]; then
-                restart_service
-            fi
+            echo -e "${CYAN}Applying new password to database...${NC}"
+            "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" -init-admin -user "admin" -pass "${new_pass}"
+            echo -e "${GREEN}✓ Admin password reset for user 'admin':${NC} ${BOLD}${new_pass}${NC}"
             ;;
         2)
-            read -rp "Enter new admin username [default: admin]: " new_user
+            read -rp "Enter admin username [default: admin]: " new_user
             new_user="${new_user:-admin}"
             read -rp "Enter new admin password: " new_pass
             if [[ -z "${new_pass}" ]]; then
                 echo -e "${RED}Password cannot be empty.${NC}"
                 return
             fi
-            if grep -q "^PANEL_ADMIN_USER=" "${ENV_FILE}"; then
-                sed -i "s/^PANEL_ADMIN_USER=.*/PANEL_ADMIN_USER=${new_user}/" "${ENV_FILE}"
-            else
-                echo "PANEL_ADMIN_USER=${new_user}" >> "${ENV_FILE}"
-            fi
-            if grep -q "^PANEL_ADMIN_PASSWORD=" "${ENV_FILE}"; then
-                sed -i "s/^PANEL_ADMIN_PASSWORD=.*/PANEL_ADMIN_PASSWORD=${new_pass}/" "${ENV_FILE}"
-            else
-                echo "PANEL_ADMIN_PASSWORD=${new_pass}" >> "${ENV_FILE}"
-            fi
-            echo -e "${GREEN}✓ Credentials updated.${NC}"
-            read -rp "Restart service now to apply? (Y/n): " ans
-            if [[ "${ans,,}" != "n" ]]; then
-                restart_service
-            fi
+            echo -e "${CYAN}Applying credentials to database...${NC}"
+            "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" -init-admin -user "${new_user}" -pass "${new_pass}"
+            echo -e "${GREEN}✓ Credentials updated in database for user '${new_user}'.${NC}"
             ;;
         3)
             local rand_path
             rand_path="/$(gen_random_password 8)"
-            if grep -q "^PANEL_PATH=" "${ENV_FILE}"; then
-                sed -i "s|^PANEL_PATH=.*|PANEL_PATH=${rand_path}|" "${ENV_FILE}"
-            else
-                echo "PANEL_PATH=${rand_path}" >> "${ENV_FILE}"
-            fi
+            sed -i -E '/^panel:/,/^[a-zA-Z]/ s|^([[:space:]]*path:).*|\1 "'"${rand_path}"'"|' "${CONFIG_FILE}"
             echo -e "${GREEN}✓ Admin Login Path updated to:${NC} ${BOLD}${rand_path}${NC}"
             echo -e "New Panel URL: ${BOLD}http://${pub_ip}${rand_path}${NC}"
             read -rp "Restart service now to apply? (Y/n): " ans
@@ -287,11 +276,7 @@ manage_credentials() {
                 return
             fi
             [[ "${custom_path:0:1}" != "/" ]] && custom_path="/${custom_path}"
-            if grep -q "^PANEL_PATH=" "${ENV_FILE}"; then
-                sed -i "s|^PANEL_PATH=.*|PANEL_PATH=${custom_path}|" "${ENV_FILE}"
-            else
-                echo "PANEL_PATH=${custom_path}" >> "${ENV_FILE}"
-            fi
+            sed -i -E '/^panel:/,/^[a-zA-Z]/ s|^([[:space:]]*path:).*|\1 "'"${custom_path}"'"|' "${CONFIG_FILE}"
             echo -e "${GREEN}✓ Admin Login Path updated to:${NC} ${BOLD}${custom_path}${NC}"
             echo -e "New Panel URL: ${BOLD}http://${pub_ip}${custom_path}${NC}"
             read -rp "Restart service now to apply? (Y/n): " ans
@@ -309,7 +294,7 @@ manage_credentials() {
 change_access_mode() {
     echo -e "\n${BOLD}${CYAN}=== Change Access Mode ===${NC}"
     local curr_mode
-    curr_mode=$(get_env_val "ACCESS_MODE")
+    curr_mode=$(get_config_val "access_mode")
     [[ -z "${curr_mode}" ]] && curr_mode="user"
     echo -e "Current mode: ${BOLD}${curr_mode}${NC}\n"
     echo -e "1) ${BOLD}user${NC}   - Only clients registered via Magic Link can relay and resolve DNS (Recommended, secure)"
@@ -320,87 +305,32 @@ change_access_mode() {
 
     case "${m_choice}" in
         1)
-            sed -i "s/^ACCESS_MODE=.*/ACCESS_MODE=user/" "${ENV_FILE}"
-            echo -e "${GREEN}✓ Access mode set to 'user'.${NC}"
+            sed -i -E "s|^([[:space:]]*access_mode:).*|\1 \"user\"|" "${CONFIG_FILE}"
+            echo -e "${GREEN}✓ Access mode set to 'user' in config.yaml.${NC}"
             restart_service
             ;;
         2)
-            sed -i "s/^ACCESS_MODE=.*/ACCESS_MODE=public/" "${ENV_FILE}"
-            echo -e "${GREEN}✓ Access mode set to 'public'.${NC}"
+            sed -i -E "s|^([[:space:]]*access_mode:).*|\1 \"public\"|" "${CONFIG_FILE}"
+            echo -e "${GREEN}✓ Access mode set to 'public' in config.yaml.${NC}"
             restart_service
             ;;
         *)
             return
             ;;
     esac
-}
-
-# Helper to set or replace key in .env
-set_or_replace_env() {
-    local k="$1"
-    local v="$2"
-    if grep -q "^${k}=" "${ENV_FILE}" 2>/dev/null; then
-        sed -i "s|^${k}=.*|${k}=${v}|" "${ENV_FILE}"
-    else
-        echo "${k}=${v}" >> "${ENV_FILE}"
-    fi
 }
 
 # Configure Outbound SOCKS5 Proxy
 manage_proxy() {
     echo -e "\n${BOLD}${CYAN}=== Outbound SOCKS5 Egress Proxy ===${NC}"
-    local p_enabled p_addr p_user p_pass
-    p_enabled=$(get_env_val "EGRESS_PROXY_ENABLED")
-    [[ -z "${p_enabled}" ]] && p_enabled="false"
-    p_addr=$(get_env_val "EGRESS_PROXY_ADDR")
-    [[ -z "${p_addr}" ]] && p_addr="127.0.0.1:1080"
-    p_user=$(get_env_val "EGRESS_PROXY_USER")
-    p_pass=$(get_env_val "EGRESS_PROXY_PASSWORD")
-
-    if [[ "${p_enabled}" == "true" ]]; then
-        echo -e "Proxy Status  : ${GREEN}ENABLED${NC}"
-    else
-        echo -e "Proxy Status  : ${YELLOW}DISABLED (Direct Outbound)${NC}"
-    fi
-    echo -e "Proxy Address : ${BOLD}${p_addr}${NC}"
-    echo -e "Proxy User    : ${p_user:-[none]}"
-    echo ""
-    echo -e "1) Enable / Update SOCKS5 Proxy"
-    echo -e "2) Disable SOCKS5 Proxy (Direct Outbound)"
-    echo -e "0) Return to menu"
-    echo ""
-    read -rp "Select option [0-2]: " p_choice
-
-    case "${p_choice}" in
-        1)
-            read -rp "Enter SOCKS5 Proxy Address [default: ${p_addr}]: " new_addr
-            new_addr="${new_addr:-$p_addr}"
-            read -rp "Enter SOCKS5 Username (optional, press Enter if none): " new_user
-            read -rp "Enter SOCKS5 Password (optional, press Enter if none): " new_pass
-
-            set_or_replace_env "EGRESS_PROXY_ENABLED" "true"
-            set_or_replace_env "EGRESS_PROXY_ADDR" "${new_addr}"
-            set_or_replace_env "EGRESS_PROXY_USER" "${new_user}"
-            set_or_replace_env "EGRESS_PROXY_PASSWORD" "${new_pass}"
-
-            echo -e "${GREEN}✓ Outbound SOCKS5 proxy enabled: ${BOLD}${new_addr}${NC}"
-            read -rp "Restart service now to apply? (Y/n): " ans
-            if [[ "${ans,,}" != "n" ]]; then
-                restart_service
-            fi
-            ;;
-        2)
-            set_or_replace_env "EGRESS_PROXY_ENABLED" "false"
-            echo -e "${GREEN}✓ Outbound SOCKS5 proxy disabled.${NC}"
-            read -rp "Restart service now to apply? (Y/n): " ans
-            if [[ "${ans,,}" != "n" ]]; then
-                restart_service
-            fi
-            ;;
-        *)
-            return
-            ;;
-    esac
+    echo -e "Outbound SOCKS5 Proxy is now dynamically managed directly from the Web Admin Panel!"
+    echo -e "You can configure proxy host, port, credentials, and run live connectivity tests"
+    echo -e "with zero downtime under the Settings tab."
+    local admin_path pub_ip
+    admin_path=$(get_panel_path)
+    pub_ip=$(get_config_val "relay_ip")
+    [[ -z "${pub_ip}" ]] && pub_ip=$(get_public_ip)
+    echo -e "\nOpen in your browser: ${BOLD}${GREEN}http://${pub_ip}${admin_path}${NC} -> ${CYAN}Settings${NC}"
 }
 
 # Firewall port configuration

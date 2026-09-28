@@ -1,10 +1,12 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,14 @@ type settingsResponse struct {
 	MaxConnectionsPerIP        int    `json:"max_connections_per_ip"`
 	DNSUnauthorizedPassthrough bool   `json:"dns_unauthorized_passthrough"`
 	EgressProxyEnabled         bool   `json:"egress_proxy_enabled"`
+	EgressProxyAddr            string `json:"egress_proxy_addr"`
+	EgressProxyUser            string `json:"egress_proxy_user"`
+	EgressProxyHasPassword     bool   `json:"egress_proxy_has_password"`
+	AllowedDestPorts           []int  `json:"allowed_dest_ports"`
+	ListenPorts                []int  `json:"listen_ports"`
+	ListenHTTPPorts            []int  `json:"listen_http_ports"`
+	AdminUsername              string `json:"admin_username"`
+	UptimeSeconds              int64  `json:"uptime_seconds"`
 }
 
 func parseDurationWithDays(s string) (time.Duration, error) {
@@ -84,6 +94,13 @@ func (s *Server) currentSettings() settingsResponse {
 	maxConn := 200
 	dnsPassthrough := false
 	egressEnabled := false
+	proxyAddr := ""
+	proxyUser := ""
+	proxyHasPass := false
+	allowedPorts := []int{443, 8443, 2053, 2083, 2087, 2096, 9443}
+	listenPorts := []int{443}
+	listenHTTPPorts := []int{80}
+
 	s.mu.RLock()
 	if s.reqLogger != nil {
 		reqEnabled = s.reqLogger.IsEnabled()
@@ -96,8 +113,27 @@ func (s *Server) currentSettings() settingsResponse {
 		dnsPassthrough = s.dnsServer.UnauthorizedPassthroughEnabled()
 	}
 	if s.egressDialer != nil {
-		egressEnabled = s.egressDialer.Enabled()
+		cfg := s.egressDialer.Config()
+		egressEnabled = cfg.Enabled
+		proxyAddr = cfg.Addr
+		proxyUser = cfg.User
+		proxyHasPass = cfg.Password != ""
 	}
+	if s.allowList != nil {
+		allowedPorts = s.allowList.Ports()
+	} else if s.ruleStore != nil {
+		allowedPorts = s.ruleStore.GlobalPorts()
+	}
+	if len(s.listenPorts) > 0 {
+		listenPorts = make([]int, len(s.listenPorts))
+		copy(listenPorts, s.listenPorts)
+	}
+	if len(s.listenHTTPPorts) > 0 {
+		listenHTTPPorts = make([]int, len(s.listenHTTPPorts))
+		copy(listenHTTPPorts, s.listenHTTPPorts)
+	}
+	username := s.username
+	uptime := int64(time.Since(s.startTime).Seconds())
 	s.mu.RUnlock()
 
 	return settingsResponse{
@@ -112,6 +148,14 @@ func (s *Server) currentSettings() settingsResponse {
 		MaxConnectionsPerIP:        maxConn,
 		DNSUnauthorizedPassthrough: dnsPassthrough,
 		EgressProxyEnabled:         egressEnabled,
+		EgressProxyAddr:            proxyAddr,
+		EgressProxyUser:            proxyUser,
+		EgressProxyHasPassword:     proxyHasPass,
+		AllowedDestPorts:           allowedPorts,
+		ListenPorts:                listenPorts,
+		ListenHTTPPorts:            listenHTTPPorts,
+		AdminUsername:              username,
+		UptimeSeconds:              uptime,
 	}
 }
 
@@ -129,6 +173,13 @@ type updateSettingsRequest struct {
 	RequestLogsRetention       *string `json:"request_logs_retention,omitempty"`
 	MaxConnectionsPerIP        *int    `json:"max_connections_per_ip,omitempty"`
 	DNSUnauthorizedPassthrough *bool   `json:"dns_unauthorized_passthrough_enabled,omitempty"`
+	EgressProxyEnabled         *bool   `json:"egress_proxy_enabled,omitempty"`
+	EgressProxyAddr            *string `json:"egress_proxy_addr,omitempty"`
+	EgressProxyUser            *string `json:"egress_proxy_user,omitempty"`
+	EgressProxyPassword        *string `json:"egress_proxy_password,omitempty"`
+	AllowedDestPorts           *[]int  `json:"allowed_dest_ports,omitempty"`
+	ListenPorts                *[]int  `json:"listen_ports,omitempty"`
+	ListenHTTPPorts            *[]int  `json:"listen_http_ports,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -328,5 +379,189 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		slog.Info("dns_unauthorized_passthrough_enabled updated via admin panel", "enabled", enabled, "remote_addr", r.RemoteAddr)
 	}
 
+	if req.AllowedDestPorts != nil {
+		if len(*req.AllowedDestPorts) == 0 {
+			jsonErr(w, "allowed_dest_ports cannot be empty", http.StatusBadRequest)
+			return
+		}
+		for _, p := range *req.AllowedDestPorts {
+			if p <= 0 || p > 65535 {
+				jsonErr(w, fmt.Sprintf("invalid port %d: must be between 1 and 65535", p), http.StatusBadRequest)
+				return
+			}
+		}
+		portsJSON, _ := json.Marshal(*req.AllowedDestPorts)
+		if s.sqlStore != nil {
+			if err := s.sqlStore.SetSetting(r.Context(), "allowed_dest_ports", string(portsJSON)); err != nil {
+				slog.Error("failed to persist allowed_dest_ports", "error", err)
+			}
+		}
+		s.mu.RLock()
+		if s.allowList != nil {
+			s.allowList.SetPorts(*req.AllowedDestPorts)
+		}
+		if s.ruleStore != nil {
+			s.ruleStore.SetGlobalPorts(*req.AllowedDestPorts)
+		}
+		s.mu.RUnlock()
+		slog.Info("allowed_dest_ports updated via admin panel", "ports", *req.AllowedDestPorts, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.ListenPorts != nil {
+		if len(*req.ListenPorts) == 0 {
+			jsonErr(w, "listen_ports cannot be empty", http.StatusBadRequest)
+			return
+		}
+		for _, p := range *req.ListenPorts {
+			if p <= 0 || p > 65535 {
+				jsonErr(w, fmt.Sprintf("invalid listen port %d", p), http.StatusBadRequest)
+				return
+			}
+		}
+		portsJSON, _ := json.Marshal(*req.ListenPorts)
+		if s.sqlStore != nil {
+			_ = s.sqlStore.SetSetting(r.Context(), "listen_ports", string(portsJSON))
+		}
+		s.SetListenPorts(*req.ListenPorts)
+		slog.Info("listen_ports updated via admin panel", "ports", *req.ListenPorts, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.ListenHTTPPorts != nil {
+		if len(*req.ListenHTTPPorts) == 0 {
+			jsonErr(w, "listen_http_ports cannot be empty", http.StatusBadRequest)
+			return
+		}
+		for _, p := range *req.ListenHTTPPorts {
+			if p <= 0 || p > 65535 {
+				jsonErr(w, fmt.Sprintf("invalid listen http port %d", p), http.StatusBadRequest)
+				return
+			}
+		}
+		portsJSON, _ := json.Marshal(*req.ListenHTTPPorts)
+		if s.sqlStore != nil {
+			_ = s.sqlStore.SetSetting(r.Context(), "listen_http_ports", string(portsJSON))
+		}
+		s.SetListenHTTPPorts(*req.ListenHTTPPorts)
+		slog.Info("listen_http_ports updated via admin panel", "ports", *req.ListenHTTPPorts, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.EgressProxyEnabled != nil || req.EgressProxyAddr != nil || req.EgressProxyUser != nil || req.EgressProxyPassword != nil {
+		s.mu.RLock()
+		ed := s.egressDialer
+		s.mu.RUnlock()
+
+		if ed != nil {
+			cfg := ed.Config()
+			if req.EgressProxyEnabled != nil {
+				cfg.Enabled = *req.EgressProxyEnabled
+			}
+			if req.EgressProxyAddr != nil {
+				cfg.Addr = strings.TrimSpace(*req.EgressProxyAddr)
+			}
+			if req.EgressProxyUser != nil {
+				cfg.User = strings.TrimSpace(*req.EgressProxyUser)
+			}
+			if req.EgressProxyPassword != nil && *req.EgressProxyPassword != "" {
+				cfg.Password = *req.EgressProxyPassword
+			}
+
+			if cfg.Enabled && cfg.Addr == "" {
+				jsonErr(w, "proxy address cannot be empty when egress proxy is enabled", http.StatusBadRequest)
+				return
+			}
+
+			if err := ed.UpdateConfig(cfg); err != nil {
+				jsonErr(w, fmt.Sprintf("failed to update egress proxy: %v", err), http.StatusBadRequest)
+				return
+			}
+
+			if s.sqlStore != nil {
+				_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_enabled", fmt.Sprintf("%t", cfg.Enabled))
+				_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_addr", cfg.Addr)
+				_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_user", cfg.User)
+				if req.EgressProxyPassword != nil && *req.EgressProxyPassword != "" {
+					_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_password", cfg.Password)
+				}
+			}
+			slog.Info("egress proxy updated via admin panel", "enabled", cfg.Enabled, "addr", cfg.Addr, "remote_addr", r.RemoteAddr)
+		}
+	}
+
 	jsonOK(w, s.currentSettings())
+}
+
+func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	ed := s.egressDialer
+	s.mu.RUnlock()
+
+	if ed == nil {
+		jsonErr(w, "Egress proxy dialer is not initialized", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	latency, err := ed.TestConnection(ctx, "1.1.1.1:53")
+	if err != nil {
+		slog.Warn("proxy test connection failed", "error", err)
+		jsonOK(w, map[string]interface{}{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"ok":         true,
+		"latency_ms": latency.Milliseconds(),
+	})
+}
+
+type updateAdminCredentialsRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewUsername     string `json:"new_username"`
+	NewPassword     string `json:"new_password"`
+}
+
+func (s *Server) handleUpdateAdminCredentials(w http.ResponseWriter, r *http.Request) {
+	var req updateAdminCredentialsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.UpdateAdminCredentials(r.Context(), req.CurrentPassword, req.NewUsername, req.NewPassword); err != nil {
+		slog.Warn("failed to update admin credentials", "error", err, "remote_addr", r.RemoteAddr)
+		jsonErr(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("admin credentials updated successfully via admin panel", "remote_addr", r.RemoteAddr)
+	jsonOK(w, map[string]interface{}{
+		"ok":       true,
+		"message":  "Admin credentials updated successfully.",
+		"username": s.AdminUsername(),
+	})
+}
+
+func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
+	slog.Info("service restart triggered via admin panel", "remote_addr", r.RemoteAddr)
+	jsonOK(w, map[string]interface{}{
+		"ok":      true,
+		"message": "Service restart initiated. The server will restart shortly.",
+	})
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		s.mu.RLock()
+		fn := s.restartHandler
+		s.mu.RUnlock()
+		if fn != nil {
+			fn()
+		} else {
+			os.Exit(0)
+		}
+	}()
 }

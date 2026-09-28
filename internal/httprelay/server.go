@@ -25,7 +25,7 @@ import (
 type Server struct {
 	cfg          *config.Config
 	port         int
-	allowList    relay.PortAllowList
+	allowList    *relay.PortAllowList
 	security     *relay.SecurityChecker
 	limits       *relay.LimitTracker
 	ruleStore    *rules.RuleStore
@@ -42,7 +42,7 @@ type Server struct {
 func NewServer(
 	cfg *config.Config,
 	port int,
-	allowList relay.PortAllowList,
+	allowList *relay.PortAllowList,
 	security *relay.SecurityChecker,
 	limits *relay.LimitTracker,
 	ruleStore *rules.RuleStore,
