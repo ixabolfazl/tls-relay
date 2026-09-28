@@ -309,16 +309,12 @@
         <label>Proxy Mode Selection</label>
         <div class="radio-group settings-margin-top-sm">
           <label class="radio-label">
-            <input type="radio" name="bulk-egress-radio" value="default" checked />
-            <span>Default (Use Global EGRESS_PROXY_ENABLED)</span>
+            <input type="radio" name="bulk-egress-radio" value="false" checked />
+            <span>Server Proxy (Direct egress via server)</span>
           </label>
           <label class="radio-label">
             <input type="radio" name="bulk-egress-radio" value="true" />
-            <span>Force SOCKS5 Proxy</span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" name="bulk-egress-radio" value="false" />
-            <span>Force Direct (Bypass Proxy)</span>
+            <span>Custom Proxy (Outbound SOCKS5)</span>
           </label>
         </div>
       </div>
@@ -458,20 +454,16 @@
         <div class="form-group" id="quick-add-domain-egress-group">
           <label>Egress Proxy</label>
           <div class="proxy-badge-group domain-mode-radio-group-wrap" id="quick-add-domain-egress-radio-group">
-            <label class="proxy-badge-label proxy-direct" title="Direct connection">
-              <input type="radio" name="quick-add-domain-egress-radio" value="false" />
-              <span>Direct</span>
+            <label class="proxy-badge-label proxy-direct" title="Server Proxy (direct egress via server)">
+              <input type="radio" name="quick-add-domain-egress-radio" value="false" checked />
+              <span>Server Proxy</span>
             </label>
-            <label class="proxy-badge-label proxy-default" title="Default proxy setting">
-              <input type="radio" name="quick-add-domain-egress-radio" value="default" checked />
-              <span>Default Proxy</span>
-            </label>
-            <label class="proxy-badge-label proxy-custom" title="Force SOCKS5 proxy">
+            <label class="proxy-badge-label proxy-custom" title="Custom Proxy (outbound SOCKS5 proxy)">
               <input type="radio" name="quick-add-domain-egress-radio" value="true" />
               <span>Custom Proxy</span>
             </label>
           </div>
-          <input type="hidden" id="quick-add-domain-egress" value="default" />
+          <input type="hidden" id="quick-add-domain-egress" value="false" />
         </div>
 
         <div id="quick-add-domain-error" class="alert alert-error hidden"></div>

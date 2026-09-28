@@ -41,8 +41,8 @@ func ruleToDomainEntry(domain string, rule rules.DomainRule) domainEntry {
 		e.Ports = rule.Ports.Ports
 	}
 	e.UseEgressProxy = rule.UseEgressProxy
-	if e.UseEgressProxy == "" {
-		e.UseEgressProxy = "default"
+	if e.UseEgressProxy == "" || e.UseEgressProxy == "default" {
+		e.UseEgressProxy = "false"
 	}
 	return e
 }
@@ -67,8 +67,8 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				proxyVal := rRow.UseEgressProxy
-				if proxyVal == "" {
-					proxyVal = "default"
+				if proxyVal == "" || proxyVal == "default" {
+					proxyVal = "false"
 				}
 				modeVal := rRow.Mode
 				if modeVal == "" {
@@ -299,10 +299,11 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	useEgress := strings.ToLower(strings.TrimSpace(req.UseEgressProxy))
-	if useEgress == "" {
-		useEgress = "default"
-	}
-	if useEgress != "default" && useEgress != "true" && useEgress != "false" {
+	if useEgress == "" || useEgress == "default" || useEgress == "false" || useEgress == "server" {
+		useEgress = "false"
+	} else if useEgress == "true" || useEgress == "custom" {
+		useEgress = "true"
+	} else {
 		jsonErr(w, "invalid use_egress_proxy option", http.StatusBadRequest)
 		return
 	}
@@ -402,10 +403,11 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	useEgress := strings.ToLower(strings.TrimSpace(req.UseEgressProxy))
-	if useEgress == "" {
-		useEgress = "default"
-	}
-	if useEgress != "default" && useEgress != "true" && useEgress != "false" {
+	if useEgress == "" || useEgress == "default" || useEgress == "false" || useEgress == "server" {
+		useEgress = "false"
+	} else if useEgress == "true" || useEgress == "custom" {
+		useEgress = "true"
+	} else {
 		jsonErr(w, "invalid use_egress_proxy option", http.StatusBadRequest)
 		return
 	}
@@ -534,7 +536,11 @@ func (s *Server) handleBulkAssignEgress(w http.ResponseWriter, r *http.Request) 
 	}
 
 	useEgress := strings.ToLower(strings.TrimSpace(req.UseEgressProxy))
-	if useEgress != "default" && useEgress != "true" && useEgress != "false" {
+	if useEgress == "" || useEgress == "default" || useEgress == "false" || useEgress == "server" {
+		useEgress = "false"
+	} else if useEgress == "true" || useEgress == "custom" {
+		useEgress = "true"
+	} else {
 		jsonErr(w, "invalid use_egress_proxy option", http.StatusBadRequest)
 		return
 	}

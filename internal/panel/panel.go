@@ -236,6 +236,7 @@ type Server struct {
 	reqLogger    *requestlog.Logger
 	limits       *relay.LimitTracker
 	dnsServer    *dnsresolver.Server
+	egressDialer *relay.EgressDialer
 	refresher    Refresher
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
@@ -396,6 +397,13 @@ func (s *Server) SetDNSServer(dns *dnsresolver.Server) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dnsServer = dns
+}
+
+// SetEgressDialer registers the EgressDialer instance for egress proxy status inspection.
+func (s *Server) SetEgressDialer(ed *relay.EgressDialer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.egressDialer = ed
 }
 
 func (s *Server) refreshDomains(ctx context.Context) error {

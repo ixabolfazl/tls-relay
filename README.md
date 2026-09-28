@@ -85,21 +85,6 @@ Run the following command as `root`:
 bash <(curl -Ls https://raw.githubusercontent.com/ixabolfazl/tls-relay/main/install.sh)
 ```
 
-The installer automatically:
-
-* Detects the server architecture
-* Downloads the appropriate release
-* Configures the required firewall ports
-* Configures the DNS service
-* Detects the server's public IP
-* Configures the relay IP
-* Optionally configures an outbound SOCKS5 proxy
-* Generates initial admin credentials
-* Creates the systemd service
-* Enables automatic service restart
-* Configures TCP BBR optimization
-* Installs the `tls-relay` management command
-
 After installation:
 
 ```bash

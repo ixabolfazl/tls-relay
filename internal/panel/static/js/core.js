@@ -20,6 +20,51 @@ let currentUserIPsUsername = null;
 // Settings
 let currentTimezone = 'UTC';
 let currentServerDomain = '';
+let isEgressProxyEnabled = false;
+
+async function fetchAppSettings() {
+  try {
+    const res = await apiFetch('/api/settings');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.timezone) currentTimezone = data.timezone;
+      if (data.server_domain !== undefined) currentServerDomain = data.server_domain;
+      isEgressProxyEnabled = !!data.egress_proxy_enabled;
+      updateEgressVisibility();
+    }
+  } catch (e) {
+    console.error('fetchAppSettings error:', e);
+  }
+}
+
+function updateEgressVisibility() {
+  const egressContainers = [
+    'add-domain-egress-group',
+    'edit-domain-egress-group',
+    'quick-add-domain-egress-group',
+    'bulk-assign-egress-btn'
+  ];
+  egressContainers.forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    if (!isEgressProxyEnabled) {
+      hideEl(id);
+    } else {
+      if (id === 'add-domain-egress-group') {
+        const mode = $('domain-mode') ? $('domain-mode').value : 'proxy';
+        if (mode === 'proxy') showEl(id); else hideEl(id);
+      } else if (id === 'edit-domain-egress-group') {
+        const mode = $('edit-domain-mode') ? $('edit-domain-mode').value : 'proxy';
+        if (mode === 'proxy') showEl(id); else hideEl(id);
+      } else if (id === 'quick-add-domain-egress-group') {
+        const mode = $('quick-add-domain-mode') ? $('quick-add-domain-mode').value : 'proxy';
+        if (mode === 'proxy') showEl(id); else hideEl(id);
+      } else {
+        showEl(id);
+      }
+    }
+  });
+}
 
 // Centralized Source of Truth for Base URL, Magic Link, and Setup URLs
 function getBaseUrl() {
@@ -838,13 +883,19 @@ function initEgressProxyRadioGroup() {
               hideEl(cfg.egressGroupId);
             } else {
               showEl(cfg.portsGroupId);
-              showEl(cfg.egressGroupId);
+              if (isEgressProxyEnabled) {
+                showEl(cfg.egressGroupId);
+              } else {
+                hideEl(cfg.egressGroupId);
+              }
             }
           }
         }
       });
     });
   });
+
+  updateEgressVisibility();
 }
 
 // ---------------------------------------------------------------------------
@@ -961,7 +1012,7 @@ function initBulkActionModals() {
   if ($('bulk-egress-confirm-btn')) {
     $('bulk-egress-confirm-btn').addEventListener('click', async () => {
       const selectedRadio = document.querySelector('input[name="bulk-egress-radio"]:checked');
-      const mode = selectedRadio ? selectedRadio.value : 'default';
+      const mode = selectedRadio ? selectedRadio.value : 'false';
       $('bulk-egress-modal-overlay').classList.add('hidden');
 
       try {
@@ -1172,3 +1223,6 @@ function applyTheme(theme) {
     if (text) text.textContent = 'Dark';
   }
 }
+
+window.fetchAppSettings = fetchAppSettings;
+window.updateEgressVisibility = updateEgressVisibility;

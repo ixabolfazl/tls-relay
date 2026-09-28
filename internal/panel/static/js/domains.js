@@ -245,7 +245,11 @@ function arePortsEqual(p1, p2) {
 function areRulesIdentical(r1, r2) {
   if (!r1 || !r2) return false;
   if ((r1.group_name || '') !== (r2.group_name || '')) return false;
-  if ((r1.use_egress_proxy || 'default') !== (r2.use_egress_proxy || 'default')) return false;
+  const eg1 = (r1.use_egress_proxy || 'false').toLowerCase();
+  const eg2 = (r2.use_egress_proxy || 'false').toLowerCase();
+  const eg1Norm = (eg1 === 'true' || eg1 === 'custom') ? 'true' : 'false';
+  const eg2Norm = (eg2 === 'true' || eg2 === 'custom') ? 'true' : 'false';
+  if (eg1Norm !== eg2Norm) return false;
   if ((r1.mode || 'proxy') !== (r2.mode || 'proxy')) return false;
   return arePortsEqual(r1.ports, r2.ports);
 }
@@ -550,12 +554,10 @@ function createDomainRow(item) {
     egressStr = '<span class="mode-badge-direct">Direct</span>';
   } else if (itemMode === 'block') {
     egressStr = '<span class="mode-badge-block">Blocked</span>';
-  } else if (item.use_egress_proxy === 'true') {
-    egressStr = '<span class="status-badge status-allowed">Force SOCKS5</span>';
-  } else if (item.use_egress_proxy === 'false') {
-    egressStr = '<span class="status-badge status-blocked">Force Direct</span>';
+  } else if (item.use_egress_proxy === 'true' || item.use_egress_proxy === 'custom') {
+    egressStr = '<span class="status-badge status-allowed">Custom Proxy</span>';
   } else {
-    egressStr = '<span class="status-badge status-neutral">Default</span>';
+    egressStr = '<span class="status-badge status-neutral">Server Proxy</span>';
   }
 
   const groupStr = item.group_name ? `<span class="group-badge">${escapeHtml(item.group_name)}</span>` : '<span class="text-hint">—</span>';
@@ -702,7 +704,7 @@ function initDomainListeners() {
       const domainRaw = $('domain-name').value.trim();
       const mode = $('domain-mode') ? $('domain-mode').value || 'proxy' : 'proxy';
       const ports = $('domain-ports').value.trim() || '443';
-      const egress = $('domain-egress').value || 'default';
+      const egress = $('domain-egress') ? $('domain-egress').value || 'false' : 'false';
       const includeSubdomains = $('domain-include-subdomains') ? $('domain-include-subdomains').checked : false;
 
       try {
@@ -740,9 +742,9 @@ function initDomainListeners() {
         $('domain-ports').value = '443';
         if ($('domain-include-subdomains')) $('domain-include-subdomains').checked = false;
         if ($('domain-preview-container')) hideEl('domain-preview-container');
-        const defaultRadio = document.querySelector('input[name="domain-egress-radio"][value="default"]');
-        if (defaultRadio) defaultRadio.checked = true;
-        $('domain-egress').value = 'default';
+        const serverRadio = document.querySelector('input[name="domain-egress-radio"][value="false"]');
+        if (serverRadio) serverRadio.checked = true;
+        if ($('domain-egress')) $('domain-egress').value = 'false';
         loadDomains();
       } catch {
         showError('add-domain-error', 'An error occurred while adding domains.');
@@ -766,7 +768,7 @@ function initDomainListeners() {
       const groupName = $('edit-domain-group-name').value.trim();
       const mode = $('edit-domain-mode') ? $('edit-domain-mode').value || 'proxy' : 'proxy';
       const ports = $('edit-domain-ports').value.trim() || '443';
-      const egress = $('edit-domain-egress').value || 'default';
+      const egress = $('edit-domain-egress') ? $('edit-domain-egress').value || 'false' : 'false';
       const subCheckbox = $('edit-domain-include-subdomains');
       const includeSubdomains = subCheckbox ? subCheckbox.checked : false;
       const btn = $('save-edit-domain-btn');
@@ -857,11 +859,13 @@ function openEditDomainModal(domainName) {
     $('edit-domain-ports').value = d.ports || '443';
   }
 
-  const egressVal = d.use_egress_proxy || 'default';
+  const rawEgress = (d.use_egress_proxy || 'false').toLowerCase();
+  const egressVal = (rawEgress === 'true' || rawEgress === 'custom') ? 'true' : 'false';
   const egressRadio = document.querySelector(`input[name="edit-domain-egress-radio"][value="${egressVal}"]`);
   if (egressRadio) egressRadio.checked = true;
-  $('edit-domain-egress').value = egressVal;
+  if ($('edit-domain-egress')) $('edit-domain-egress').value = egressVal;
   clearMessages('edit-domain-error', 'edit-domain-success');
+  if (typeof updateEgressVisibility === 'function') updateEgressVisibility();
 
   const subGroup = $('edit-subdomain-group');
   const subCheckbox = $('edit-domain-include-subdomains');

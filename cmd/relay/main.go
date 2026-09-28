@@ -262,6 +262,7 @@ func run(cfgPath string) error {
 	panelSrv.SetConnTracker(connTracker)
 	panelSrv.SetRequestLogger(reqLogger)
 	panelSrv.SetLimitTracker(limits)
+	panelSrv.SetEgressDialer(egressDialer)
 	_ = panelSrv.SetTimezone(cfg.Timezone)
 
 	// -----------------------------------------------------------------------

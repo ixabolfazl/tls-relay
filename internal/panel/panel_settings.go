@@ -23,6 +23,7 @@ type settingsResponse struct {
 	RequestLogsRetention       string `json:"request_logs_retention"`
 	MaxConnectionsPerIP        int    `json:"max_connections_per_ip"`
 	DNSUnauthorizedPassthrough bool   `json:"dns_unauthorized_passthrough"`
+	EgressProxyEnabled         bool   `json:"egress_proxy_enabled"`
 }
 
 func parseDurationWithDays(s string) (time.Duration, error) {
@@ -82,6 +83,7 @@ func (s *Server) currentSettings() settingsResponse {
 	reqRetention := "24h"
 	maxConn := 200
 	dnsPassthrough := false
+	egressEnabled := false
 	s.mu.RLock()
 	if s.reqLogger != nil {
 		reqEnabled = s.reqLogger.IsEnabled()
@@ -92,6 +94,9 @@ func (s *Server) currentSettings() settingsResponse {
 	}
 	if s.dnsServer != nil {
 		dnsPassthrough = s.dnsServer.UnauthorizedPassthroughEnabled()
+	}
+	if s.egressDialer != nil {
+		egressEnabled = s.egressDialer.Enabled()
 	}
 	s.mu.RUnlock()
 
@@ -106,6 +111,7 @@ func (s *Server) currentSettings() settingsResponse {
 		RequestLogsRetention:       reqRetention,
 		MaxConnectionsPerIP:        maxConn,
 		DNSUnauthorizedPassthrough: dnsPassthrough,
+		EgressProxyEnabled:         egressEnabled,
 	}
 }
 

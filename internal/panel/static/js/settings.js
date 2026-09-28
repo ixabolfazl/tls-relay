@@ -68,6 +68,13 @@ async function loadSettings() {
       if (passthroughRadio) passthroughRadio.checked = true;
     }
 
+    if (s.egress_proxy_enabled !== undefined) {
+      isEgressProxyEnabled = !!s.egress_proxy_enabled;
+      if (typeof updateEgressVisibility === 'function') {
+        updateEgressVisibility();
+      }
+    }
+
   } catch { /* ignore on settings tab not yet open */ }
 }
 

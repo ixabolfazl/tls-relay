@@ -405,7 +405,7 @@ function initQuickAddDomainModal() {
     const groupName = ($('quick-add-domain-group')?.value || '').trim();
     const mode = $('quick-add-domain-mode')?.value || 'proxy';
     const ports = ($('quick-add-domain-ports')?.value || '443').trim();
-    const egress = $('quick-add-domain-egress')?.value || 'default';
+    const egress = $('quick-add-domain-egress')?.value || 'false';
     const includeSubdomains = !!$('quick-add-domain-include-subdomains')?.checked;
 
     if (!domain) {

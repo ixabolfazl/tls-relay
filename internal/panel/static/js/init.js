@@ -76,6 +76,15 @@ async function bootApp() {
     }
   }
 
+  // Fetch app settings early so egress visibility is resolved before tab initializations
+  if (typeof fetchAppSettings === 'function') {
+    try {
+      await fetchAppSettings();
+    } catch (e) {
+      console.error('fetchAppSettings error:', e);
+    }
+  }
+
   // Initialize UI components and listeners across all loaded tabs
   const inits = [
     ['initSegmentedControls', typeof initSegmentedControls === 'function' ? initSegmentedControls : null],
