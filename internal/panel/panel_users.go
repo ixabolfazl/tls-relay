@@ -95,8 +95,9 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username  string `json:"username"`
-		MaxIPs    int    `json:"max_ips"`
+		MaxIPs    *int   `json:"max_ips"`
 		MagicLink string `json:"magic_link"`
+		Token     string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid request body", http.StatusBadRequest)
@@ -108,12 +109,31 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "username is required", http.StatusBadRequest)
 		return
 	}
-	if req.MaxIPs < 1 {
-		req.MaxIPs = 3 // default
+
+	maxIPs := s.DefaultMaxIPs()
+	if req.MaxIPs != nil {
+		if *req.MaxIPs < 0 {
+			jsonErr(w, "max_ips cannot be negative", http.StatusBadRequest)
+			return
+		}
+		if *req.MaxIPs > 1000 {
+			jsonErr(w, "max_ips cannot exceed 1000", http.StatusBadRequest)
+			return
+		}
+		maxIPs = *req.MaxIPs
+	}
+
+	magicLink := strings.TrimSpace(req.MagicLink)
+	if magicLink == "" && req.Token != "" {
+		magicLink = strings.TrimSpace(req.Token)
+	}
+	if magicLink != "" && len(magicLink) < 16 {
+		jsonErr(w, "magic link token must be at least 16 characters", http.StatusBadRequest)
+		return
 	}
 
 	ctx := r.Context()
-	user, err := s.sqlStore.CreateUserWithLink(ctx, username, req.MaxIPs, req.MagicLink)
+	user, err := s.sqlStore.CreateUserWithLink(ctx, username, maxIPs, magicLink)
 	if err != nil {
 		slog.Error("admin panel create user error", "username", username, "error", err)
 		jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
@@ -137,6 +157,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Enabled   *bool   `json:"enabled"`
 		MaxIPs    *int    `json:"max_ips"`
 		MagicLink *string `json:"magic_link"`
+		Token     *string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid request body", http.StatusBadRequest)
@@ -164,10 +185,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 	if req.MaxIPs != nil {
+		if *req.MaxIPs < 0 {
+			jsonErr(w, "max_ips cannot be negative", http.StatusBadRequest)
+			return
+		}
+		if *req.MaxIPs > 1000 {
+			jsonErr(w, "max_ips cannot exceed 1000", http.StatusBadRequest)
+			return
+		}
 		maxIPs = *req.MaxIPs
 	}
-	if req.MagicLink != nil && strings.TrimSpace(*req.MagicLink) != "" {
-		magicLink = strings.TrimSpace(*req.MagicLink)
+	newLink := req.MagicLink
+	if newLink == nil && req.Token != nil {
+		newLink = req.Token
+	}
+	if newLink != nil && strings.TrimSpace(*newLink) != "" {
+		m := strings.TrimSpace(*newLink)
+		if len(m) < 16 {
+			jsonErr(w, "magic link token must be at least 16 characters", http.StatusBadRequest)
+			return
+		}
+		magicLink = m
 	}
 
 	if err := s.sqlStore.UpdateUserFull(ctx, id, username, enabled, maxIPs, magicLink); err != nil {
@@ -284,15 +322,40 @@ func (s *Server) handleResetMagicLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link, err := s.sqlStore.ResetMagicLink(r.Context(), id)
+	var req struct {
+		ClearIPs bool `json:"clear_ips"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	ctx := r.Context()
+	link, err := s.sqlStore.ResetMagicLink(ctx, id)
 	if err != nil {
 		slog.Error("admin panel reset magic link error", "user_id", id, "error", err)
 		jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	slog.Info("admin panel magic link reset", "user_id", id, "remote_addr", r.RemoteAddr)
-	jsonOK(w, map[string]interface{}{"status": "ok", "magic_link": link})
+	var clearedCount int
+	if req.ClearIPs {
+		clearedCount, err = s.sqlStore.DeleteAllUserIPs(ctx, id)
+		if err != nil {
+			slog.Error("admin panel clear user IPs error", "user_id", id, "error", err)
+			jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.refreshUserIPs(ctx); err != nil {
+			slog.Error("admin panel refresh user IPs error", "error", err)
+		}
+	}
+
+	slog.Info("admin panel magic link reset", "user_id", id, "clear_ips", req.ClearIPs, "cleared_ips", clearedCount, "remote_addr", r.RemoteAddr)
+	jsonOK(w, map[string]interface{}{
+		"status":      "ok",
+		"magic_link":  link,
+		"cleared_ips": clearedCount,
+	})
 }
 
 func (s *Server) handleNewMagicLink(w http.ResponseWriter, r *http.Request) {

@@ -1095,3 +1095,195 @@ func TestSanitizeGroupName_WritePaths(t *testing.T) {
 		t.Errorf("ImportData: expected group_name 'impgrp', got %q", r.GroupName)
 	}
 }
+
+func TestRegisterIP_UnlimitedAndResult(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user, err := store.CreateUser(ctx, "unlimited_user", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ips := []string{"1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.1.4", "1.1.1.5"}
+	for _, ip := range ips {
+		isNew, err := store.RegisterIPResult(ctx, user.ID, ip, 0)
+		if err != nil {
+			t.Fatalf("RegisterIPResult failed for %s: %v", ip, err)
+		}
+		if !isNew {
+			t.Errorf("expected isNew=true for first registration of %s", ip)
+		}
+	}
+
+	// Re-registering existing IP should return isNew=false
+	isNew, err := store.RegisterIPResult(ctx, user.ID, "1.1.1.1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isNew {
+		t.Errorf("expected isNew=false for already registered IP")
+	}
+
+	registered, err := store.ListUserIPs(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 5 {
+		t.Fatalf("expected 5 IPs for unlimited user, got %d", len(registered))
+	}
+}
+
+func TestRegisterIP_QuotaReduction(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user, err := store.CreateUser(ctx, "quota_user", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = store.RegisterIP(ctx, user.ID, "10.0.0.1", 3)
+	_ = store.RegisterIP(ctx, user.ID, "10.0.0.2", 3)
+	_ = store.RegisterIP(ctx, user.ID, "10.0.0.3", 3)
+
+	// Now register a new IP with quota reduced to 2: oldest (10.0.0.1 and 10.0.0.2) should be adjusted so total is 2
+	isNew, err := store.RegisterIPResult(ctx, user.ID, "10.0.0.4", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isNew {
+		t.Errorf("expected isNew=true for 10.0.0.4")
+	}
+
+	registered, err := store.ListUserIPs(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 2 {
+		t.Fatalf("expected 2 IPs after registering with max_ips=2, got %d", len(registered))
+	}
+}
+
+func TestImportData_QuotaEnforcement(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	users := []sqlitestore.UserWithIPs{
+		{
+			User: sqlitestore.User{
+				Username: "capped_user",
+				MaxIPs:   2,
+				Enabled:  true,
+			},
+			IPs: []sqlitestore.UserIP{
+				{IPAddress: "192.168.1.1"},
+				{IPAddress: "192.168.1.2"},
+				{IPAddress: "192.168.1.3"},
+				{IPAddress: "192.168.1.4"},
+			},
+		},
+	}
+
+	res, err := store.ImportData(ctx, nil, nil, users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.UsersAdded != 1 {
+		t.Errorf("expected 1 user added, got %d", res.UsersAdded)
+	}
+	if res.IPsSkipped != 2 {
+		t.Errorf("expected 2 IPs skipped due to quota, got %d", res.IPsSkipped)
+	}
+
+	u, err := store.GetUserByMagicLink(ctx, users[0].MagicLink)
+	if err == nil && u != nil {
+		ips, _ := store.ListUserIPs(ctx, u.ID)
+		if len(ips) != 2 {
+			t.Errorf("expected 2 IPs registered, got %d", len(ips))
+		}
+	}
+}
+
+func TestIsIPRegistered_EnabledOnly(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user, err := store.CreateUser(ctx, "toggle_user", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RegisterIP(ctx, user.ID, "172.16.0.1", 2)
+
+	reg, err := store.IsIPRegistered(ctx, "172.16.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg {
+		t.Errorf("expected IP to be registered for enabled user")
+	}
+
+	// Disable user
+	if err := store.UpdateUser(ctx, user.ID, false, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err = store.IsIPRegistered(ctx, "172.16.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg {
+		t.Errorf("expected IP to NOT be considered registered when user is disabled")
+	}
+}
+
+func TestDeleteAllUserIPs(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user, err := store.CreateUser(ctx, "clear_ips_user", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RegisterIP(ctx, user.ID, "10.10.10.1", 5)
+	_ = store.RegisterIP(ctx, user.ID, "10.10.10.2", 5)
+	_ = store.RegisterIP(ctx, user.ID, "10.10.10.3", 5)
+
+	deleted, err := store.DeleteAllUserIPs(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 {
+		t.Errorf("expected 3 IPs deleted, got %d", deleted)
+	}
+
+	ips, err := store.ListUserIPs(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 0 {
+		t.Errorf("expected 0 IPs remaining, got %d", len(ips))
+	}
+}
+
+func TestSetSettings_Atomic(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	settings := map[string]string{
+		"test_k1": "val1",
+		"test_k2": "val2",
+	}
+	if err := store.SetSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+
+	v1, found, err := store.GetSetting(ctx, "test_k1")
+	if err != nil || !found || v1 != "val1" {
+		t.Errorf("expected val1, got %v (%v, %v)", v1, found, err)
+	}
+	v2, found, err := store.GetSetting(ctx, "test_k2")
+	if err != nil || !found || v2 != "val2" {
+		t.Errorf("expected val2, got %v (%v, %v)", v2, found, err)
+	}
+}

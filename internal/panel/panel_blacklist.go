@@ -2,11 +2,26 @@ package panel
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+func entryContainsIP(entry string, target net.IP) bool {
+	if target == nil {
+		return false
+	}
+	if ip := net.ParseIP(entry); ip != nil {
+		return ip.Equal(target)
+	}
+	if _, ipNet, err := net.ParseCIDR(entry); err == nil {
+		return ipNet.Contains(target)
+	}
+	return false
+}
 
 func (s *Server) handleListBlacklist(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.sqlStore.ListBlacklist(r.Context())
@@ -47,9 +62,25 @@ func (s *Server) handleAddBlacklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIPStr := getClientIP(r)
+	clientIP := net.ParseIP(clientIPStr)
+	relayIPStr := s.RelayIP()
+	var relayIP net.IP
+	if relayIPStr != "" {
+		relayIP = net.ParseIP(relayIPStr)
+	}
+
 	for _, entry := range ipList {
 		if err := validateIPOrCIDR(entry); err != nil {
 			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if clientIP != nil && entryContainsIP(entry, clientIP) {
+			jsonErr(w, fmt.Sprintf("cannot blacklist requester IP (%s) or range containing it: %s", clientIPStr, entry), http.StatusBadRequest)
+			return
+		}
+		if relayIP != nil && entryContainsIP(entry, relayIP) {
+			jsonErr(w, fmt.Sprintf("cannot blacklist server relay IP (%s) or range containing it: %s", relayIPStr, entry), http.StatusBadRequest)
 			return
 		}
 	}

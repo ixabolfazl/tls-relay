@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -34,6 +35,9 @@ type settingsResponse struct {
 	AllowedDestPorts           []int  `json:"allowed_dest_ports"`
 	ListenPorts                []int  `json:"listen_ports"`
 	ListenHTTPPorts            []int  `json:"listen_http_ports"`
+	LookupEnabled              bool   `json:"lookup_enabled"`
+	LookupRequireRegistered    bool   `json:"lookup_require_registered"`
+	DefaultMaxIPs              int    `json:"default_max_ips"`
 	AdminUsername              string `json:"admin_username"`
 	UptimeSeconds              int64  `json:"uptime_seconds"`
 }
@@ -78,6 +82,28 @@ func formatDurationClean(d time.Duration) string {
 		return fmt.Sprintf("%dm", d/time.Minute)
 	}
 	return d.String()
+}
+
+func normalizeAndValidateEgressAddr(raw string) (string, error) {
+	addr := strings.TrimSpace(raw)
+	if addr == "" {
+		return "", nil
+	}
+	addrLower := strings.ToLower(addr)
+	if strings.HasPrefix(addrLower, "http://") || strings.HasPrefix(addrLower, "https://") {
+		return "", fmt.Errorf("only SOCKS5 host:port is supported")
+	}
+	if strings.HasPrefix(addrLower, "socks5://") {
+		addr = addr[len("socks5://"):]
+	} else if strings.HasPrefix(addrLower, "socks5h://") {
+		addr = addr[len("socks5h://"):]
+	}
+	addr = strings.TrimSpace(addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" {
+		return "", fmt.Errorf("invalid proxy address (must be host:port): %s", raw)
+	}
+	return addr, nil
 }
 
 func (s *Server) currentSettings() settingsResponse {
@@ -138,6 +164,8 @@ func (s *Server) currentSettings() settingsResponse {
 	uptime := int64(time.Since(s.startTime).Seconds())
 	s.mu.RUnlock()
 
+	lookupEn, lookupReq := s.LookupPolicy()
+
 	return settingsResponse{
 		AccessMode:                 mode,
 		PanelPath:                  s.DisplayPath(),
@@ -156,6 +184,9 @@ func (s *Server) currentSettings() settingsResponse {
 		AllowedDestPorts:           allowedPorts,
 		ListenPorts:                listenPorts,
 		ListenHTTPPorts:            listenHTTPPorts,
+		LookupEnabled:              lookupEn,
+		LookupRequireRegistered:    lookupReq,
+		DefaultMaxIPs:              s.DefaultMaxIPs(),
 		AdminUsername:              username,
 		UptimeSeconds:              uptime,
 	}
@@ -182,6 +213,8 @@ type updateSettingsRequest struct {
 	AllowedDestPorts           *[]int  `json:"allowed_dest_ports,omitempty"`
 	ListenPorts                *[]int  `json:"listen_ports,omitempty"`
 	ListenHTTPPorts            *[]int  `json:"listen_http_ports,omitempty"`
+	LookupEnabled              *bool   `json:"lookup_enabled,omitempty"`
+	LookupRequireRegistered    *bool   `json:"lookup_require_registered,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -192,47 +225,75 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validation
+	toPersist := make(map[string]string)
+
+	// (1) Decode + Validate EVERYTHING first
+	var validMode string
 	if req.AccessMode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.AccessMode))
-		if mode != "public" && mode != "user" {
-			jsonErr(w, "access_mode must be 'public' or 'user'", http.StatusBadRequest)
-			return
-		}
-	}
-
-	if req.Timezone != nil {
-		tz := strings.TrimSpace(*req.Timezone)
-		if _, err := time.LoadLocation(tz); err != nil {
-			jsonErr(w, fmt.Sprintf("invalid timezone %q", tz), http.StatusBadRequest)
-			return
-		}
-	}
-
-	if req.UnknownDomainPolicy != nil {
-		policy := strings.ToLower(strings.TrimSpace(*req.UnknownDomainPolicy))
-		if policy != "allow_default_port" && policy != "reject" {
-			jsonErr(w, "unknown_domain_policy must be 'allow_default_port' or 'reject'", http.StatusBadRequest)
-			return
-		}
-	}
-
-	var normalizedDomain string
-	if req.ServerDomain != nil {
 		var err error
-		normalizedDomain, err = NormalizeAndValidateServerDomain(*req.ServerDomain)
+		validMode, err = config.ValidateAccessMode(*req.AccessMode)
 		if err != nil {
 			jsonErr(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		toPersist["access_mode"] = validMode
 	}
 
+	var validPolicy string
+	if req.UnknownDomainPolicy != nil {
+		var err error
+		validPolicy, err = config.ValidateUnknownDomainPolicy(*req.UnknownDomainPolicy, "")
+		if err != nil {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		toPersist["unknown_domain_policy"] = validPolicy
+	}
+
+	var tz string
+	if req.Timezone != nil {
+		tz = strings.TrimSpace(*req.Timezone)
+		if tz == "" {
+			tz = "UTC"
+		}
+		if _, err := time.LoadLocation(tz); err != nil {
+			jsonErr(w, fmt.Sprintf("invalid timezone %q: %v", tz, err), http.StatusBadRequest)
+			return
+		}
+		toPersist["timezone"] = tz
+	}
+
+	var normDomain string
+	if req.ServerDomain != nil {
+		var err error
+		normDomain, err = NormalizeAndValidateServerDomain(*req.ServerDomain)
+		if err != nil {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		toPersist["server_domain"] = normDomain
+	}
+
+	var retentionClean string
+	var retentionDur time.Duration
 	if req.RequestLogsRetention != nil {
 		retentionStr := strings.TrimSpace(*req.RequestLogsRetention)
-		if _, err := parseDurationWithDays(retentionStr); err != nil {
+		var err error
+		retentionDur, err = parseDurationWithDays(retentionStr)
+		if err != nil {
 			jsonErr(w, fmt.Sprintf("invalid retention duration %q (e.g. 1h, 12h, 24h, 7d)", retentionStr), http.StatusBadRequest)
 			return
 		}
+		retentionClean = formatDurationClean(retentionDur)
+		toPersist["request_logs_retention"] = retentionClean
+	}
+
+	if req.RequestLogsEnabled != nil {
+		val := "false"
+		if *req.RequestLogsEnabled {
+			val = "true"
+		}
+		toPersist["request_logs_enabled"] = val
 	}
 
 	if req.MaxConnectionsPerIP != nil {
@@ -240,157 +301,18 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, "max_connections_per_ip must be positive", http.StatusBadRequest)
 			return
 		}
-	}
-
-	// Execution
-	if req.AccessMode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.AccessMode))
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "access_mode", mode); err != nil {
-				slog.Error("failed to persist access_mode setting", "error", err)
-				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
-				return
-			}
-		}
-		if s.accessStore != nil {
-			s.accessStore.SetMode(access.AccessMode(mode))
-		}
-		slog.Info("access mode updated via admin panel", "mode", mode, "remote_addr", r.RemoteAddr)
-	}
-
-	if req.Timezone != nil {
-		tz := strings.TrimSpace(*req.Timezone)
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "timezone", tz); err != nil {
-				slog.Error("failed to persist timezone setting", "error", err)
-				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
-				return
-			}
-		}
-		_ = s.SetTimezone(tz)
-		slog.Info("timezone updated via admin panel", "timezone", tz, "remote_addr", r.RemoteAddr)
-	}
-
-	if req.ServerDomain != nil {
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "server_domain", normalizedDomain); err != nil {
-				slog.Error("failed to persist server_domain setting", "error", err)
-				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
-				return
-			}
-		}
-		s.SetServerDomain(normalizedDomain)
-		slog.Info("server domain updated via admin panel", "domain", normalizedDomain, "remote_addr", r.RemoteAddr)
-	}
-
-	if req.UnknownDomainPolicy != nil {
-		policy := strings.ToLower(strings.TrimSpace(*req.UnknownDomainPolicy))
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "unknown_domain_policy", policy); err != nil {
-				slog.Error("failed to persist unknown_domain_policy setting", "error", err)
-				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
-				return
-			}
-		}
-		if s.ruleStore != nil {
-			s.ruleStore.SetUnknownDomainPolicy(policy)
-		}
-		slog.Info("unknown domain policy updated via admin panel", "policy", policy, "remote_addr", r.RemoteAddr)
-	}
-
-	if req.RequestLogsEnabled != nil {
-		enabled := *req.RequestLogsEnabled
-		val := "false"
-		if enabled {
-			val = "true"
-		}
-		if s.sqlStore != nil {
-			_ = s.sqlStore.SetSetting(r.Context(), "request_logs_enabled", val)
-		}
-		s.mu.RLock()
-		if s.reqLogger != nil {
-			s.reqLogger.SetEnabled(enabled)
-		}
-		s.mu.RUnlock()
-		slog.Info("request logs enabled state updated via admin panel", "enabled", enabled, "remote_addr", r.RemoteAddr)
-	}
-
-	if req.RequestLogsRetention != nil {
-		retentionStr := strings.TrimSpace(*req.RequestLogsRetention)
-		dur, _ := parseDurationWithDays(retentionStr)
-		cleanStr := formatDurationClean(dur)
-		if s.sqlStore != nil {
-			_ = s.sqlStore.SetSetting(r.Context(), "request_logs_retention", cleanStr)
-		}
-		s.mu.RLock()
-		if s.reqLogger != nil {
-			s.reqLogger.SetRetention(dur)
-		}
-		s.mu.RUnlock()
-		slog.Info("request logs retention updated via admin panel", "retention", cleanStr, "remote_addr", r.RemoteAddr)
-	}
-
-	if req.PanelPath != nil {
-		path := strings.TrimSpace(*req.PanelPath)
-		validPath, err := config.ValidatePanelPath(path)
-		if err != nil {
-			jsonErr(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := s.DryRunPathPrefix(validPath); err != nil {
-			slog.Error("failed to dry-run new panel path prefix", "path", validPath, "error", err)
-			jsonErr(w, "invalid panel path", http.StatusBadRequest)
-			return
-		}
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "panel_path", validPath); err != nil {
-				slog.Error("failed to persist panel_path setting", "error", err)
-				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
-				return
-			}
-		}
-		if err := s.ApplyPathPrefix(validPath); err != nil {
-			slog.Error("failed to apply new panel path prefix", "error", err)
-			jsonErr(w, "failed to apply panel path", http.StatusInternalServerError)
-			return
-		}
-		slog.Info("panel path prefix updated via admin panel", "path", s.DisplayPath(), "remote_addr", r.RemoteAddr)
-	}
-
-	if req.MaxConnectionsPerIP != nil {
-		maxConn := *req.MaxConnectionsPerIP
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "max_connections_per_ip", strconv.Itoa(maxConn)); err != nil {
-				slog.Error("failed to persist max_connections_per_ip setting", "error", err)
-				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
-				return
-			}
-		}
-		s.mu.RLock()
-		if s.limits != nil {
-			s.limits.SetMaxPerIP(maxConn)
-		}
-		s.mu.RUnlock()
-		slog.Info("max_connections_per_ip updated via admin panel", "max_connections_per_ip", maxConn, "remote_addr", r.RemoteAddr)
+		toPersist["max_connections_per_ip"] = strconv.Itoa(*req.MaxConnectionsPerIP)
 	}
 
 	if req.DNSUnauthorizedPassthrough != nil {
-		enabled := *req.DNSUnauthorizedPassthrough
 		val := "false"
-		if enabled {
+		if *req.DNSUnauthorizedPassthrough {
 			val = "true"
 		}
-		if s.sqlStore != nil {
-			_ = s.sqlStore.SetSetting(r.Context(), "dns_unauthorized_passthrough_enabled", val)
-		}
-		s.mu.RLock()
-		if s.dnsServer != nil {
-			s.dnsServer.SetUnauthorizedPassthrough(enabled)
-		}
-		s.mu.RUnlock()
-		slog.Info("dns_unauthorized_passthrough_enabled updated via admin panel", "enabled", enabled, "remote_addr", r.RemoteAddr)
+		toPersist["dns_unauthorized_passthrough_enabled"] = val
 	}
 
+	var allowedPortsJSON string
 	if req.AllowedDestPorts != nil {
 		if len(*req.AllowedDestPorts) == 0 {
 			jsonErr(w, "allowed_dest_ports cannot be empty", http.StatusBadRequest)
@@ -402,12 +324,195 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		portsJSON, _ := json.Marshal(*req.AllowedDestPorts)
-		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "allowed_dest_ports", string(portsJSON)); err != nil {
-				slog.Error("failed to persist allowed_dest_ports", "error", err)
+		b, _ := json.Marshal(*req.AllowedDestPorts)
+		allowedPortsJSON = string(b)
+		toPersist["allowed_dest_ports"] = allowedPortsJSON
+	}
+
+	var listenPortsJSON string
+	if req.ListenPorts != nil {
+		if len(*req.ListenPorts) == 0 {
+			jsonErr(w, "listen_ports cannot be empty", http.StatusBadRequest)
+			return
+		}
+		for _, p := range *req.ListenPorts {
+			if p <= 0 || p > 65535 {
+				jsonErr(w, fmt.Sprintf("invalid listen port %d", p), http.StatusBadRequest)
+				return
 			}
 		}
+		b, _ := json.Marshal(*req.ListenPorts)
+		listenPortsJSON = string(b)
+		toPersist["listen_ports"] = listenPortsJSON
+	}
+
+	var listenHTTPPortsJSON string
+	if req.ListenHTTPPorts != nil {
+		if len(*req.ListenHTTPPorts) == 0 {
+			jsonErr(w, "listen_http_ports cannot be empty", http.StatusBadRequest)
+			return
+		}
+		for _, p := range *req.ListenHTTPPorts {
+			if p <= 0 || p > 65535 {
+				jsonErr(w, fmt.Sprintf("invalid listen http port %d", p), http.StatusBadRequest)
+				return
+			}
+		}
+		b, _ := json.Marshal(*req.ListenHTTPPorts)
+		listenHTTPPortsJSON = string(b)
+		toPersist["listen_http_ports"] = listenHTTPPortsJSON
+	}
+
+	var validPanelPath string
+	if req.PanelPath != nil {
+		path := strings.TrimSpace(*req.PanelPath)
+		var err error
+		validPanelPath, err = config.ValidatePanelPath(path)
+		if err != nil {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.DryRunPathPrefix(validPanelPath); err != nil {
+			slog.Error("failed to dry-run new panel path prefix", "path", validPanelPath, "error", err)
+			jsonErr(w, "invalid panel path", http.StatusBadRequest)
+			return
+		}
+		toPersist["panel_path"] = validPanelPath
+	}
+
+	if req.LookupEnabled != nil {
+		val := "false"
+		if *req.LookupEnabled {
+			val = "true"
+		}
+		toPersist["lookup_enabled"] = val
+	}
+
+	if req.LookupRequireRegistered != nil {
+		val := "false"
+		if *req.LookupRequireRegistered {
+			val = "true"
+		}
+		toPersist["lookup_require_registered"] = val
+	}
+
+	// (2) Verify egress config by building a candidate dialer without swapping
+	var candidateEgressCfg *config.EgressProxyConfig
+	if req.EgressProxyEnabled != nil || req.EgressProxyAddr != nil || req.EgressProxyUser != nil || req.EgressProxyPassword != nil {
+		s.mu.RLock()
+		ed := s.egressDialer
+		s.mu.RUnlock()
+
+		var curCfg config.EgressProxyConfig
+		if ed != nil {
+			curCfg = ed.Config()
+		}
+		if req.EgressProxyEnabled != nil {
+			curCfg.Enabled = *req.EgressProxyEnabled
+		}
+		if req.EgressProxyAddr != nil {
+			normAddr, err := normalizeAndValidateEgressAddr(*req.EgressProxyAddr)
+			if err != nil {
+				jsonErr(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			curCfg.Addr = normAddr
+		}
+		if req.EgressProxyUser != nil {
+			curCfg.User = strings.TrimSpace(*req.EgressProxyUser)
+		}
+		if req.EgressProxyPassword != nil && *req.EgressProxyPassword != "" {
+			curCfg.Password = *req.EgressProxyPassword
+		}
+
+		if curCfg.Enabled && curCfg.Addr == "" {
+			jsonErr(w, "proxy address cannot be empty when egress proxy is enabled", http.StatusBadRequest)
+			return
+		}
+
+		if curCfg.Enabled || curCfg.Addr != "" {
+			if _, err := relay.NewEgressDialer(curCfg); err != nil {
+				jsonErr(w, fmt.Sprintf("failed to configure egress proxy: %v", err), http.StatusBadRequest)
+				return
+			}
+		}
+
+		candidateEgressCfg = &curCfg
+		toPersist["egress_proxy_enabled"] = fmt.Sprintf("%t", curCfg.Enabled)
+		toPersist["egress_proxy_addr"] = curCfg.Addr
+		toPersist["egress_proxy_user"] = curCfg.User
+		if req.EgressProxyPassword != nil && *req.EgressProxyPassword != "" {
+			toPersist["egress_proxy_password"] = curCfg.Password
+		}
+	}
+
+	// (3) Persist all keys in ONE transaction
+	if s.sqlStore != nil && len(toPersist) > 0 {
+		if err := s.sqlStore.SetSettings(r.Context(), toPersist); err != nil {
+			slog.Error("failed to persist settings", "error", err)
+			jsonErr(w, "failed to save settings: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// (4) Apply in memory only after persistence succeeded
+	if req.AccessMode != nil && s.accessStore != nil {
+		s.accessStore.SetMode(access.AccessMode(validMode))
+		slog.Info("access mode updated via admin panel", "mode", validMode, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.UnknownDomainPolicy != nil && s.ruleStore != nil {
+		s.ruleStore.SetUnknownDomainPolicy(validPolicy)
+		slog.Info("unknown domain policy updated via admin panel", "policy", validPolicy, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.Timezone != nil {
+		_ = s.SetTimezone(tz)
+		slog.Info("timezone updated via admin panel", "timezone", tz, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.ServerDomain != nil {
+		s.SetServerDomain(normDomain)
+		slog.Info("server domain updated via admin panel", "domain", normDomain, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.RequestLogsEnabled != nil {
+		s.mu.RLock()
+		if s.reqLogger != nil {
+			s.reqLogger.SetEnabled(*req.RequestLogsEnabled)
+		}
+		s.mu.RUnlock()
+		slog.Info("request logs enabled state updated via admin panel", "enabled", *req.RequestLogsEnabled, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.RequestLogsRetention != nil {
+		s.mu.RLock()
+		if s.reqLogger != nil {
+			s.reqLogger.SetRetention(retentionDur)
+		}
+		s.mu.RUnlock()
+		slog.Info("request logs retention updated via admin panel", "retention", retentionClean, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.MaxConnectionsPerIP != nil {
+		s.mu.RLock()
+		if s.limits != nil {
+			s.limits.SetMaxPerIP(*req.MaxConnectionsPerIP)
+		}
+		s.mu.RUnlock()
+		slog.Info("max_connections_per_ip updated via admin panel", "max_connections_per_ip", *req.MaxConnectionsPerIP, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.DNSUnauthorizedPassthrough != nil {
+		s.mu.RLock()
+		if s.dnsServer != nil {
+			s.dnsServer.SetUnauthorizedPassthrough(*req.DNSUnauthorizedPassthrough)
+		}
+		s.mu.RUnlock()
+		slog.Info("dns_unauthorized_passthrough_enabled updated via admin panel", "enabled", *req.DNSUnauthorizedPassthrough, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.AllowedDestPorts != nil {
 		s.mu.RLock()
 		if s.allowList != nil {
 			s.allowList.SetPorts(*req.AllowedDestPorts)
@@ -420,83 +525,40 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.ListenPorts != nil {
-		if len(*req.ListenPorts) == 0 {
-			jsonErr(w, "listen_ports cannot be empty", http.StatusBadRequest)
-			return
-		}
-		for _, p := range *req.ListenPorts {
-			if p <= 0 || p > 65535 {
-				jsonErr(w, fmt.Sprintf("invalid listen port %d", p), http.StatusBadRequest)
-				return
-			}
-		}
-		portsJSON, _ := json.Marshal(*req.ListenPorts)
-		if s.sqlStore != nil {
-			_ = s.sqlStore.SetSetting(r.Context(), "listen_ports", string(portsJSON))
-		}
 		s.SetListenPorts(*req.ListenPorts)
 		slog.Info("listen_ports updated via admin panel", "ports", *req.ListenPorts, "remote_addr", r.RemoteAddr)
 	}
 
 	if req.ListenHTTPPorts != nil {
-		if len(*req.ListenHTTPPorts) == 0 {
-			jsonErr(w, "listen_http_ports cannot be empty", http.StatusBadRequest)
-			return
-		}
-		for _, p := range *req.ListenHTTPPorts {
-			if p <= 0 || p > 65535 {
-				jsonErr(w, fmt.Sprintf("invalid listen http port %d", p), http.StatusBadRequest)
-				return
-			}
-		}
-		portsJSON, _ := json.Marshal(*req.ListenHTTPPorts)
-		if s.sqlStore != nil {
-			_ = s.sqlStore.SetSetting(r.Context(), "listen_http_ports", string(portsJSON))
-		}
 		s.SetListenHTTPPorts(*req.ListenHTTPPorts)
 		slog.Info("listen_http_ports updated via admin panel", "ports", *req.ListenHTTPPorts, "remote_addr", r.RemoteAddr)
 	}
 
-	if req.EgressProxyEnabled != nil || req.EgressProxyAddr != nil || req.EgressProxyUser != nil || req.EgressProxyPassword != nil {
+	if req.LookupEnabled != nil || req.LookupRequireRegistered != nil {
+		curEn, curReq := s.LookupPolicy()
+		if req.LookupEnabled != nil {
+			curEn = *req.LookupEnabled
+		}
+		if req.LookupRequireRegistered != nil {
+			curReq = *req.LookupRequireRegistered
+		}
+		s.SetLookupPolicy(curEn, curReq)
+		slog.Info("lookup policy updated via admin panel", "enabled", curEn, "require_registered", curReq, "remote_addr", r.RemoteAddr)
+	}
+
+	if candidateEgressCfg != nil {
 		s.mu.RLock()
 		ed := s.egressDialer
 		s.mu.RUnlock()
-
 		if ed != nil {
-			cfg := ed.Config()
-			if req.EgressProxyEnabled != nil {
-				cfg.Enabled = *req.EgressProxyEnabled
-			}
-			if req.EgressProxyAddr != nil {
-				cfg.Addr = strings.TrimSpace(*req.EgressProxyAddr)
-			}
-			if req.EgressProxyUser != nil {
-				cfg.User = strings.TrimSpace(*req.EgressProxyUser)
-			}
-			if req.EgressProxyPassword != nil && *req.EgressProxyPassword != "" {
-				cfg.Password = *req.EgressProxyPassword
-			}
-
-			if cfg.Enabled && cfg.Addr == "" {
-				jsonErr(w, "proxy address cannot be empty when egress proxy is enabled", http.StatusBadRequest)
-				return
-			}
-
-			if err := ed.UpdateConfig(cfg); err != nil {
-				jsonErr(w, fmt.Sprintf("failed to update egress proxy: %v", err), http.StatusBadRequest)
-				return
-			}
-
-			if s.sqlStore != nil {
-				_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_enabled", fmt.Sprintf("%t", cfg.Enabled))
-				_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_addr", cfg.Addr)
-				_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_user", cfg.User)
-				if req.EgressProxyPassword != nil && *req.EgressProxyPassword != "" {
-					_ = s.sqlStore.SetSetting(r.Context(), "egress_proxy_password", cfg.Password)
-				}
-			}
-			slog.Info("egress proxy updated via admin panel", "enabled", cfg.Enabled, "addr", cfg.Addr, "remote_addr", r.RemoteAddr)
+			_ = ed.UpdateConfig(*candidateEgressCfg)
 		}
+		slog.Info("egress proxy updated via admin panel", "enabled", candidateEgressCfg.Enabled, "addr", candidateEgressCfg.Addr, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.PanelPath != nil {
+		_ = s.ApplyPathPrefix(validPanelPath)
+		slog.Info("panel path prefix updated via admin panel", "path", s.DisplayPath(), "remote_addr", r.RemoteAddr)
 	}
 
 	jsonOK(w, s.currentSettings())
@@ -520,9 +582,17 @@ func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 
 	req.Addr = strings.TrimSpace(req.Addr)
 	if req.Addr != "" {
+		normAddr, normErr := normalizeAndValidateEgressAddr(req.Addr)
+		if normErr != nil {
+			jsonOK(w, map[string]interface{}{
+				"ok":    false,
+				"error": normErr.Error(),
+			})
+			return
+		}
 		tempEd, dialerErr := relay.NewEgressDialer(config.EgressProxyConfig{
 			Enabled:  true,
-			Addr:     req.Addr,
+			Addr:     normAddr,
 			User:     strings.TrimSpace(req.User),
 			Password: req.Password,
 		})
@@ -574,10 +644,19 @@ func (s *Server) handleUpdateAdminCredentials(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	var callerToken string
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		callerToken = cookie.Value
+	}
+
 	if err := s.UpdateAdminCredentials(r.Context(), req.CurrentPassword, req.NewUsername, req.NewPassword); err != nil {
 		slog.Warn("failed to update admin credentials", "error", err, "remote_addr", r.RemoteAddr)
 		jsonErr(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	if callerToken != "" {
+		s.sessions.deleteAllExcept(callerToken)
 	}
 
 	slog.Info("admin credentials updated successfully via admin panel", "remote_addr", r.RemoteAddr)

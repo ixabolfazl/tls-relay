@@ -421,6 +421,16 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	portsJSON := marshalPortsJSON(ps)
 
 	ctx := r.Context()
+	if s.sqlStore == nil {
+		jsonErr(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+	existing, err := s.sqlStore.GetDomainRule(ctx, domain)
+	if err != nil || existing == nil {
+		jsonErr(w, "domain rule not found", http.StatusNotFound)
+		return
+	}
+
 	// Update primary domain rule
 	if err := s.sqlStore.UpdateDomainRule(ctx, domain, req.GroupName, portsJSON, useEgress, mode); err != nil {
 		slog.Error("admin panel update domain error", "domain", domain, "error", err)

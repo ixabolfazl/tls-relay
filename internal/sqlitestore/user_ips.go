@@ -34,15 +34,12 @@ func (s *Store) ListUserIPs(ctx context.Context, userID int64) ([]UserIP, error)
 	return ips, rows.Err()
 }
 
-// RegisterIP registers a client IP for the user, enforcing max_ips.
-//
-// If the IP already exists: update last_used_at.
-// If IP count < maxIPs: add the IP.
-// If IP count == maxIPs: remove the oldest IP by created_at, then add the new IP.
-func (s *Store) RegisterIP(ctx context.Context, userID int64, ip string, maxIPs int) error {
+// RegisterIPResult registers a client IP for the user, enforcing max_ips (<= 0 means unlimited).
+// Returns isNew=true if the IP was newly inserted, isNew=false if it already existed for this user.
+func (s *Store) RegisterIPResult(ctx context.Context, userID int64, ip string, maxIPs int) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -56,31 +53,33 @@ func (s *Store) RegisterIP(ctx context.Context, userID int64, ip string, maxIPs 
 		_, err = tx.ExecContext(ctx,
 			`UPDATE user_ips SET last_used_at = datetime('now') WHERE id = ?`, existingID)
 		if err != nil {
-			return err
+			return false, err
 		}
-		return tx.Commit()
+		return false, tx.Commit()
 	}
 	if err != sql.ErrNoRows {
-		return err
+		return false, err
 	}
 
-	// Count current IPs for the user.
-	var count int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM user_ips WHERE user_id = ?`, userID,
-	).Scan(&count); err != nil {
-		return err
-	}
+	// Count current IPs for the user if maxIPs > 0 (maxIPs <= 0 means unlimited).
+	if maxIPs > 0 {
+		var count int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM user_ips WHERE user_id = ?`, userID,
+		).Scan(&count); err != nil {
+			return false, err
+		}
 
-	// If at or above max, evict the oldest IPs so count + 1 <= maxIPs.
-	if count >= maxIPs {
-		toEvict := count - maxIPs + 1
-		_, err = tx.ExecContext(ctx,
-			`DELETE FROM user_ips WHERE id IN (
-				SELECT id FROM user_ips WHERE user_id = ? ORDER BY created_at ASC LIMIT ?
-			)`, userID, toEvict)
-		if err != nil {
-			return err
+		// If at or above max, evict the oldest IPs so count + 1 <= maxIPs.
+		if count >= maxIPs {
+			toEvict := count - maxIPs + 1
+			_, err = tx.ExecContext(ctx,
+				`DELETE FROM user_ips WHERE id IN (
+					SELECT id FROM user_ips WHERE user_id = ? ORDER BY created_at ASC LIMIT ?
+				)`, userID, toEvict)
+			if err != nil {
+				return false, err
+			}
 		}
 	}
 
@@ -88,10 +87,19 @@ func (s *Store) RegisterIP(ctx context.Context, userID int64, ip string, maxIPs 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO user_ips (user_id, ip_address) VALUES (?, ?)`, userID, ip)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RegisterIP registers a client IP for the user, enforcing max_ips.
+func (s *Store) RegisterIP(ctx context.Context, userID int64, ip string, maxIPs int) error {
+	_, err := s.RegisterIPResult(ctx, userID, ip, maxIPs)
+	return err
 }
 
 // DeleteUserIP removes a specific IP from a user.
@@ -99,6 +107,20 @@ func (s *Store) DeleteUserIP(ctx context.Context, userID int64, ip string) error
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM user_ips WHERE user_id = ? AND ip_address = ?`, userID, ip)
 	return err
+}
+
+// DeleteAllUserIPs removes all registered IPs for a user and returns the count removed.
+func (s *Store) DeleteAllUserIPs(ctx context.Context, userID int64) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM user_ips WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	ra, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(ra), nil
 }
 
 // CountUserIPs returns the number of IPs registered for a user.

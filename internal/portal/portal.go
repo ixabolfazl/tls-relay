@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
@@ -317,15 +318,7 @@ const landingHTMLRaw = `<!DOCTYPE html>
     </div>
 
     <!-- Domain Lookup -->
-    <div class="card">
-      <div class="card-title">Domain Support Check</div>
-      <p class="hint-top">Enter a domain or paste a full URL to check if it is supported by this relay.</p>
-      <div class="form-row">
-        <input type="text" id="lookup-input" placeholder="e.g. example.com or https://..." autocomplete="off" spellcheck="false" />
-        <button id="lookup-btn" onclick="doLookup()">Check</button>
-      </div>
-      <div id="lookup-result" class="result"></div>
-    </div>
+    {{.LookupCard}}
 
     <!-- Magic Link Registration -->
     <div class="card">
@@ -403,6 +396,7 @@ const landingHTMLRaw = `<!DOCTYPE html>
   async function doLookup() {
     const input = document.getElementById('lookup-input');
     const res = document.getElementById('lookup-result');
+    if (!input || !res) return;
     const raw = (input.value || '').trim();
     if (!raw) return;
 
@@ -529,15 +523,7 @@ const setupHTMLRaw = `<!DOCTYPE html>
     </div>
 
     <!-- Domain Support Check -->
-    <div class="card">
-      <div class="card-title">Domain Support Check</div>
-      <p class="hint-top">Enter a domain to check if it is supported by this relay.</p>
-      <div class="form-row">
-        <input type="text" id="domain-input" placeholder="e.g. example.com" autocomplete="off" spellcheck="false" />
-        <button id="check-btn" onclick="checkDomain()">Check</button>
-      </div>
-      <div id="result" class="result"></div>
-    </div>
+    {{.LookupCard}}
 
     <div class="footer-link"><a href="/">Home</a></div>
   </div>
@@ -584,6 +570,7 @@ const setupHTMLRaw = `<!DOCTYPE html>
   async function checkDomain() {
     const input = document.getElementById('domain-input');
     const res = document.getElementById('result');
+    if (!input || !res) return;
     const raw = (input.value || '').trim();
     if (!raw) return;
 
@@ -626,6 +613,50 @@ const setupHTMLRaw = `<!DOCTYPE html>
 </body>
 </html>
 `
+
+const landingLookupCardHTML = `
+    <!-- Domain Lookup -->
+    <div class="card">
+      <div class="card-title">Domain Support Check</div>
+      <p class="hint-top">Enter a domain or paste a full URL to check if it is supported by this relay.</p>
+      <div class="form-row">
+        <input type="text" id="lookup-input" placeholder="e.g. example.com or https://..." autocomplete="off" spellcheck="false" />
+        <button id="lookup-btn" onclick="doLookup()">Check</button>
+      </div>
+      <div id="lookup-result" class="result"></div>
+    </div>`
+
+const setupLookupCardHTML = `
+    <!-- Domain Support Check -->
+    <div class="card">
+      <div class="card-title">Domain Support Check</div>
+      <p class="hint-top">Enter a domain to check if it is supported by this relay.</p>
+      <div class="form-row">
+        <input type="text" id="domain-input" placeholder="e.g. example.com" autocomplete="off" spellcheck="false" />
+        <button id="check-btn" onclick="checkDomain()">Check</button>
+      </div>
+      <div id="result" class="result"></div>
+    </div>`
+
+func isBotUserAgent(ua string) bool {
+	uaLower := strings.ToLower(ua)
+	bots := []string{
+		"telegrambot",
+		"whatsapp",
+		"facebookexternalhit",
+		"slackbot",
+		"discordbot",
+		"twitterbot",
+		"googlebot",
+		"bingbot",
+	}
+	for _, bot := range bots {
+		if strings.Contains(uaLower, bot) {
+			return true
+		}
+	}
+	return false
+}
 
 // ---------------------------------------------------------------------------
 // Rate Limiter
@@ -697,27 +728,40 @@ type Refresher interface {
 
 // Server holds dependencies for public portal, magic link, and landing page handlers.
 type Server struct {
-	mu           sync.RWMutex
-	addr         string
-	serverIP     string
-	serverDomain string
-	store        *sqlitestore.Store
-	accessStore  *access.AccessStore
-	ruleStore    *rules.RuleStore
-	refresher    Refresher
-	httpServer   *http.Server
-	lookupRL     *rateLimiter
+	mu                      sync.RWMutex
+	addr                    string
+	serverIP                string
+	serverDomain            string
+	store                   *sqlitestore.Store
+	accessStore             *access.AccessStore
+	ruleStore               *rules.RuleStore
+	refresher               Refresher
+	httpServer              *http.Server
+	lookupRL                *rateLimiter
+	connectRL               *rateLimiter
+	lookupEnabled           atomic.Bool
+	lookupRequireRegistered atomic.Bool
 }
 
 // New creates a portal Server.
 func New(addr string, store *sqlitestore.Store, accessStore *access.AccessStore, refresher Refresher) *Server {
-	return &Server{
+	s := &Server{
 		addr:        addr,
 		store:       store,
 		accessStore: accessStore,
 		refresher:   refresher,
 		lookupRL:    newRateLimiter(10, 20),
+		connectRL:   newRateLimiter(10.0/60.0, 10),
 	}
+	s.lookupEnabled.Store(true)
+	s.lookupRequireRegistered.Store(false)
+	return s
+}
+
+// SetLookupPolicy sets the public domain lookup policy.
+func (s *Server) SetLookupPolicy(enabled, requireRegistered bool) {
+	s.lookupEnabled.Store(enabled)
+	s.lookupRequireRegistered.Store(requireRegistered)
 }
 
 // SetServerIP sets the public server IP address to display as DNS server address.
@@ -859,6 +903,10 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.renderLanding(w, r)
+}
+
+func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	clientIP := extractIP(r.RemoteAddr)
 	dnsIP := s.getServerIP(r)
 
@@ -878,6 +926,11 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	out = strings.ReplaceAll(out, "{{.IPStatusBadge}}", badgeHTML)
 	out = strings.ReplaceAll(out, "{{.PrimaryDNS}}", htmlEscape(dnsIP))
 	out = strings.ReplaceAll(out, "{{.SecondaryDNS}}", htmlEscape(dnsIP))
+	lookupCard := ""
+	if s.lookupEnabled.Load() {
+		lookupCard = landingLookupCardHTML
+	}
+	out = strings.ReplaceAll(out, "{{.LookupCard}}", lookupCard)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -887,8 +940,26 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-	link := r.PathValue("magic_link")
+	if isBotUserAgent(r.UserAgent()) {
+		slog.Debug("magic link bot preview ignored", "ua", r.UserAgent(), "remote_addr", r.RemoteAddr)
+		s.renderLanding(w, r)
+		return
+	}
+
 	clientIP := extractIP(r.RemoteAddr)
+	if !s.connectRL.allow(clientIP) {
+		w.Header().Set("Retry-After", "60")
+		if !isBrowser(r) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintln(w, "rate limit exceeded")
+		} else {
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		}
+		return
+	}
+
+	link := r.PathValue("magic_link")
 	ctx := r.Context()
 
 	if link != "" {
@@ -923,12 +994,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			s.replyConnect(w, r, http.StatusForbidden, "", "IP blocked")
 			return
 		}
-		if err := s.store.RegisterIP(ctx, user.ID, clientIP, user.MaxIPs); err != nil {
+		isNew, err := s.store.RegisterIPResult(ctx, user.ID, clientIP, user.MaxIPs)
+		if err != nil {
 			slog.Error("magic link register IP error", "client_ip", clientIP, "user_id", user.ID, "error", err)
 			s.replyConnect(w, r, http.StatusInternalServerError, "", "Internal error")
 			return
 		}
-		if s.refresher != nil {
+		if isNew && s.refresher != nil {
 			if err := s.refresher.RefreshUserIPs(ctx); err != nil {
 				slog.Error("magic link refresh user IPs error", "error", err)
 			}
@@ -937,6 +1009,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			"client_ip", clientIP,
 			"user_id", user.ID,
 			"username", user.Username,
+			"is_new", isNew,
 			"remote_addr", r.RemoteAddr,
 		)
 	} else {
@@ -981,6 +1054,11 @@ func (s *Server) replyConnect(w http.ResponseWriter, r *http.Request, code int, 
 	out = strings.ReplaceAll(out, "{{.ClientIP}}", htmlEscape(clientIP))
 	out = strings.ReplaceAll(out, "{{.PrimaryDNS}}", htmlEscape(dnsIP))
 	out = strings.ReplaceAll(out, "{{.SecondaryDNS}}", htmlEscape(dnsIP))
+	lookupCard := ""
+	if s.lookupEnabled.Load() {
+		lookupCard = setupLookupCardHTML
+	}
+	out = strings.ReplaceAll(out, "{{.LookupCard}}", lookupCard)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -993,9 +1071,32 @@ func (s *Server) replyConnect(w http.ResponseWriter, r *http.Request, code int, 
 // GET /api/lookup?domain=example.com
 // Returns: {"domain": "example.com", "result": "proxy"|"blocked"|"unsupported"}
 func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
+	if !s.lookupEnabled.Load() {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "lookup disabled"})
+		return
+	}
+
 	clientIP := extractIP(r.RemoteAddr)
+	if s.lookupRequireRegistered.Load() {
+		var isReg bool
+		if s.store != nil {
+			isReg, _ = s.store.IsIPRegistered(r.Context(), clientIP)
+		}
+		if !isReg {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "registered clients only"})
+			return
+		}
+	}
+
 	if !s.lookupRL.allow(clientIP) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "rate limit exceeded"})

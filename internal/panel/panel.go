@@ -3,6 +3,7 @@ package panel
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,16 @@ const csrfCookieName = "relay_csrf"
 const csrfHeaderName = "X-CSRF-Token"
 const sessionTTL = 8 * time.Hour
 
+var dummyBcryptHash []byte
+
+func init() {
+	var err error
+	dummyBcryptHash, err = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing-mitigation"), bcrypt.DefaultCost)
+	if err != nil {
+		panic("panel: failed to precompute dummy bcrypt hash: " + err.Error())
+	}
+}
+
 func (s *sessionStore) create() (sessionToken string, csrfToken string) {
 	sessionToken = randomHex(32)
 	csrfToken = randomHex(16)
@@ -98,13 +109,29 @@ func (s *sessionStore) validCSRF(sessionToken string, csrfHeader string) bool {
 		delete(s.sessions, sessionToken)
 		return false
 	}
-	return info.csrfToken != "" && info.csrfToken == csrfHeader
+	return info.csrfToken != "" && subtle.ConstantTimeCompare([]byte(info.csrfToken), []byte(csrfHeader)) == 1
 }
 
 func (s *sessionStore) delete(token string) {
 	s.mu.Lock()
 	delete(s.sessions, token)
 	s.mu.Unlock()
+}
+
+func (s *sessionStore) deleteAllExcept(keepToken string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok := range s.sessions {
+		if tok != keepToken {
+			delete(s.sessions, tok)
+		}
+	}
+}
+
+func (s *sessionStore) clearAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions = make(map[string]*sessionInfo)
 }
 
 // loginAttempt tracks failed login attempt count and lockout expiration per IP.
@@ -222,32 +249,36 @@ type MagicLinkHandlerRegistrar = PortalHandlerRegistrar
 
 // Server is the admin panel HTTP server.
 type Server struct {
-	addr            string
-	mu              sync.RWMutex
-	pathPrefix      string // normalized active path prefix: e.g. "" for root "/", or "/admin"
-	activeMux       atomic.Pointer[http.ServeMux]
-	timezone        atomic.Pointer[string]
-	passHash        []byte
-	username        string
-	serverDomain    string
-	ruleStore       *rules.RuleStore
-	accessStore     *access.AccessStore
-	sqlStore        *sqlitestore.Store
-	connTracker     *relay.ConnTracker
-	reqLogger       *requestlog.Logger
-	limits          *relay.LimitTracker
-	dnsServer       *dnsresolver.Server
-	egressDialer    *relay.EgressDialer
-	allowList       *relay.PortAllowList
-	listenPorts     []int
-	listenHTTPPorts []int
-	restartHandler  func()
-	refresher       Refresher
-	sessions        *sessionStore
-	loginLimiter    *loginLimiter
-	startTime       time.Time
-	httpServer      *http.Server
-	portalSrv       PortalHandlerRegistrar
+	addr                    string
+	mu                      sync.RWMutex
+	pathPrefix              string // normalized active path prefix: e.g. "" for root "/", or "/admin"
+	activeMux               atomic.Pointer[http.ServeMux]
+	timezone                atomic.Pointer[string]
+	passHash                []byte
+	username                string
+	serverDomain            string
+	relayIP                 string
+	defaultMaxIPs           int
+	lookupEnabled           atomic.Bool
+	lookupRequireRegistered atomic.Bool
+	ruleStore               *rules.RuleStore
+	accessStore             *access.AccessStore
+	sqlStore                *sqlitestore.Store
+	connTracker             *relay.ConnTracker
+	reqLogger               *requestlog.Logger
+	limits                  *relay.LimitTracker
+	dnsServer               *dnsresolver.Server
+	egressDialer            *relay.EgressDialer
+	allowList               *relay.PortAllowList
+	listenPorts             []int
+	listenHTTPPorts         []int
+	restartHandler          func()
+	refresher               Refresher
+	sessions                *sessionStore
+	loginLimiter            *loginLimiter
+	startTime               time.Time
+	httpServer              *http.Server
+	portalSrv               PortalHandlerRegistrar
 }
 
 // New creates a Server. Username and password are read from SQLite if stored,
@@ -294,18 +325,21 @@ func New(
 	}
 
 	s := &Server{
-		addr:         addr,
-		passHash:     hash,
-		username:     user,
-		serverDomain: initialDomain,
-		ruleStore:    rs,
-		accessStore:  as,
-		sqlStore:     sq,
-		refresher:    refresher,
-		sessions:     newSessionStore(),
-		loginLimiter: newLoginLimiter(5, 5*time.Minute),
-		startTime:    time.Now(),
+		addr:          addr,
+		passHash:      hash,
+		username:      user,
+		serverDomain:  initialDomain,
+		defaultMaxIPs: 3,
+		ruleStore:     rs,
+		accessStore:   as,
+		sqlStore:      sq,
+		refresher:     refresher,
+		sessions:      newSessionStore(),
+		loginLimiter:  newLoginLimiter(5, 5*time.Minute),
+		startTime:     time.Now(),
 	}
+	s.lookupEnabled.Store(true)
+	s.lookupRequireRegistered.Store(false)
 
 	if err := s.ApplyPathPrefix(pathPrefix); err != nil {
 		return nil, fmt.Errorf("applying path prefix: %w", err)
@@ -410,14 +444,98 @@ func (s *Server) SetPortalServer(p PortalHandlerRegistrar) {
 	s.portalSrv = p
 	domain := s.serverDomain
 	prefix := s.pathPrefix
+	lookupEn := s.lookupEnabled.Load()
+	lookupReq := s.lookupRequireRegistered.Load()
 	s.mu.Unlock()
 
-	if p != nil && domain != "" {
-		p.SetServerDomain(domain)
+	if p != nil {
+		if domain != "" {
+			p.SetServerDomain(domain)
+		}
+		if settable, ok := p.(lookupPolicySettable); ok && settable != nil {
+			settable.SetLookupPolicy(lookupEn, lookupReq)
+		}
 	}
 
 	// Rebuild mux to include the new handler (outside lock to avoid deadlock).
 	_ = s.applyPathPrefixInternal(prefix)
+}
+
+type lookupPolicySettable interface {
+	SetLookupPolicy(enabled, requireRegistered bool)
+}
+
+// SetLookupPolicy sets the public domain lookup policy and pushes to the portal server if registered.
+func (s *Server) SetLookupPolicy(enabled, requireRegistered bool) {
+	s.lookupEnabled.Store(enabled)
+	s.lookupRequireRegistered.Store(requireRegistered)
+
+	s.mu.RLock()
+	p := s.portalSrv
+	s.mu.RUnlock()
+
+	if settable, ok := p.(lookupPolicySettable); ok && settable != nil {
+		settable.SetLookupPolicy(enabled, requireRegistered)
+	}
+}
+
+// LookupPolicy returns the current lookup policy flags.
+func (s *Server) LookupPolicy() (enabled bool, requireRegistered bool) {
+	return s.lookupEnabled.Load(), s.lookupRequireRegistered.Load()
+}
+
+// SetRelayIP registers the relay IP address.
+func (s *Server) SetRelayIP(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayIP = strings.TrimSpace(ip)
+}
+
+// RelayIP returns the configured relay IP address.
+func (s *Server) RelayIP() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.relayIP
+}
+
+// SetDefaultMaxIPs sets the fallback max_ips for new users when not explicitly provided.
+func (s *Server) SetDefaultMaxIPs(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n > 0 {
+		s.defaultMaxIPs = n
+	}
+}
+
+// DefaultMaxIPs returns the default max_ips for new users.
+func (s *Server) DefaultMaxIPs() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.defaultMaxIPs <= 0 {
+		return 3
+	}
+	return s.defaultMaxIPs
+}
+
+// ReloadCredentials re-reads admin credentials from SQLite under the mutex and clears all active sessions.
+func (s *Server) ReloadCredentials(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sqlStore != nil {
+		if dbUser, found, err := s.sqlStore.GetSetting(ctx, "panel_admin_user"); err != nil {
+			return fmt.Errorf("reading panel_admin_user: %w", err)
+		} else if found && strings.TrimSpace(dbUser) != "" {
+			s.username = strings.TrimSpace(dbUser)
+		}
+		if dbHash, found, err := s.sqlStore.GetSetting(ctx, "panel_admin_password_hash"); err != nil {
+			return fmt.Errorf("reading panel_admin_password_hash: %w", err)
+		} else if found && strings.TrimSpace(dbHash) != "" {
+			s.passHash = []byte(strings.TrimSpace(dbHash))
+		}
+	}
+	s.sessions.clearAll()
+	return nil
 }
 
 // SetMagicLinkServer is an alias for SetPortalServer.
@@ -529,6 +647,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 	// Limit request body size to 10MB to prevent memory exhaustion DoS
 	if r.Body != nil {
@@ -878,7 +997,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username != currentUsername || bcrypt.CompareHashAndPassword(currentPassHash, []byte(req.Password)) != nil {
+	userMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(currentUsername)) == 1
+	var hashToCompare []byte
+	if userMatch {
+		hashToCompare = currentPassHash
+	} else {
+		hashToCompare = dummyBcryptHash
+	}
+	passErr := bcrypt.CompareHashAndPassword(hashToCompare, []byte(req.Password))
+
+	if !userMatch || passErr != nil {
 		locked, rem := s.loginLimiter.recordFailure(clientIP)
 		slog.Warn("admin panel login failed: invalid credentials", "username", req.Username, "remote_addr", r.RemoteAddr, "client_ip", clientIP)
 		if locked {
@@ -900,7 +1028,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   isSecure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -909,7 +1037,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: false,
 		Secure:   isSecure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	slog.Info("admin panel login successful", "username", req.Username, "remote_addr", r.RemoteAddr, "client_ip", clientIP)
@@ -928,6 +1056,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   isSecure,
+		SameSite: http.SameSiteStrictMode,
 	})
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,
@@ -936,6 +1065,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: false,
 		Secure:   isSecure,
+		SameSite: http.SameSiteStrictMode,
 	})
 	slog.Info("admin panel logout", "remote_addr", r.RemoteAddr)
 	jsonOK(w, map[string]string{"status": "ok"})
@@ -962,11 +1092,13 @@ func formatISO8601(raw string) string {
 
 func jsonOK(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
 func jsonErr(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

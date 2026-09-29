@@ -158,6 +158,25 @@ export function mount(container) {
                   <input id="set-max-conns-input" type="number" class="input tabular-nums" min="1" max="10000" placeholder="200" />
                   <span class="field-hint">Rate limiting per client IP (default: 200).</span>
                 </div>
+
+                <!-- Domain Lookup Controls -->
+                <div class="field pt-2 border-t border-border space-y-3">
+                  <label class="field-label mb-1">Public Domain Lookup API (/api/lookup)</label>
+                  <div class="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
+                    <input id="set-lookup-enabled-switch" type="checkbox" class="checkbox" />
+                    <label for="set-lookup-enabled-switch" class="flex flex-col cursor-pointer select-none">
+                      <span class="text-sm font-medium text-txt">Enable Domain Lookup API</span>
+                      <span class="text-xs text-txt-muted">Allow domain support checks from landing and setup portal pages</span>
+                    </label>
+                  </div>
+                  <div class="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
+                    <input id="set-lookup-require-registered-switch" type="checkbox" class="checkbox" />
+                    <label for="set-lookup-require-registered-switch" class="flex flex-col cursor-pointer select-none">
+                      <span class="text-sm font-medium text-txt">Require Registered Client IP</span>
+                      <span class="text-xs text-txt-muted">Restrict domain support check to registered and authorized client IPs only</span>
+                    </label>
+                  </div>
+                </div>
               </div>
               <div class="card-footer">
                 <span class="text-xs text-txt-subtle">Security policies take effect immediately upon saving</span>
@@ -451,6 +470,10 @@ export function mount(container) {
       $('#set-dns-passthrough-switch', container).checked = Boolean(settings.dns_unauthorized_passthrough);
       $('#set-max-conns-input', container).value = settings.max_connections_per_ip || 200;
 
+      // Lookup policy
+      $('#set-lookup-enabled-switch', container).checked = settings.lookup_enabled !== false;
+      $('#set-lookup-require-registered-switch', container).checked = Boolean(settings.lookup_require_registered);
+
       // Network: Permitted Ports
       $('#set-allowed-ports-input', container).value = Array.isArray(settings.allowed_dest_ports)
         ? settings.allowed_dest_ports.join(', ')
@@ -647,6 +670,8 @@ export function mount(container) {
     const accessMode = selectedAccessRadio ? selectedAccessRadio.value : 'user';
     const unknownPolicy = selectedPolicyRadio ? selectedPolicyRadio.value : 'allow_default_port';
     const dnsPassthrough = $('#set-dns-passthrough-switch', container).checked;
+    const lookupEnabled = $('#set-lookup-enabled-switch', container).checked;
+    const lookupRequireRegistered = $('#set-lookup-require-registered-switch', container).checked;
     const maxConnsRaw = parseInt($('#set-max-conns-input', container).value, 10);
     const maxConns = isNaN(maxConnsRaw) ? 200 : maxConnsRaw;
 
@@ -662,6 +687,8 @@ export function mount(container) {
         access_mode: accessMode,
         unknown_domain_policy: unknownPolicy,
         dns_unauthorized_passthrough_enabled: dnsPassthrough,
+        lookup_enabled: lookupEnabled,
+        lookup_require_registered: lookupRequireRegistered,
         max_connections_per_ip: maxConns,
       });
       toast.success('Access policies saved successfully');

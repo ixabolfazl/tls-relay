@@ -345,6 +345,16 @@ func run(cfgPath string) error {
 	panelSrv.SetListenPorts(cfg.Listen.Ports)
 	panelSrv.SetListenHTTPPorts(cfg.Listen.HTTPPorts)
 	_ = panelSrv.SetTimezone(cfg.Timezone)
+	if cfg.DNS.RelayIP != "" {
+		panelSrv.SetRelayIP(cfg.DNS.RelayIP)
+	}
+	if cfg.Users.DefaultMaxIPs > 0 {
+		panelSrv.SetDefaultMaxIPs(cfg.Users.DefaultMaxIPs)
+	}
+
+	lookupEnabled := dbSettings["lookup_enabled"] != "false"
+	lookupRequireRegistered := dbSettings["lookup_require_registered"] == "true"
+	panelSrv.SetLookupPolicy(lookupEnabled, lookupRequireRegistered)
 
 	restartCh := make(chan struct{}, 1)
 	panelSrv.SetRestartHandler(func() {
@@ -360,6 +370,7 @@ func run(cfgPath string) error {
 	// -----------------------------------------------------------------------
 	portalSrv := portal.New(cfg.MagicLink.Addr, sqlStore, accessStore, syncer)
 	portalSrv.SetServerIP(cfg.DNS.RelayIP)
+	portalSrv.SetLookupPolicy(lookupEnabled, lookupRequireRegistered)
 	if panelSrv.ServerDomain() != "" {
 		portalSrv.SetServerDomain(panelSrv.ServerDomain())
 	}

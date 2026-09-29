@@ -32,6 +32,33 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	return nil
 }
 
+// SetSettings sets or updates multiple settings in a single transaction.
+func (s *Store) SetSettings(ctx context.Context, settings map[string]string) error {
+	if len(settings) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning settings transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+	if err != nil {
+		return fmt.Errorf("preparing settings statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for k, v := range settings {
+		if _, err := stmt.ExecContext(ctx, k, v); err != nil {
+			return fmt.Errorf("setting %q: %w", k, err)
+		}
+	}
+	return tx.Commit()
+}
+
 // AllSettings retrieves all stored key-value settings.
 func (s *Store) AllSettings(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_settings`)

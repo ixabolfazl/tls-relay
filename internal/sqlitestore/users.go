@@ -109,11 +109,15 @@ func (s *Store) UpdateUserLastSeen(ctx context.Context, userID int64, lastSeen t
 	return err
 }
 
-// IsIPRegistered checks if an IP address is registered to any active user.
+// IsIPRegistered checks if an IP address is registered to any enabled user.
 func (s *Store) IsIPRegistered(ctx context.Context, ip string) (bool, error) {
 	var exists bool
 	err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM user_ips WHERE ip_address = ?)`, ip).Scan(&exists)
+		`SELECT EXISTS(
+			SELECT 1 FROM user_ips ui
+			JOIN users u ON u.id = ui.user_id
+			WHERE ui.ip_address = ? AND u.enabled = 1
+		)`, ip).Scan(&exists)
 	return exists, err
 }
 

@@ -27,6 +27,7 @@ type ImportResult struct {
 	BlacklistUpdated int `json:"blacklist_updated"`
 	UsersAdded       int `json:"users_added"`
 	UsersUpdated     int `json:"users_updated"`
+	IPsSkipped       int `json:"ips_skipped"`
 }
 
 // ExportAll retrieves all domain rules, global blacklist entries, and users with their IPs.
@@ -152,7 +153,7 @@ func (s *Store) ImportData(ctx context.Context, domainRules []DomainRuleRow, bla
 			continue
 		}
 		maxIPs := u.MaxIPs
-		if maxIPs <= 0 {
+		if maxIPs < 0 {
 			maxIPs = 3
 		}
 
@@ -196,16 +197,36 @@ func (s *Store) ImportData(ctx context.Context, domainRules []DomainRuleRow, bla
 			res.UsersAdded++
 		}
 
-		// Insert user IPs if any
+		var currentIPCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_ips WHERE user_id = ?`, userID).Scan(&currentIPCount); err != nil {
+			return nil, fmt.Errorf("counting IPs for user %q: %w", username, err)
+		}
+
+		// Insert user IPs if any, enforcing quota (extra IPs are skipped and counted in ips_skipped)
 		for _, ip := range u.IPs {
 			ipStr := strings.TrimSpace(ip.IPAddress)
 			if ipStr == "" {
 				continue
 			}
-			_, _ = tx.ExecContext(ctx,
-				`INSERT INTO user_ips (user_id, ip_address) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+			var exists bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_ips WHERE user_id = ? AND ip_address = ?)`, userID, ipStr).Scan(&exists); err != nil {
+				return nil, fmt.Errorf("checking existing IP for user %q: %w", username, err)
+			}
+			if exists {
+				continue
+			}
+			if maxIPs > 0 && currentIPCount >= maxIPs {
+				res.IPsSkipped++
+				continue
+			}
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO user_ips (user_id, ip_address) VALUES (?, ?)`,
 				userID, ipStr,
 			)
+			if err != nil {
+				return nil, fmt.Errorf("inserting IP %q for user %q: %w", ipStr, username, err)
+			}
+			currentIPCount++
 		}
 	}
 

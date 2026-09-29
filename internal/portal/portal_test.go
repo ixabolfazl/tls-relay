@@ -277,3 +277,144 @@ func TestBaseHostAndBaseURL(t *testing.T) {
 		t.Errorf("expected BaseURL 'http://198.51.100.1', got %q", url)
 	}
 }
+
+func TestConnect_RateLimiting(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	ctx := context.Background()
+
+	user, _ := store.CreateUser(ctx, "ratelimited_user", 20)
+	_, handler := createHandler(t, store, as)
+
+	// Burst is 10. First 10 should succeed.
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest("GET", "/connect/"+user.MagicLink, nil)
+		req.Header.Set("User-Agent", "curl/7.88.1")
+		req.RemoteAddr = "192.0.2.1:12345"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d failed: %d", i+1, w.Code)
+		}
+	}
+
+	// 11th request from the same IP must hit rate limit (429)
+	req := httptest.NewRequest("GET", "/connect/"+user.MagicLink, nil)
+	req.Header.Set("User-Agent", "curl/7.88.1")
+	req.RemoteAddr = "192.0.2.1:12345"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests, got %d", w.Code)
+	}
+	if retryAfter := w.Header().Get("Retry-After"); retryAfter == "" {
+		t.Errorf("expected Retry-After header on 429 response")
+	}
+}
+
+func TestConnect_BotUserAgent(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	ctx := context.Background()
+
+	user, _ := store.CreateUser(ctx, "bot_user", 5)
+	_, handler := createHandler(t, store, as)
+
+	botUAs := []string{
+		"TelegramBot (like TwitterBot)",
+		"WhatsApp/2.21.12.21 A",
+		"facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+		"Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+		"Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+		"Twitterbot/1.0",
+		"Googlebot/2.1 (+http://www.google.com/bot.html)",
+		"bingbot/2.0; +http://www.bing.com/bingbot.htm",
+	}
+
+	for _, ua := range botUAs {
+		req := httptest.NewRequest("GET", "/connect/"+user.MagicLink, nil)
+		req.Header.Set("User-Agent", ua)
+		req.RemoteAddr = "192.0.2.55:12345"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("UA %q: expected 200, got %d", ua, w.Code)
+		}
+	}
+
+	// Verify NO IP was registered by any bot
+	ips, _ := store.ListUserIPs(ctx, user.ID)
+	if len(ips) != 0 {
+		t.Errorf("bots should NOT register IPs, found: %d IPs", len(ips))
+	}
+}
+
+func TestLookup_Policy(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	ctx := context.Background()
+
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	// 1. Lookup disabled -> 404
+	srv.SetLookupPolicy(false, false)
+	req := httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
+	req.RemoteAddr = "10.0.0.1:12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when lookup disabled, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. Lookup enabled, require_registered = true, unregistered caller -> 403
+	srv.SetLookupPolicy(true, true)
+	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
+	req.RemoteAddr = "10.0.0.1:12345"
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unregistered client, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. Register IP -> 200
+	user, _ := store.CreateUser(ctx, "reg_user", 2)
+	_ = store.RegisterIP(ctx, user.ID, "10.0.0.1", 2)
+
+	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
+	req.RemoteAddr = "10.0.0.1:12345"
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for registered client, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLandingAndSetup_LookupCardHiddenWhenDisabled(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	// Disabled
+	srv.SetLookupPolicy(false, false)
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "1.2.3.4:12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if strings.Contains(w.Body.String(), "Domain Support Check") {
+		t.Errorf("landing page should NOT contain Domain Support Check when lookup is disabled")
+	}
+
+	// Enabled
+	srv.SetLookupPolicy(true, false)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), "Domain Support Check") {
+		t.Errorf("landing page SHOULD contain Domain Support Check when lookup is enabled")
+	}
+}

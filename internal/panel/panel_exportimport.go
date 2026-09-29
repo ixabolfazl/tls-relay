@@ -20,6 +20,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="mydns-export.json"`)
 	_ = json.NewEncoder(w).Encode(data)
 }
@@ -123,6 +124,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 
 	filename := fmt.Sprintf("tls-relay-backup-%s.db", time.Now().Format("20060102-150405"))
 	w.Header().Set("Content-Type", "application/x-sqlite3")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 
 	if err := s.sqlStore.BackupToWriter(r.Context(), w); err != nil {
