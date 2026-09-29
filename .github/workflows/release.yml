@@ -124,14 +124,31 @@ jobs:
             echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Extract Release Notes
+        run: |
+          TAG="${{ steps.tag_step.outputs.TAG }}"
+          TAG_NO_V="${TAG#v}"
+          if [ -f RELEASE_NOTES.md ]; then
+            awk -v t1="${TAG}" -v t2="v${TAG_NO_V}" '
+              $0 ~ "^##[[:space:]]+(" t1 "|" t2 ")([[:space:]]|$)" { found=1; next }
+              found && /^##[[:space:]]+/ { exit }
+              found { print }
+            ' RELEASE_NOTES.md > release_notes_current.md
+          fi
+
+          if [ ! -s release_notes_current.md ]; then
+            echo "Release ${TAG}" > release_notes_current.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag_step.outputs.TAG }}
           name: ${{ steps.tag_step.outputs.TAG }}
+          body_path: release_notes_current.md
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
           files: |
             release-assets/*.tar.gz
             release-assets/*.sha256
