@@ -30,6 +30,7 @@ const TIMEZONES = [
 
 export function mount(container) {
   let settings = {};
+  let dnsServers = [];
 
   setHtml(
     container,
@@ -64,6 +65,10 @@ export function mount(container) {
             <button type="button" data-target="sec-network" class="settings-nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-txt-muted hover:text-txt hover:bg-surface-2 transition-colors text-left w-full shrink-0">
               <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
               <span>Network</span>
+            </button>
+            <button type="button" data-target="sec-dns" class="settings-nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-txt-muted hover:text-txt hover:bg-surface-2 transition-colors text-left w-full shrink-0">
+              <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
+              <span>DNS Resolvers</span>
             </button>
             <button type="button" data-target="sec-egress" class="settings-nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-txt-muted hover:text-txt hover:bg-surface-2 transition-colors text-left w-full shrink-0">
               <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
@@ -227,6 +232,44 @@ export function mount(container) {
               <div class="card-footer">
                 <span class="text-xs text-txt-subtle">Permitted destination ports update dynamically without service restart</span>
                 <button id="set-save-network-btn" type="button" class="btn btn-primary btn-sm">Save Permitted Ports</button>
+              </div>
+            </section>
+
+            <!-- Section: Upstream DNS Resolvers -->
+            <section id="sec-dns" class="card scroll-mt-20">
+              <div class="card-header">
+                <div>
+                  <h2 class="text-base font-semibold text-txt">Upstream DNS Resolvers</h2>
+                  <p class="text-xs text-txt-muted">Configure 1–5 upstream servers with ordered fallback priority for resolving unconfigured domains</p>
+                </div>
+              </div>
+              <div class="card-body space-y-4">
+                <div id="set-dns-servers-list" class="space-y-3">
+                  <!-- Dynamic rows rendered here -->
+                </div>
+
+                <div class="flex items-center justify-between pt-1">
+                  <button id="set-dns-add-btn" type="button" class="btn btn-secondary btn-sm">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    <span>Add Upstream Server</span>
+                  </button>
+                  <span class="text-xs text-txt-muted">Order defines priority: Primary &rarr; Secondary &rarr; Fallback</span>
+                </div>
+
+                <div class="pt-2 border-t border-border space-y-3">
+                  <div class="flex items-center gap-3">
+                    <button id="set-test-dns-btn" type="button" class="btn btn-secondary btn-sm">
+                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                      <span>Test DNS Resolvers</span>
+                    </button>
+                    <span id="set-dns-test-status" class="text-xs text-txt-muted"></span>
+                  </div>
+                  <div id="set-dns-test-results" class="space-y-1.5 text-xs empty:hidden"></div>
+                </div>
+              </div>
+              <div class="card-footer">
+                <span class="text-xs text-txt-subtle">Order matters: resolvers are tried in sequence until a valid answer is received</span>
+                <button id="set-save-dns-btn" type="button" class="btn btn-primary btn-sm">Save Upstream DNS</button>
               </div>
             </section>
 
@@ -494,6 +537,12 @@ export function mount(container) {
       $('#set-allowed-ports-input', container).value = Array.isArray(settings.allowed_dest_ports)
         ? settings.allowed_dest_ports.join(', ')
         : (settings.allowed_dest_ports || '443, 8443');
+
+      // Upstream DNS Resolvers
+      const rawDNS = settings.dns_upstream_addr || '';
+      dnsServers = rawDNS ? rawDNS.split(',').map((s) => s.trim()).filter(Boolean) : ['1.1.1.1:53'];
+      if (dnsServers.length === 0) dnsServers = ['1.1.1.1:53'];
+      renderDNSServers();
 
       // Egress
       $('#set-egress-enabled-switch', container).checked = Boolean(settings.egress_proxy_enabled);
@@ -784,6 +833,227 @@ export function mount(container) {
       await loadSettings();
     } catch (err) {
       toast.error(err.message || 'Failed to update permitted ports');
+    }
+  });
+
+  // --- Upstream DNS Resolvers Handlers ---
+
+  function syncInputsToState() {
+    const inputs = $$('.set-dns-addr-input', container);
+    inputs.forEach((input) => {
+      const idx = parseInt(input.getAttribute('data-index'), 10);
+      if (!isNaN(idx) && idx >= 0 && idx < dnsServers.length) {
+        dnsServers[idx] = input.value;
+      }
+    });
+  }
+
+  function renderDNSServers() {
+    const listEl = $('#set-dns-servers-list', container);
+    if (!listEl) return;
+
+    if (dnsServers.length === 0) {
+      dnsServers = ['1.1.1.1:53'];
+    }
+
+    const items = dnsServers.map((addr, idx) => {
+      let roleLabel = 'Primary';
+      let badgeClass = 'badge badge-primary';
+      if (idx === 1) {
+        roleLabel = 'Secondary';
+        badgeClass = 'badge badge-neutral';
+      } else if (idx > 1) {
+        roleLabel = `Fallback ${idx + 1}`;
+        badgeClass = 'badge badge-neutral opacity-80';
+      }
+
+      return html`
+        <div class="flex items-center gap-2 p-2 rounded-lg bg-surface-2/40 border border-border set-dns-row" data-index="${idx}">
+          <span class="${badgeClass} font-mono text-xs w-24 justify-center shrink-0">${roleLabel}</span>
+          <input
+            type="text"
+            class="input font-mono text-xs flex-1 set-dns-addr-input"
+            placeholder="e.g. 1.1.1.1:53 or 8.8.8.8"
+            value="${escapeHtml(addr)}"
+            data-index="${idx}"
+          />
+          <div class="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm p-1.5 set-dns-up-btn"
+              data-index="${idx}"
+              ${idx === 0 ? 'disabled' : ''}
+              title="Move Up in priority"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm p-1.5 set-dns-down-btn"
+              data-index="${idx}"
+              ${idx === dnsServers.length - 1 ? 'disabled' : ''}
+              title="Move Down in priority"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <button
+              type="button"
+              class="btn btn-danger btn-sm p-1.5 set-dns-remove-btn"
+              data-index="${idx}"
+              ${dnsServers.length <= 1 ? 'disabled' : ''}
+              title="Remove upstream"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+          </div>
+        </div>
+      `;
+    });
+
+    setHtml(listEl, items.join(''));
+
+    const addBtn = $('#set-dns-add-btn', container);
+    if (addBtn) {
+      addBtn.disabled = dnsServers.length >= 5;
+    }
+
+    $$('.set-dns-addr-input', listEl).forEach((input) => {
+      input.addEventListener('input', () => {
+        const idx = parseInt(input.getAttribute('data-index'), 10);
+        if (!isNaN(idx) && idx >= 0 && idx < dnsServers.length) {
+          dnsServers[idx] = input.value;
+        }
+      });
+    });
+
+    $$('.set-dns-up-btn', listEl).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        syncInputsToState();
+        const idx = parseInt(btn.getAttribute('data-index'), 10);
+        if (idx > 0) {
+          const temp = dnsServers[idx];
+          dnsServers[idx] = dnsServers[idx - 1];
+          dnsServers[idx - 1] = temp;
+          renderDNSServers();
+        }
+      });
+    });
+
+    $$('.set-dns-down-btn', listEl).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        syncInputsToState();
+        const idx = parseInt(btn.getAttribute('data-index'), 10);
+        if (idx < dnsServers.length - 1) {
+          const temp = dnsServers[idx];
+          dnsServers[idx] = dnsServers[idx + 1];
+          dnsServers[idx + 1] = temp;
+          renderDNSServers();
+        }
+      });
+    });
+
+    $$('.set-dns-remove-btn', listEl).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        syncInputsToState();
+        const idx = parseInt(btn.getAttribute('data-index'), 10);
+        if (dnsServers.length > 1) {
+          dnsServers.splice(idx, 1);
+          renderDNSServers();
+        }
+      });
+    });
+  }
+
+  $('#set-dns-add-btn', container).addEventListener('click', () => {
+    syncInputsToState();
+    if (dnsServers.length >= 5) {
+      toast.warning('Maximum 5 upstream DNS resolvers allowed');
+      return;
+    }
+    dnsServers.push('');
+    renderDNSServers();
+    const inputs = $$('.set-dns-addr-input', container);
+    if (inputs.length > 0) {
+      inputs[inputs.length - 1].focus();
+    }
+  });
+
+  $('#set-test-dns-btn', container).addEventListener('click', async () => {
+    syncInputsToState();
+    const addrs = dnsServers.map((s) => s.trim()).filter(Boolean);
+    if (addrs.length === 0) {
+      toast.warning('Please enter at least one upstream DNS address');
+      return;
+    }
+
+    const testBtn = $('#set-test-dns-btn', container);
+    const statusEl = $('#set-dns-test-status', container);
+    const resultsEl = $('#set-dns-test-results', container);
+
+    testBtn.disabled = true;
+    statusEl.textContent = 'Testing connectivity...';
+    setHtml(resultsEl, '');
+
+    try {
+      const results = await api.testDns({ addrs });
+      statusEl.textContent = '';
+
+      if (!Array.isArray(results) || results.length === 0) {
+        setHtml(resultsEl, html`<div class="text-txt-muted">No test results returned.</div>`);
+        return;
+      }
+
+      const rows = results.map((res) => {
+        if (res.ok) {
+          return html`
+            <div class="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-medium">
+              <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="font-mono">${escapeHtml(res.addr)}</span>
+              <span>&mdash; OK (${res.latency_ms || 0} ms)</span>
+            </div>
+          `;
+        }
+        return html`
+          <div class="flex items-center gap-2 text-danger font-medium">
+            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            <span class="font-mono">${escapeHtml(res.addr)}</span>
+            <span>&mdash; Failed: ${escapeHtml(res.error || 'Server error')}</span>
+          </div>
+        `;
+      });
+
+      setHtml(resultsEl, rows.join(''));
+      const allOk = results.every((r) => r.ok);
+      if (allOk) {
+        toast.success('All tested upstream DNS resolvers are responding');
+      } else {
+        toast.warning('Some upstream DNS resolvers failed to respond');
+      }
+    } catch (err) {
+      statusEl.textContent = '';
+      setHtml(resultsEl, html`<div class="text-danger">Test failed: ${escapeHtml(err.message)}</div>`);
+      toast.error(`DNS test error: ${err.message}`);
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
+
+  $('#set-save-dns-btn', container).addEventListener('click', async () => {
+    syncInputsToState();
+    const addrs = dnsServers.map((s) => s.trim()).filter(Boolean);
+    if (addrs.length === 0) {
+      toast.warning('Please enter at least one upstream DNS address');
+      return;
+    }
+
+    try {
+      await api.updateSettings({
+        dns_upstream_addr: addrs.join(','),
+      });
+      toast.success('Upstream DNS resolvers saved successfully');
+      await loadSettings();
+    } catch (err) {
+      toast.error(err.message || 'Failed to save upstream DNS resolvers');
     }
   });
 

@@ -192,6 +192,8 @@ export const api = {
     apiFetch('api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   testProxy: (payload = {}) =>
     apiFetch('api/settings/test-proxy', { method: 'POST', body: JSON.stringify(payload) }),
+  testDns: (payload = {}) =>
+    apiFetch('api/settings/test-dns', { method: 'POST', body: JSON.stringify(payload) }),
   updateAdminCredentials: (payload) =>
     apiFetch('api/admin/credentials', { method: 'PUT', body: JSON.stringify(payload) }),
   serviceRestart: () => apiFetch('api/service/restart', { method: 'POST' }),
