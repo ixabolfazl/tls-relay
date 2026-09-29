@@ -214,6 +214,10 @@ export function mount(container) {
       toast.error('Please enter at least one domain');
       return;
     }
+    if (data.mode === 'proxy' && (!data.ports || data.ports === '')) {
+      toast.error('Please enter valid port numbers (e.g. 443, 8443) or "all"');
+      return;
+    }
 
     const submitBtn = $('#dom-submit-add-btn', container);
     submitBtn.disabled = true;
@@ -818,27 +822,64 @@ export function mount(container) {
   });
 
   // Bulk Assign Egress
-  $('#dom-bulk-egress-btn', container).addEventListener('click', async () => {
+  $('#dom-bulk-egress-btn', container).addEventListener('click', () => {
     const filteredDomains = getFilteredDomains();
     const selectedDomains = tableState.getSelectedIds(filteredDomains);
     if (!selectedDomains.length) return;
 
     const targetDomains = getSelectedTargetDomains(filteredDomains);
-    const confirmed = await dialog.confirm({
-      title: 'Set Egress Proxy',
-      message: `Enable outbound egress proxy routing for ${selectedDomains.length} selected domain(s)?`,
-      confirmText: 'Enable Egress',
-      cancelText: 'Disable Egress',
-    });
 
-    try {
-      await api.bulkAssignEgress(targetDomains, confirmed);
-      toast.success(`${confirmed ? 'Enabled' : 'Disabled'} egress proxy for ${selectedDomains.length} domain(s)`);
-      tableState.clearSelection();
-      await fetchDomains();
-    } catch (err) {
-      toast.error(err.message || 'Failed to update egress proxy settings');
-    }
+    const contentEl = document.createElement('div');
+    contentEl.className = 'text-sm text-txt-muted leading-relaxed';
+    contentEl.textContent = `Choose an egress proxy configuration for ${selectedDomains.length} selected domain(s):`;
+
+    dialog.open({
+      title: 'Bulk Egress Proxy Configuration',
+      content: contentEl,
+      size: 'sm',
+      actions: [
+        {
+          text: 'Cancel',
+          className: 'btn btn-secondary',
+          value: 'cancel',
+          onClick: (_, { close }) => close('cancel'),
+        },
+        {
+          text: 'Disable egress',
+          className: 'btn btn-secondary text-danger hover:bg-danger-soft',
+          value: 'disable',
+          onClick: async (_, { close }) => {
+            close('disable');
+            try {
+              await api.bulkAssignEgress(targetDomains, false);
+              toast.success(`Disabled egress proxy for ${selectedDomains.length} domain(s)`);
+              tableState.clearSelection();
+              await fetchDomains();
+            } catch (err) {
+              toast.error(err.message || 'Failed to update egress proxy settings');
+            }
+          },
+        },
+        {
+          text: 'Enable egress',
+          className: 'btn btn-primary',
+          primary: true,
+          value: 'enable',
+          onClick: async (_, { close }) => {
+            close('enable');
+            try {
+              await api.bulkAssignEgress(targetDomains, true);
+              toast.success(`Enabled egress proxy for ${selectedDomains.length} domain(s)`);
+              tableState.clearSelection();
+              await fetchDomains();
+            } catch (err) {
+              toast.error(err.message || 'Failed to update egress proxy settings');
+            }
+          },
+        },
+      ],
+      onClose: () => {},
+    });
   });
 
   // Edit Domain Dialog
@@ -862,6 +903,10 @@ export function mount(container) {
             primary: true,
             onClick: async (_, { close }) => {
               const data = formObj.getData();
+              if (data.mode === 'proxy' && (!data.ports || data.ports === '')) {
+                toast.error('Please enter valid port numbers (e.g. 443, 8443) or "all"');
+                return;
+              }
               try {
                 await api.updateDomain(d.domain, {
                   group_name: data.group_name,
@@ -1038,6 +1083,15 @@ export function mount(container) {
           onClick: async (_, { close }) => {
             const apexData = apexForm.getData();
             const wildcardData = wildcardForm.getData();
+
+            if (apexData.mode === 'proxy' && (!apexData.ports || apexData.ports === '')) {
+              toast.error('Please enter valid port numbers for apex rule (e.g. 443) or "all"');
+              return;
+            }
+            if (wildcardData.mode === 'proxy' && (!wildcardData.ports || wildcardData.ports === '')) {
+              toast.error('Please enter valid port numbers for wildcard rule (e.g. 443) or "all"');
+              return;
+            }
 
             try {
               if (isSynced) {

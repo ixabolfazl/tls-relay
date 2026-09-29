@@ -33,29 +33,70 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate domain rules
-	for i, r := range payload.DomainRules {
-		domain := strings.TrimSpace(r.Domain)
-		if domain == "" {
+	// Validate and normalize domain rules, deduplicating within payload
+	var normalizedDomainRules []sqlitestore.DomainRuleRow
+	domainIndices := make(map[string]int)
+
+	for i, dr := range payload.DomainRules {
+		rawDomain := strings.TrimSpace(dr.Domain)
+		if rawDomain == "" {
 			jsonErr(w, fmt.Sprintf("record domain_rules[%d]: domain name is required", i), http.StatusBadRequest)
 			return
 		}
-		portsStr := strings.TrimSpace(r.Ports)
+		normDomain, err := rules.NormalizeDomainInput(rawDomain)
+		if err != nil {
+			jsonErr(w, fmt.Sprintf("record domain_rules[%d] (%s): invalid domain: %v", i, rawDomain, err), http.StatusBadRequest)
+			return
+		}
+
+		mode, err := rules.NormalizeMode(dr.Mode)
+		if err != nil {
+			jsonErr(w, fmt.Sprintf("record domain_rules[%d] (%s): invalid mode: %v", i, normDomain, err), http.StatusBadRequest)
+			return
+		}
+
+		portsStr := strings.TrimSpace(dr.Ports)
 		if portsStr == "" {
 			portsStr = "443"
 		}
-		if _, err := rules.ParsePorts(portsStr); err != nil {
-			jsonErr(w, fmt.Sprintf("record domain_rules[%d] (%s): invalid ports: %v", i, domain, err), http.StatusBadRequest)
+		ps, err := rules.ParsePorts(portsStr)
+		if err != nil {
+			jsonErr(w, fmt.Sprintf("record domain_rules[%d] (%s): invalid ports: %v", i, normDomain, err), http.StatusBadRequest)
 			return
 		}
-		useProxy := strings.ToLower(strings.TrimSpace(r.UseEgressProxy))
-		if useProxy != "" && useProxy != "default" && useProxy != "true" && useProxy != "false" {
-			jsonErr(w, fmt.Sprintf("record domain_rules[%d] (%s): invalid use_egress_proxy option %q", i, domain, useProxy), http.StatusBadRequest)
+		portsJSON := marshalPortsJSON(ps)
+
+		useProxy := strings.ToLower(strings.TrimSpace(dr.UseEgressProxy))
+		if useProxy == "" || useProxy == "default" || useProxy == "false" || useProxy == "server" {
+			useProxy = "false"
+		} else if useProxy == "true" || useProxy == "custom" {
+			useProxy = "true"
+		} else {
+			jsonErr(w, fmt.Sprintf("record domain_rules[%d] (%s): invalid use_egress_proxy option %q", i, normDomain, dr.UseEgressProxy), http.StatusBadRequest)
 			return
+		}
+
+		groupName := sqlitestore.SanitizeGroupName(dr.GroupName)
+
+		row := sqlitestore.DomainRuleRow{
+			Domain:         normDomain,
+			GroupName:      groupName,
+			Ports:          portsJSON,
+			UseEgressProxy: useProxy,
+			Mode:           mode,
+			Enabled:        dr.Enabled,
+		}
+
+		if idx, exists := domainIndices[normDomain]; exists {
+			normalizedDomainRules[idx] = row
+		} else {
+			domainIndices[normDomain] = len(normalizedDomainRules)
+			normalizedDomainRules = append(normalizedDomainRules, row)
 		}
 	}
 
 	// Validate blacklist entries
+	var normalizedBlacklist []sqlitestore.BlacklistEntry
 	for i, b := range payload.Blacklist {
 		entry := strings.TrimSpace(b.Entry)
 		if entry == "" {
@@ -66,15 +107,33 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, fmt.Sprintf("record blacklist[%d] (%s): %v", i, entry, err), http.StatusBadRequest)
 			return
 		}
+		normalizedBlacklist = append(normalizedBlacklist, sqlitestore.BlacklistEntry{
+			Entry: entry,
+		})
 	}
 
 	// Validate user entries
+	var normalizedUsers []sqlitestore.UserWithIPs
 	for i, u := range payload.Users {
 		username := strings.TrimSpace(u.Username)
 		if username == "" {
 			jsonErr(w, fmt.Sprintf("record users[%d]: username is required", i), http.StatusBadRequest)
 			return
 		}
+		if u.MaxIPs < 0 {
+			jsonErr(w, fmt.Sprintf("record users[%d] (%s): max_ips cannot be negative", i, username), http.StatusBadRequest)
+			return
+		}
+		if u.MaxIPs > 1000 {
+			jsonErr(w, fmt.Sprintf("record users[%d] (%s): max_ips cannot exceed 1000", i, username), http.StatusBadRequest)
+			return
+		}
+		token := strings.TrimSpace(u.MagicLink)
+		if token != "" && len(token) < 16 {
+			jsonErr(w, fmt.Sprintf("record users[%d] (%s): token must be at least 16 characters", i, username), http.StatusBadRequest)
+			return
+		}
+
 		for j, ip := range u.IPs {
 			ipStr := strings.TrimSpace(ip.IPAddress)
 			if ipStr != "" {
@@ -84,10 +143,15 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		userItem := u
+		userItem.Username = username
+		userItem.MagicLink = token
+		normalizedUsers = append(normalizedUsers, userItem)
 	}
 
 	ctx := r.Context()
-	result, err := s.sqlStore.ImportData(ctx, payload.DomainRules, payload.Blacklist, payload.Users)
+	result, err := s.sqlStore.ImportData(ctx, normalizedDomainRules, normalizedBlacklist, normalizedUsers)
 	if err != nil {
 		slog.Error("admin panel import error", "error", err)
 		jsonErr(w, "import database error: "+err.Error(), http.StatusInternalServerError)

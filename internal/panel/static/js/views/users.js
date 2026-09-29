@@ -76,8 +76,8 @@ export function mount(container) {
                   type="number"
                   class="input tabular-nums"
                   min="0"
-                  max="100"
-                  value="1"
+                  max="1000"
+                  value="${store.getState().settings?.default_max_ips ?? 3}"
                   placeholder="0 = unlimited"
                 />
               </div>
@@ -261,6 +261,15 @@ export function mount(container) {
     const username = usernameInput.value.trim();
     if (!username) return;
 
+    const defaultMaxIPs = store.getState().settings?.default_max_ips ?? 3;
+    const rawMaxIPs = maxIpsInput.value.trim();
+    const maxIpsVal = rawMaxIPs === '' ? defaultMaxIPs : parseInt(rawMaxIPs, 10);
+    if (isNaN(maxIpsVal) || maxIpsVal < 0 || maxIpsVal > 1000) {
+      toast.warning('Max IPs must be between 0 (unlimited) and 1000');
+      maxIpsInput.focus();
+      return;
+    }
+
     submitBtn.disabled = true;
     submitBtn.textContent = 'Creating...';
 
@@ -268,13 +277,13 @@ export function mount(container) {
       const res = await api.createUser({
         username,
         magic_link: tokenInput.value.trim() || undefined,
-        max_ips: parseInt(maxIpsInput.value, 10) || 1,
+        max_ips: maxIpsVal,
       });
 
       toast.success(`User "${username}" created successfully`);
       usernameInput.value = '';
       tokenInput.value = '';
-      maxIpsInput.value = '1';
+      maxIpsInput.value = String(defaultMaxIPs);
 
       await fetchUsers();
     } catch (err) {
@@ -374,7 +383,8 @@ export function mount(container) {
       const isOnline = onlineUsernames.has(u.username.toLowerCase());
       const totalBandwidth = (u.total_bytes_sent || 0) + (u.total_bytes_received || 0);
       const isEnabled = u.enabled !== false;
-      const maxIps = u.max_ips !== undefined ? u.max_ips : 1;
+      const defaultMaxIPs = store.getState().settings?.default_max_ips ?? 3;
+      const maxIps = u.max_ips !== undefined ? u.max_ips : defaultMaxIPs;
 
       const row = document.createElement('tr');
       row.className = 'table-row';
@@ -406,7 +416,7 @@ export function mount(container) {
         <td class="table-td text-xs font-mono tabular-nums text-txt">
           <div class="flex flex-col">
             <span class="font-semibold">${formatBytes(totalBandwidth)}</span>
-            <span class="text-[10px] text-txt-subtle">Max ${maxIps === 0 ? '∞' : maxIps} IP${maxIps === 1 ? '' : 's'}</span>
+            <span class="text-[10px] text-txt-subtle">${maxIps === 0 ? 'Unlimited IPs' : `Max ${maxIps} IP${maxIps === 1 ? '' : 's'}`}</span>
           </div>
         </td>
         <td class="table-td font-mono text-xs text-txt-muted">
@@ -528,8 +538,8 @@ export function mount(container) {
 
       <div class="field">
         <label class="field-label" for="edit-max-ips">Max Simultaneous IPs</label>
-        <input id="edit-max-ips" type="number" class="input tabular-nums" min="0" max="100" value="${u.max_ips !== undefined ? u.max_ips : 1}" />
-        <span class="field-hint">0 = unlimited IPs allowed</span>
+        <input id="edit-max-ips" type="number" class="input tabular-nums" min="0" max="1000" value="${u.max_ips !== undefined ? u.max_ips : 3}" />
+        <span class="field-hint">0 = Unlimited IPs allowed (max 1000)</span>
       </div>
 
       <div class="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
@@ -559,14 +569,20 @@ export function mount(container) {
           onClick: async (_, { close }) => {
             const newUsername = content.querySelector('#edit-username').value.trim();
             const newToken = content.querySelector('#edit-token').value.trim();
-            const newMaxIps = parseInt(content.querySelector('#edit-max-ips').value, 10);
+            const rawMaxIps = content.querySelector('#edit-max-ips').value.trim();
+            const newMaxIps = rawMaxIps === '' ? (u.max_ips ?? 3) : parseInt(rawMaxIps, 10);
             const newEnabled = content.querySelector('#edit-enabled-switch').checked;
+
+            if (isNaN(newMaxIps) || newMaxIps < 0 || newMaxIps > 1000) {
+              toast.warning('Max IPs must be between 0 (unlimited) and 1000');
+              return;
+            }
 
             try {
               await api.updateUser(u.id, {
                 username: newUsername,
                 magic_link: newToken || undefined,
-                max_ips: isNaN(newMaxIps) ? 1 : newMaxIps,
+                max_ips: newMaxIps,
                 enabled: newEnabled,
               });
               toast.success(`User updated successfully`);
@@ -696,21 +712,49 @@ export function mount(container) {
 
   // Reset Token
   async function resetUserToken(u) {
-    const confirmed = await dialog.confirm({
-      title: `Reset Token: ${u.username}`,
-      message: `Are you sure you want to regenerate the access token for ${u.username}? Any client using the old token will be disconnected.`,
-      confirmText: 'Reset Token',
-      danger: true,
-    });
-    if (!confirmed) return;
+    const content = document.createElement('div');
+    content.className = 'flex flex-col gap-4 text-sm text-txt-muted leading-relaxed';
+    content.innerHTML = `
+      <p>
+        Resetting the token generates a new access token. This only blocks <strong>new registrations</strong> with the old token; already-registered IPs will keep access.
+      </p>
+      <div class="flex items-center gap-3 p-3 rounded-xl border border-danger/30 bg-danger/5">
+        <input id="reset-clear-ips-checkbox" type="checkbox" class="checkbox shrink-0" />
+        <label for="reset-clear-ips-checkbox" class="flex flex-col cursor-pointer select-none">
+          <span class="text-sm font-medium text-txt">Also remove all registered IPs (revokes current access)</span>
+          <span class="text-xs text-txt-subtle">Immediately revokes access and disconnects active connections for this user</span>
+        </label>
+      </div>
+    `;
 
-    try {
-      const res = await api.resetMagicLink(u.id);
-      toast.success('Token has been reset');
-      await fetchUsers();
-    } catch (err) {
-      toast.error(err.message || 'Failed to reset token');
-    }
+    dialog.open({
+      title: `Reset Token: ${u.username}`,
+      content,
+      size: 'sm',
+      actions: [
+        { text: 'Cancel', className: 'btn btn-secondary', value: false },
+        {
+          text: 'Reset Token',
+          className: 'btn btn-danger',
+          primary: true,
+          onClick: async (_, { close }) => {
+            const clearIps = content.querySelector('#reset-clear-ips-checkbox').checked;
+            try {
+              const res = await api.resetMagicLink(u.id, { clear_ips: clearIps });
+              if (clearIps) {
+                toast.success(`Token reset and ${res.cleared_ips ?? 0} registered IPs removed`);
+              } else {
+                toast.success('Token has been reset');
+              }
+              close();
+              await fetchUsers();
+            } catch (err) {
+              toast.error(err.message || 'Failed to reset token');
+            }
+          },
+        },
+      ],
+    });
   }
 
   // Toggle User Enabled

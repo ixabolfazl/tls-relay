@@ -193,7 +193,10 @@ func (s *Store) ImportData(ctx context.Context, domainRules []DomainRuleRow, bla
 			if err != nil {
 				return nil, fmt.Errorf("inserting user %q: %w", username, err)
 			}
-			userID, _ = r.LastInsertId()
+			userID, err = r.LastInsertId()
+			if err != nil {
+				return nil, fmt.Errorf("getting last insert id for user %q: %w", username, err)
+			}
 			res.UsersAdded++
 		}
 

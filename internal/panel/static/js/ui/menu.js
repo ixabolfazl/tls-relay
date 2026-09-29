@@ -2,7 +2,7 @@
  * Dropdown and context menu manager with viewport edge flipping and keyboard navigation.
  */
 
-import { html, raw, createElement } from '../core/dom.js';
+import { html, raw, createElement, escapeHtml } from '../core/dom.js';
 
 let activeMenu = null;
 
@@ -31,7 +31,7 @@ export function showMenu(triggerEl, items = []) {
     if (item.icon) {
       content += `<span class="shrink-0 w-4 h-4">${item.icon}</span>`;
     }
-    content += `<span>${item.text}</span>`;
+    content += `<span>${escapeHtml(item.text)}</span>`;
     btn.innerHTML = content;
 
     btn.addEventListener('click', (e) => {

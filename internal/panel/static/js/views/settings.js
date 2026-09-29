@@ -222,7 +222,7 @@ export function mount(container) {
               <div class="card-header">
                 <div>
                   <h2 class="text-base font-semibold text-txt">Upstream Egress Proxy</h2>
-                  <p class="text-xs text-txt-muted">Forward relay traffic through an upstream SOCKS5 or HTTP proxy</p>
+                  <p class="text-xs text-txt-muted">Forward relay traffic through an upstream SOCKS5 proxy (host:port)</p>
                 </div>
               </div>
               <div class="card-body space-y-4">
@@ -237,7 +237,8 @@ export function mount(container) {
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div class="field md:col-span-3">
                     <label class="field-label" for="set-egress-addr">Proxy Address</label>
-                    <input id="set-egress-addr" type="text" class="input font-mono text-xs" placeholder="socks5://127.0.0.1:1080 or 1.2.3.4:8080" />
+                    <input id="set-egress-addr" type="text" class="input font-mono text-xs" placeholder="127.0.0.1:1080" />
+                    <span class="field-hint">SOCKS5 proxy (host:port)</span>
                   </div>
                   <div class="field">
                     <label class="field-label" for="set-egress-user">Proxy Username (Optional)</label>
@@ -679,6 +680,16 @@ export function mount(container) {
       toast.warning('Max connections per IP must be at least 1');
       $('#set-max-conns-input', container)?.focus();
       return;
+    }
+
+    if (accessMode === 'public' && settings?.access_mode !== 'public') {
+      const confirmed = await dialog.confirm({
+        title: 'Switch to Public Access Mode?',
+        message: 'Warning: Switching Access Mode to Public removes client authentication. The relay and DNS will become open to everyone without token authorization or IP registration. Are you sure you want to proceed?',
+        confirmText: 'Switch to Public',
+        danger: true,
+      });
+      if (!confirmed) return;
     }
 
     try {

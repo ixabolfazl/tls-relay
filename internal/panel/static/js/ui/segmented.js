@@ -2,7 +2,7 @@
  * Segmented control component and initializer.
  */
 
-import { html, raw, setHtml } from '../core/dom.js';
+import { html, raw, setHtml, escapeHtml } from '../core/dom.js';
 
 export function createSegmentedControl({
   options = [], // [{ value, label, count }]
@@ -35,9 +35,9 @@ export function createSegmentedControl({
 
       btn.className = `${baseBtnClasses} ${sizeBtnClasses} ${stateClasses}`;
 
-      let labelHtml = `<span>${opt.label}</span>`;
+      let labelHtml = `<span>${escapeHtml(opt.label)}</span>`;
       if (opt.count !== undefined && opt.count !== null) {
-        labelHtml += `<span class="px-1.5 py-0.2 text-[11px] font-semibold rounded-full ${isSelected ? 'bg-surface-2 text-txt' : 'bg-surface-3 text-txt-muted'}">${opt.count}</span>`;
+        labelHtml += `<span class="px-1.5 py-0.2 text-[11px] font-semibold rounded-full ${isSelected ? 'bg-surface-2 text-txt' : 'bg-surface-3 text-txt-muted'}">${escapeHtml(opt.count)}</span>`;
       }
       btn.innerHTML = labelHtml;
 

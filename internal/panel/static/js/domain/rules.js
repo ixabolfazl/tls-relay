@@ -42,26 +42,44 @@ export function matchRule(hostname, rulesList = []) {
 }
 
 export function parsePorts(portsInput) {
-  if (portsInput === undefined || portsInput === null) return 'all';
+  if (portsInput === undefined || portsInput === null) return null;
   if (typeof portsInput === 'string') {
     const trimmed = portsInput.trim().toLowerCase();
-    if (trimmed === 'all' || trimmed === '') return 'all';
-    const nums = trimmed
-      .split(/[,;\s]+/)
-      .map((p) => parseInt(p, 10))
-      .filter((n) => !isNaN(n) && n > 0 && n <= 65535);
+    if (trimmed === 'all') return 'all';
+    if (trimmed === '') return null;
+    const parts = trimmed.split(/[,;\s]+/).filter(Boolean);
+    if (parts.length === 0) return null;
+    const nums = [];
+    for (const p of parts) {
+      const n = parseInt(p, 10);
+      if (isNaN(n) || n <= 0 || n > 65535 || String(n) !== p) {
+        return null;
+      }
+      nums.push(n);
+    }
     const unique = Array.from(new Set(nums)).sort((a, b) => a - b);
-    return unique.length > 0 ? unique : 'all';
+    return unique.length > 0 ? unique : null;
   }
   if (Array.isArray(portsInput)) {
-    return portsInput.length > 0 ? portsInput : 'all';
+    if (portsInput.length === 0) return null;
+    const nums = [];
+    for (const p of portsInput) {
+      const n = typeof p === 'number' ? p : parseInt(p, 10);
+      if (isNaN(n) || n <= 0 || n > 65535) return null;
+      nums.push(n);
+    }
+    const unique = Array.from(new Set(nums)).sort((a, b) => a - b);
+    return unique.length > 0 ? unique : null;
   }
-  return 'all';
+  return null;
 }
 
 export function formatPorts(ports) {
-  if (!ports || ports === 'all' || (Array.isArray(ports) && ports.length === 0)) {
+  if (ports === 'all') {
     return 'All ports';
+  }
+  if (!ports || (Array.isArray(ports) && ports.length === 0)) {
+    return '443';
   }
   if (Array.isArray(ports)) {
     return ports.join(', ');

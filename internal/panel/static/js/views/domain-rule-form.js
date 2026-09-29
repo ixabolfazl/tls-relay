@@ -23,11 +23,23 @@ export function createDomainRuleForm({
   const uid = 'drf_' + Math.random().toString(36).slice(2, 9);
 
   let currentMode = initialData.mode || 'proxy';
-  let currentEgress =
+  const originalEgress =
     initialData.use_egress_proxy !== undefined
-      ? String(initialData.use_egress_proxy) === 'true'
-      : isEgressGlobalEnabled;
+      ? String(initialData.use_egress_proxy)
+      : 'false';
+  let currentEgress = originalEgress === 'true';
   let currentGroup = initialData.group_name || '';
+
+  let initialPortsValue = '443';
+  if (isEdit && initialData.ports !== undefined && initialData.ports !== null) {
+    if (initialData.ports === 'all') {
+      initialPortsValue = 'all';
+    } else if (Array.isArray(initialData.ports)) {
+      initialPortsValue = initialData.ports.length > 0 ? initialData.ports.join(', ') : '443';
+    } else {
+      initialPortsValue = String(initialData.ports);
+    }
+  }
 
   const formWrapper = createElement(html`
     <div class="flex flex-col gap-4">
@@ -94,7 +106,7 @@ export function createDomainRuleForm({
           type="text"
           class="input font-mono"
           placeholder="443, 8443 or all"
-          value="${formatPorts(initialData.ports)}"
+          value="${initialPortsValue}"
         />
         <span class="field-hint">Comma-separated TCP ports (e.g. "443, 8443") or "all".</span>
       </div>
@@ -181,7 +193,7 @@ export function createDomainRuleForm({
               />
               <label for="${uid}-egress-checkbox" class="flex flex-col cursor-pointer select-none">
                 <span class="text-sm font-medium text-txt">Use Outbound Egress Proxy</span>
-                <span class="text-xs text-txt-subtle">Route outbound traffic through the configured upstream proxy</span>
+                <span class="text-xs text-txt-subtle">Route outbound traffic through the configured upstream SOCKS5 proxy (host:port)</span>
               </label>
             </div>
           `
@@ -372,13 +384,31 @@ export function createDomainRuleForm({
     const subdomainsCheckbox = formWrapper.querySelector(`#${uid}-subdomains-checkbox`);
     const egressCheckbox = formWrapper.querySelector(`#${uid}-egress-checkbox`);
 
+    let egressVal;
+    if (isEdit) {
+      if (currentMode === 'proxy' && egressCheckbox) {
+        egressVal = String(egressCheckbox.checked);
+      } else {
+        egressVal = originalEgress;
+      }
+    } else {
+      if (currentMode === 'proxy' && egressCheckbox) {
+        egressVal = String(egressCheckbox.checked);
+      } else {
+        egressVal = 'false';
+      }
+    }
+
+    const rawPorts = portsInput ? portsInput.value : '';
+    const parsedPorts = currentMode === 'proxy' ? parsePorts(rawPorts) : 'all';
+
     return {
       domain: domainInput ? domainInput.value.trim() : initialData.domain || '',
       mode: currentMode,
       group_name: groupCombobox.getValue().trim(),
-      ports: currentMode === 'proxy' ? parsePorts(portsInput ? portsInput.value : 'all') : 'all',
+      ports: parsedPorts,
       include_subdomains: subdomainsCheckbox ? subdomainsCheckbox.checked : false,
-      use_egress_proxy: currentMode === 'proxy' && egressCheckbox ? String(egressCheckbox.checked) : 'false',
+      use_egress_proxy: egressVal,
     };
   }
 
@@ -392,7 +422,15 @@ export function createDomainRuleForm({
     }
     if (data.ports !== undefined) {
       const pInput = formWrapper.querySelector(`#${uid}-ports-input`);
-      if (pInput) pInput.value = formatPorts(data.ports);
+      if (pInput) {
+        if (data.ports === 'all') {
+          pInput.value = 'all';
+        } else if (Array.isArray(data.ports)) {
+          pInput.value = data.ports.join(', ');
+        } else {
+          pInput.value = data.ports || '443';
+        }
+      }
     }
     if (data.use_egress_proxy !== undefined) {
       const eCheckbox = formWrapper.querySelector(`#${uid}-egress-checkbox`);

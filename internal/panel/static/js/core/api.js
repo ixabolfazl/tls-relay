@@ -159,7 +159,11 @@ export const api = {
     apiFetch(`api/users/${id}/ips`, { method: 'POST', body: JSON.stringify({ ip }) }),
   deleteUserIP: (id, ip) =>
     apiFetch(`api/users/${id}/ips/${encodeURIComponent(ip)}`, { method: 'DELETE' }), // B1/B14 fix
-  resetMagicLink: (id) => apiFetch(`api/users/${id}/magic-link/reset`, { method: 'POST' }),
+  resetMagicLink: (id, payload) =>
+    apiFetch(`api/users/${id}/magic-link/reset`, {
+      method: 'POST',
+      body: payload ? JSON.stringify(payload) : undefined,
+    }),
   getUserUsage: (id, range = 'today') =>
     apiFetch(`api/users/${id}/usage?range=${encodeURIComponent(range)}`),
   resetUserUsage: (id) => apiFetch(`api/users/${id}/usage/reset`, { method: 'POST' }),

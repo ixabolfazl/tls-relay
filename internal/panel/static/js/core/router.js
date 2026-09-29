@@ -2,7 +2,7 @@
  * Hash-based single page application client router.
  */
 
-import { $, $$ } from './dom.js';
+import { $, $$, escapeHtml } from './dom.js';
 import { store } from './store.js';
 
 const ROUTES = {
@@ -69,7 +69,7 @@ export async function navigate(routeName, replace = false) {
     viewContainer.innerHTML = `
       <div class="card p-8 text-center max-w-md mx-auto my-12">
         <h3 class="text-base font-bold text-danger mb-1">Failed to load view</h3>
-        <p class="text-xs text-txt-muted mb-4">${err.message}</p>
+        <p class="text-xs text-txt-muted mb-4">${escapeHtml(err.message)}</p>
         <button type="button" class="btn btn-secondary btn-sm" onclick="location.reload()">Reload Page</button>
       </div>
     `;

@@ -2,7 +2,7 @@
  * Searchable combobox component with custom input / new item creation.
  */
 
-import { html, raw, createElement } from '../core/dom.js';
+import { html, raw, createElement, escapeHtml } from '../core/dom.js';
 
 export function createCombobox({
   options = [], // array of strings or { value, label }
@@ -71,7 +71,7 @@ export function createCombobox({
       const createBtn = document.createElement('button');
       createBtn.type = 'button';
       createBtn.className = 'menu-item text-primary-600 font-medium';
-      createBtn.innerHTML = `<span>Create "<strong>${filterText.trim()}</strong>"</span>`;
+      createBtn.innerHTML = `<span>Create "<strong>${escapeHtml(filterText.trim())}</strong>"</span>`;
       createBtn.addEventListener('mousedown', (e) => {
         e.preventDefault();
         selectValue(filterText.trim());
