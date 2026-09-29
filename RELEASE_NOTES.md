@@ -1,5 +1,27 @@
 # Release Notes
 
+## v1.4.0
+
+### Admin Dashboard
+* **Redesigned Overview Dashboard:** Replaced multi-column metric cards with a single full-width panel. Live connection count, global bandwidth, DNS query rate, and relay status are displayed side-by-side with sparkline charts updated every few seconds.
+* **DNS Traffic Sparkline:** The dashboard now renders a live DNS query-rate sparkline chart alongside the TLS bandwidth chart, providing immediate visibility into resolver load.
+* **Usage Report View:** New `Usage Report` section in the admin panel shows per-user and per-domain bandwidth and DNS query breakdowns with date-range filtering and CSV export.
+
+### DNS & Portal
+* **Client DNS Status Check:** The public landing page now includes a "DNS Status" card that automatically verifies whether the visiting device routes DNS through the relay. When the page loads, the portal issues a one-time hex probe token (`POST /api/dns-check/start`), the browser resolves `<token>.dnscheck.tls-relay.invalid.` against the relay DNS, and the page polls `GET /api/dns-check/result?token=<hex>` until the resolver confirms the probe was received. The card displays a green "✓ DNS is correctly pointing to this server" badge on success or an amber warning if the check times out.
+* **DNSCheckRegistry:** New in-memory token registry (`internal/dnsresolver/dnscheck.go`) with a TTL-based background sweeper, bounded capacity, and lock-safe token observation recording. Wired into `handleQuery` at intercept priority (after rate limiting, before rule evaluation) with zero hot-path overhead when no probe is in flight.
+
+### User & Domain Management
+* **Per-User DNS Usage Tracking:** The DNS resolver now emits per-user query counts when a client IP is registered to a known user, feeding the usage aggregation pipeline.
+* **Domain Rule Egress Overrides:** Individual domain rules can now override the global SOCKS5 egress setting per domain.
+* **Public Access Mode Registration Cleanup:** In `public` access mode the landing page no longer shows the Magic Link registration card or setup step, since all IPs are admitted automatically.
+
+### API Changes
+* `POST /api/dns-check/start` — portal endpoint to issue a DNS probe token (rate-limited: 5 req/s per IP).
+* `GET /api/dns-check/result?token=<hex>` — portal endpoint returning `{seen, seen_at, source_ip}`.
+
+---
+
 ## v1.3.0
 
 ### Security & Hardening

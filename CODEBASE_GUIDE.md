@@ -34,7 +34,7 @@
 *   **`internal/httprelay`**: Mirrored pipeline matching `internal/relay` but adapted for plain HTTP stream routing by examining the decrypted HTTP Host header.
 *   **`internal/httphost`**: High-performance HTTP parser reading the request line and extracting the Host header on the shared port.
 *   **`internal/frontrouter`**: Gathers all shared listener traffic. Parses headers first, resolves domain configuration, and directs matching relay traffic to `internal/httprelay` or routes unmatched traffic to the `internal/panel` HTTP server.
-*   **`internal/dnsresolver`**: Custom DNS resolver filtering client IPs, updating metrics, and routing matching configuration domains Authoritatively to the relay IP.
+*   **`internal/dnsresolver`**: Custom DNS resolver filtering client IPs, updating metrics, and routing matching configuration domains authoritatively to the relay IP. Also intercepts `<token>.dnscheck.tls-relay.invalid.` probe queries (via `DNSCheckRegistry`) so the portal landing page can verify client DNS configuration without touching the hot path.
 *   **`internal/rules`**: Core lookup structure maintaining normalized rules mapping domains to mode (proxy/direct/block) and destination port lists. Uses `atomic.Pointer` for lock-free hot path reads.
 *   **`internal/access`**: Fast, thread-safe IP access control check validating clients against registered user IPs and blacklist rules.
 *   **`internal/sni`**: Extracts Server Name Indication (SNI) hostnames from raw TLS ClientHello handshakes.
@@ -92,6 +92,8 @@
 *   `GET /api/request-logs?before_id=<id>&limit=<n>`: Cursor pagination for request logs. Returns `{logs, next_before_id, has_more}`. `total` is only returned when no filters are applied and is backed by a 30s cached count.
 *   `POST /api/users/{id}/magic-link/reset`: Accepts optional body `{"clear_ips": true}` to revoke all registered IPs for the user in addition to regenerating the token. Response contains `cleared_ips`.
 *   `GET /api/settings` & `PUT /api/settings`: Exposes `lookup_enabled`, `lookup_require_registered`, `http_front_max_conns_per_ip`, `http_front_max_global_conns`, and returns `default_max_ips`.
+*   `POST /api/dns-check/start` (portal): Issues a short-lived 24-character hex probe token, records it in `DNSCheckRegistry`, and returns `{"token": "<hex>"}`. Rate-limited to 5 req/s per IP.
+*   `GET /api/dns-check/result?token=<hex>` (portal): Returns `{"seen": bool, "seen_at": RFC3339, "source_ip": string}`. When `seen` is true the DNS resolver intercepted a probe query for the token, confirming the client routes DNS through the relay.
 
 ---
 
@@ -122,25 +124,26 @@ internal/panel/static/
       rules.js                     # Domain parsing, validation, port formatting, and rule matching
       status.js                    # Status-to-tone/badge mappings (purge-safe literal class maps)
     ui/
-      chart.js                     # Responsive SVG chart with ResizeObserver, true aspect ratio, tooltips
       combobox.js                  # Searchable select with custom item creation
       dialog.js                    # Native <dialog> modals with Promise-based confirmation & prompts
       menu.js                      # Viewport-aware collision-detecting dropdown actions menu
+      pagination.js                # Shared pagination helper
       segmented.js                 # Segmented tab and pill controls
+      sparkline.js                 # Responsive SVG sparkline chart with ResizeObserver and tooltips
       table.js                     # Table state: sorting, pagination, and filter-scoped bulk selection
       toast.js                     # Accessible toast notification container
     views/
       login.js                     # Login view with lockout handling
-      dashboard.js                 # Real-time metrics dashboard and activity charts
+      dashboard.js                 # Real-time metrics dashboard and activity sparklines
       domains.js                   # Domain rules management, grouped/flat views, and bulk actions
       users.js                     # User accounts, IP quotas, magic links, and live presence
       blacklist.js                 # IP & CIDR blacklist management
       logs.js                      # Request logs viewer with live filtering and quick-add rules
-      usage.js                     # Bandwidth and DNS query breakdowns by user and domain
+      usage-report.js              # Bandwidth and DNS query breakdowns by user and domain
       settings.js                  # Access policies, network listeners, egress proxy, and service restart
       domain-rule-form.js          # Shared domain rule creation and edit form
   pages/                           # Served static page partials (asserted by Go tests)
-    dashboard.html, domains.html, users.html, blacklist.html, request-logs.html, usage.html, settings.html
+    dashboard.html, domains.html, users.html, blacklist.html, request-logs.html, settings.html
 ```
 
 ### Core Frontend Rules

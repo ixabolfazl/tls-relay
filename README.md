@@ -22,6 +22,7 @@ It routes selected domains through your server without terminating TLS or decryp
 * HTTP relay
 * User and IP access control
 * Magic Link client onboarding
+* Client DNS status check on the landing page
 * IP/CIDR blacklist
 * Web administration panel
 * Connection and DNS logs
@@ -30,6 +31,25 @@ It routes selected domains through your server without terminating TLS or decryp
 * SQLite-based configuration and storage
 * TCP BBR optimization
 * Configurable connection and DNS limits
+
+
+## Installation
+
+The recommended installation method is the official installer.
+
+Run as `root`:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ixabolfazl/tls-relay/main/install.sh)
+```
+
+After installation:
+
+```bash
+tls-relay
+```
+
+The installer sets up the binary, configuration, SQLite database, systemd service, and required network settings.
 
 ## How It Works
 
@@ -68,25 +88,6 @@ It routes selected domains through your server without terminating TLS or decryp
 For configured domains, the DNS server returns the relay server IP. The client then connects to the relay, which uses the TLS SNI to select the appropriate routing rule.
 
 TLS is passed through directly. TLS-Relay does not terminate TLS, generate certificates, or decrypt application traffic.
-
-## Installation
-
-The recommended installation method is the official installer.
-
-Run as `root`:
-
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ixabolfazl/tls-relay/main/install.sh)
-```
-
-After installation:
-
-```bash
-tls-relay
-```
-
-The installer sets up the binary, configuration, SQLite database, systemd service, and required network settings.
-
 ## Web Panel
 
 TLS-Relay includes a built-in web administration panel. No separate web server or application is required.
@@ -137,6 +138,17 @@ The panel provides management for:
 Relay, DNS, access-control, destination-port, and outbound proxy settings can be managed from the panel.
 
 Changes to supported runtime settings are applied without restarting the service.
+
+### Client Portal
+
+A public landing page is available to clients to:
+
+* View the relay DNS server address
+* Check whether their DNS is routed through the relay (automatic DNS status probe)
+* Look up whether a specific domain is supported by the relay
+* Register their IP via a Magic Link token
+
+The DNS status check resolves a one-time token through the relay DNS, providing immediate confirmation that the client's network is correctly configured.
 
 ## Management CLI
 
