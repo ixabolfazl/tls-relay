@@ -17,6 +17,7 @@ import { navigate } from '../core/router.js';
 import { copyText } from '../core/clipboard.js';
 
 export function mount(container) {
+  let isMounted = true;
   let activeTab = 'accounts'; // accounts | presence
   let allUsers = [];
   let presenceData = { users: [], total_online: 0, total_users: 0, active_connections: 0 };
@@ -297,8 +298,10 @@ export function mount(container) {
 
   // Fetch all users
   async function fetchUsers() {
+    if (!isMounted) return;
     try {
       const [usersRes, presRes] = await Promise.all([api.getUsers(), api.getPresence()]);
+      if (!isMounted) return;
       allUsers = usersRes.users || [];
       presenceData = presRes || { users: [], total_online: 0, total_users: 0, active_connections: 0 };
 
@@ -306,6 +309,7 @@ export function mount(container) {
       renderAccountsTable();
       renderPresenceView();
     } catch (err) {
+      if (!isMounted) return;
       $('#users-table-body', container).innerHTML = `
         <tr>
           <td colspan="7" class="table-td text-center py-8 text-danger">
@@ -855,8 +859,10 @@ export function mount(container) {
 
   // Update Presence Live Poller (In-place presence update, fixes F13)
   async function pollPresence() {
+    if (!isMounted) return;
     try {
       const pres = await api.getPresence();
+      if (!isMounted) return;
       presenceData = pres;
 
       // Update KPIs
@@ -944,6 +950,7 @@ export function mount(container) {
 
   return {
     unmount: () => {
+      isMounted = false;
       presencePoller.stop();
       container.innerHTML = '';
     },

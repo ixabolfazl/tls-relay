@@ -11,6 +11,7 @@ import { createSegmentedControl } from '../ui/segmented.js';
 import { toast } from '../ui/toast.js';
 
 export function mount(container) {
+  let isMounted = true;
   let activeRange = 'today';
   let chartInstances = [];
 
@@ -180,8 +181,10 @@ export function mount(container) {
 
   // Stats updater
   async function updateStats() {
+    if (!isMounted) return;
     try {
       const stats = await api.getStats(activeRange);
+      if (!isMounted) return;
 
       $('#kpi-conns', container).textContent = formatCount(stats.active_connections);
       $('#kpi-online', container).textContent = formatCount(stats.online_users);
@@ -236,6 +239,7 @@ export function mount(container) {
 
   // Charts updater
   async function fetchCharts() {
+    if (!isMounted) return;
     chartInstances.forEach((c) => c.destroy && c.destroy());
     chartInstances = [];
 
@@ -245,6 +249,7 @@ export function mount(container) {
         api.getRequestStatsDaily('TLS', activeRange),
         api.getRequestStatsDaily('HTTP', activeRange),
       ]);
+      if (!isMounted) return;
 
       // Process DNS series
       const dnsGroupMap = new Map();
@@ -338,6 +343,7 @@ export function mount(container) {
 
   return {
     unmount: () => {
+      isMounted = false;
       statsPoller.stop();
       chartPoller.stop();
       chartInstances.forEach((c) => c.destroy && c.destroy());

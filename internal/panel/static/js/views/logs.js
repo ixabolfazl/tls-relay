@@ -15,6 +15,7 @@ import { createDomainRuleForm } from './domain-rule-form.js';
 import { store } from '../core/store.js';
 
 export function mount(container) {
+  let isMounted = true;
   let logs = [];
   let totalLogs = null;
   let domainRules = [];
@@ -292,16 +293,21 @@ export function mount(container) {
 
   // Fetch Domain Rules (for rule matching & quick-add "+")
   async function fetchRules() {
+    if (!isMounted) return;
     try {
       const res = await api.getDomains();
+      if (!isMounted) return;
       domainRules = res.domains || [];
     } catch (err) {
-      console.warn('Failed to load rules for matching:', err);
+      if (isMounted) {
+        console.warn('Failed to load rules for matching:', err);
+      }
     }
   }
 
   // Fetch Logs
   async function fetchLogs() {
+    if (!isMounted) return;
     const params = {
       limit: pageSize,
       ...filters,
@@ -313,6 +319,7 @@ export function mount(container) {
 
     try {
       const res = await api.getRequestLogs(params);
+      if (!isMounted) return;
       logs = res.logs || [];
       totalLogs = res.total !== undefined ? res.total : null;
       hasMore = Boolean(res.has_more);
@@ -321,6 +328,7 @@ export function mount(container) {
       }
       renderTable();
     } catch (err) {
+      if (!isMounted) return;
       $('#logs-table-body', container).innerHTML = `
         <tr>
           <td colspan="8" class="table-td text-center py-8 text-danger">
@@ -495,7 +503,7 @@ export function mount(container) {
 
   // Poller: runs every 10s only if on page 1, tab is visible, and no filter input is focused (fixes F13)
   async function pollLogs() {
-    if (!autoRefresh || currentPage !== 1) return;
+    if (!isMounted || !autoRefresh || currentPage !== 1) return;
     const activeEl = document.activeElement;
     if (activeEl && container.contains(activeEl) && activeEl.tagName === 'INPUT') {
       return; // Skip poll while user is typing in filter
@@ -508,10 +516,13 @@ export function mount(container) {
 
   // Boot
   loadSettings();
-  fetchRules().then(() => fetchLogs());
+  fetchRules().then(() => {
+    if (isMounted) fetchLogs();
+  });
 
   return {
     unmount: () => {
+      isMounted = false;
       logsPoller.stop();
       container.innerHTML = '';
     },

@@ -12,12 +12,14 @@ export class Poller {
     this.timer = null;
     this.running = false;
     this.inFlight = false;
+    this.generation = 0;
     this.boundVisibilityHandler = this.handleVisibilityChange.bind(this);
   }
 
   start() {
     if (this.running) return;
     this.running = true;
+    this.generation++;
     document.addEventListener('visibilitychange', this.boundVisibilityHandler);
 
     if (this.immediate && !document.hidden) {
@@ -29,6 +31,7 @@ export class Poller {
 
   stop() {
     this.running = false;
+    this.generation++;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -60,14 +63,17 @@ export class Poller {
   async tick() {
     if (!this.running || document.hidden || this.inFlight) return;
     this.inFlight = true;
+    const currentGen = this.generation;
     try {
       await this.fn();
     } catch (err) {
-      // Let caller handle or log without breaking the poller
-      console.warn('Poller tick error:', err);
+      if (this.running && this.generation === currentGen) {
+        // Let caller handle or log without breaking the poller
+        console.warn('Poller tick error:', err);
+      }
     } finally {
       this.inFlight = false;
-      if (this.running && !document.hidden) {
+      if (this.running && !document.hidden && this.generation === currentGen) {
         this.scheduleNext();
       }
     }
