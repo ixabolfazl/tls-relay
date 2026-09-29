@@ -75,6 +75,13 @@ jobs:
       - name: Run Tests with Race Detector
         run: go test -v -race -shuffle=on ./...
 
+      - name: Shell Scripts Syntax Check
+        run: |
+          bash -n tls-relay.sh install.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck tls-relay.sh install.sh || true
+          fi
+
   security:
     name: Security Vulnerability Scan
     runs-on: ubuntu-latest

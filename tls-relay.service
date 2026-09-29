@@ -9,6 +9,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/tls-relay
 ExecStart=/opt/tls-relay/tls-relay -config /opt/tls-relay/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=3s
 LimitNOFILE=65535

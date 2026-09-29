@@ -58,9 +58,6 @@ is_public_ipv4() {
 
 # Fetch server public IP using a resilient multi-layer strategy
 get_public_ip() {
-    local ip=""
-
-    # 1. Local interface route check (instantaneous, works offline if server has public IP)
     local local_ip
     local_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
     if is_public_ipv4 "${local_ip}"; then
@@ -68,7 +65,6 @@ get_public_ip() {
         return 0
     fi
 
-    # 2. DNS query (fast, bypasses HTTP filters/censorship)
     if command -v dig >/dev/null 2>&1; then
         local dns_ip
         dns_ip=$(dig +short +time=2 +tries=1 myip.opendns.com @208.67.222.222 2>/dev/null | tr -d '"' | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
@@ -78,7 +74,6 @@ get_public_ip() {
         fi
     fi
 
-    # 3. HTTP endpoints with strict regex validation
     local endpoints=(
         "https://checkip.amazonaws.com"
         "https://cloudflare.com/cdn-cgi/trace"
@@ -114,11 +109,60 @@ get_config_val() {
     grep -E "^[[:space:]]*${key}:" "${CONFIG_FILE}" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'"
 }
 
-# Get panel path from config.yaml
+# Read setting via `tls-relay settings get` with fallback to config.yaml and env
+get_setting_val() {
+    local key="$1"
+    local val=""
+    if [[ -x "${INSTALL_DIR}/tls-relay" && -f "${CONFIG_FILE}" ]]; then
+        val=$("${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" settings get "${key}" 2>/dev/null | grep -E "^${key}=" | head -n1 | cut -d'=' -f2-)
+    fi
+    if [[ -z "${val}" ]]; then
+        val=$(get_config_val "${key}")
+    fi
+    if [[ -z "${val}" ]]; then
+        val=$(get_env_val "${key^^}")
+    fi
+    echo "${val}"
+}
+
+# Get panel path from settings get with fallback to config.yaml
 get_panel_path() {
     local p
-    p=$(sed -n '/^panel:/,/^[a-zA-Z]/p' "${CONFIG_FILE}" 2>/dev/null | grep -E '^[[:space:]]*path:' | awk '{print $2}' | tr -d '"' | tr -d "'")
+    if [[ -x "${INSTALL_DIR}/tls-relay" && -f "${CONFIG_FILE}" ]]; then
+        p=$("${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" settings get panel_path 2>/dev/null | grep -E "^panel_path=" | head -n1 | cut -d'=' -f2-)
+    fi
+    if [[ -z "${p}" ]]; then
+        p=$(sed -n '/^panel:/,/^[a-zA-Z]/p' "${CONFIG_FILE}" 2>/dev/null | grep -E '^[[:space:]]*path:' | awk '{print $2}' | tr -d '"' | tr -d "'")
+    fi
     echo "${p:-/admin}"
+}
+
+# Client-side validation of panel path
+validate_panel_path_client() {
+    local p="$1"
+    if [[ -z "${p}" ]]; then
+        echo "Path cannot be empty"
+        return 1
+    fi
+    [[ "${p:0:1}" != "/" ]] && p="/${p}"
+    if [[ "${p}" == "/" ]]; then
+        echo "${p}"
+        return 0
+    fi
+    if [[ ! "${p}" =~ ^/[A-Za-z0-9_-]{1,64}$ ]]; then
+        echo "Invalid panel path format (must match ^/[A-Za-z0-9_-]{1,64}$ or /)"
+        return 1
+    fi
+    local slug="${p#/}"
+    local slug_lower="${slug,,}"
+    case "${slug_lower}" in
+        api|connect|setup|static|css|js|pages|index.html)
+            echo "Panel path '${p}' is reserved by the system"
+            return 1
+            ;;
+    esac
+    echo "${p}"
+    return 0
 }
 
 # Generate secure random string
@@ -162,8 +206,7 @@ show_status() {
     local admin_path
     admin_path=$(get_panel_path)
     local access_mode
-    access_mode=$(get_config_val "access_mode")
-    [[ -z "${access_mode}" ]] && access_mode=$(get_env_val "ACCESS_MODE")
+    access_mode=$(get_setting_val "access_mode")
     [[ -z "${access_mode}" ]] && access_mode="user"
 
     echo -e "Public IP      : ${BOLD}${pub_ip:-Unknown}${NC}"
@@ -212,6 +255,17 @@ restart_service() {
     fi
 }
 
+# Reload service configuration via SIGHUP (falls back to restart)
+reload_service() {
+    echo -e "${YELLOW}Reloading ${SERVICE_NAME}...${NC}"
+    if systemctl reload "${SERVICE_NAME}" 2>/dev/null; then
+        echo -e "${GREEN}✓ ${SERVICE_NAME} reloaded successfully without dropping connections.${NC}"
+    else
+        echo -e "${YELLOW}Reload failed or unsupported; falling back to service restart...${NC}"
+        restart_service
+    fi
+}
+
 # View live logs
 view_logs() {
     echo -e "${CYAN}Streaming live logs (Press Ctrl+C to exit)...${NC}\n"
@@ -243,8 +297,9 @@ manage_credentials() {
             local new_pass
             new_pass=$(gen_random_password 16)
             echo -e "${CYAN}Applying new password to database...${NC}"
-            "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" -init-admin -user "admin" -pass "${new_pass}"
+            TLS_RELAY_ADMIN_PASS="${new_pass}" "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" -init-admin -user "admin"
             echo -e "${GREEN}✓ Admin password reset for user 'admin':${NC} ${BOLD}${new_pass}${NC}"
+            reload_service
             ;;
         2)
             read -rp "Enter admin username [default: admin]: " new_user
@@ -254,34 +309,43 @@ manage_credentials() {
                 echo -e "${RED}Password cannot be empty.${NC}"
                 return
             fi
+            if [[ ${#new_pass} -lt 6 ]]; then
+                echo -e "${RED}Password must be at least 6 characters.${NC}"
+                return
+            fi
             echo -e "${CYAN}Applying credentials to database...${NC}"
-            "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" -init-admin -user "${new_user}" -pass "${new_pass}"
+            TLS_RELAY_ADMIN_PASS="${new_pass}" "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" -init-admin -user "${new_user}"
             echo -e "${GREEN}✓ Credentials updated in database for user '${new_user}'.${NC}"
+            reload_service
             ;;
         3)
             local rand_path
             rand_path="/$(gen_random_password 8)"
-            sed -i -E '/^panel:/,/^[a-zA-Z]/ s|^([[:space:]]*path:).*|\1 "'"${rand_path}"'"|' "${CONFIG_FILE}"
-            echo -e "${GREEN}✓ Admin Login Path updated to:${NC} ${BOLD}${rand_path}${NC}"
-            echo -e "New Panel URL: ${BOLD}http://${pub_ip}${rand_path}${NC}"
-            read -rp "Restart service now to apply? (Y/n): " ans
-            if [[ "${ans,,}" != "n" ]]; then
-                restart_service
+            echo -e "${CYAN}Applying new panel path to database...${NC}"
+            if "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" settings set panel_path "${rand_path}"; then
+                echo -e "${GREEN}✓ Admin Login Path updated to:${NC} ${BOLD}${rand_path}${NC}"
+                echo -e "New Panel URL: ${BOLD}http://${pub_ip}${rand_path}${NC}"
+                reload_service
+            else
+                echo -e "${RED}[ERROR] Failed updating panel path.${NC}"
             fi
             ;;
         4)
             read -rp "Enter custom login path (e.g. /my-secret-panel): " custom_path
-            if [[ -z "${custom_path}" ]]; then
-                echo -e "${RED}Path cannot be empty.${NC}"
+            [[ "${custom_path:0:1}" != "/" ]] && custom_path="/${custom_path}"
+            local val_res
+            if ! val_res=$(validate_panel_path_client "${custom_path}"); then
+                echo -e "${RED}[ERROR] ${val_res}${NC}"
                 return
             fi
-            [[ "${custom_path:0:1}" != "/" ]] && custom_path="/${custom_path}"
-            sed -i -E '/^panel:/,/^[a-zA-Z]/ s|^([[:space:]]*path:).*|\1 "'"${custom_path}"'"|' "${CONFIG_FILE}"
-            echo -e "${GREEN}✓ Admin Login Path updated to:${NC} ${BOLD}${custom_path}${NC}"
-            echo -e "New Panel URL: ${BOLD}http://${pub_ip}${custom_path}${NC}"
-            read -rp "Restart service now to apply? (Y/n): " ans
-            if [[ "${ans,,}" != "n" ]]; then
-                restart_service
+            custom_path="${val_res}"
+            echo -e "${CYAN}Applying custom panel path to database...${NC}"
+            if "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" settings set panel_path "${custom_path}"; then
+                echo -e "${GREEN}✓ Admin Login Path updated to:${NC} ${BOLD}${custom_path}${NC}"
+                echo -e "New Panel URL: ${BOLD}http://${pub_ip}${custom_path}${NC}"
+                reload_service
+            else
+                echo -e "${RED}[ERROR] Failed updating panel path.${NC}"
             fi
             ;;
         *)
@@ -294,7 +358,7 @@ manage_credentials() {
 change_access_mode() {
     echo -e "\n${BOLD}${CYAN}=== Change Access Mode ===${NC}"
     local curr_mode
-    curr_mode=$(get_config_val "access_mode")
+    curr_mode=$(get_setting_val "access_mode")
     [[ -z "${curr_mode}" ]] && curr_mode="user"
     echo -e "Current mode: ${BOLD}${curr_mode}${NC}\n"
     echo -e "1) ${BOLD}user${NC}   - Only clients registered via Magic Link can relay and resolve DNS (Recommended, secure)"
@@ -305,14 +369,16 @@ change_access_mode() {
 
     case "${m_choice}" in
         1)
-            sed -i -E "s|^([[:space:]]*access_mode:).*|\1 \"user\"|" "${CONFIG_FILE}"
-            echo -e "${GREEN}✓ Access mode set to 'user' in config.yaml.${NC}"
-            restart_service
+            echo -e "${CYAN}Setting access mode to 'user' in database...${NC}"
+            "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" settings set access_mode "user"
+            echo -e "${GREEN}✓ Access mode set to 'user'.${NC}"
+            reload_service
             ;;
         2)
-            sed -i -E "s|^([[:space:]]*access_mode:).*|\1 \"public\"|" "${CONFIG_FILE}"
-            echo -e "${GREEN}✓ Access mode set to 'public' in config.yaml.${NC}"
-            restart_service
+            echo -e "${CYAN}Setting access mode to 'public' in database...${NC}"
+            "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" settings set access_mode "public"
+            echo -e "${GREEN}✓ Access mode set to 'public'.${NC}"
+            reload_service
             ;;
         *)
             return
@@ -323,7 +389,16 @@ change_access_mode() {
 # Configure Outbound SOCKS5 Proxy
 manage_proxy() {
     echo -e "\n${BOLD}${CYAN}=== Outbound SOCKS5 Egress Proxy ===${NC}"
-    echo -e "Outbound SOCKS5 Proxy is now dynamically managed directly from the Web Admin Panel!"
+    local egress_enabled
+    egress_enabled=$(get_setting_val "egress_proxy_enabled")
+    local egress_addr
+    egress_addr=$(get_setting_val "egress_proxy_addr")
+    echo -e "Current Status : ${BOLD}${egress_enabled:-false}${NC}"
+    if [[ -n "${egress_addr}" ]]; then
+        echo -e "Proxy Address  : ${BOLD}${egress_addr}${NC}"
+    fi
+
+    echo -e "\nOutbound SOCKS5 Proxy is dynamically managed directly from the Web Admin Panel!"
     echo -e "You can configure proxy host, port, credentials, and run live connectivity tests"
     echo -e "with zero downtime under the Settings tab."
     local admin_path pub_ip
@@ -338,7 +413,6 @@ configure_firewall() {
     echo -e "\n${BOLD}${CYAN}=== Firewall Configuration ===${NC}"
     echo -e "Opening required ports: 53 (TCP/UDP), 80 (TCP), 443 (TCP)..."
 
-    # UFW Check
     if command -v ufw >/dev/null 2>&1 && ufw status | grep -qw "active"; then
         echo -e "${YELLOW}Detected active UFW firewall. Adding rules...${NC}"
         ufw allow 53/tcp comment 'tls-relay DNS TCP'
@@ -349,9 +423,8 @@ configure_firewall() {
         return
     fi
 
-    # Firewalld Check
     if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
-        echo -e "${YELLOW}Detected active Firewalld. Adding rules...${NC}"
+        echo -e "${YELLOW}Detected active firewalld. Adding rules...${NC}"
         firewall-cmd --permanent --add-port=53/tcp
         firewall-cmd --permanent --add-port=53/udp
         firewall-cmd --permanent --add-port=80/tcp
@@ -361,93 +434,92 @@ configure_firewall() {
         return
     fi
 
-    # iptables fallback
     if command -v iptables >/dev/null 2>&1; then
         echo -e "${YELLOW}Adding iptables rules...${NC}"
-        iptables -I INPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport 53 -j ACCEPT
+        iptables -I INPUT -p udp --dport 53 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 443 -j ACCEPT
         echo -e "${GREEN}✓ iptables rules added.${NC}"
-    else
-        echo -e "${YELLOW}No active firewall detected (UFW/Firewalld). Ports appear unrestricted.${NC}"
+        return
     fi
+
+    echo -e "${YELLOW}No supported firewall (UFW, Firewalld, iptables) detected.${NC}"
 }
 
-# Enable TCP BBR & kernel tuning
+# Enable TCP BBR Optimization
 enable_bbr() {
-    echo -e "\n${BOLD}${CYAN}=== TCP BBR & Kernel Network Optimization ===${NC}"
-    echo -e "Checking current congestion control..."
-    local current_cc
-    current_cc=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | awk '{print $3}')
-    echo -e "Current congestion control: ${BOLD}${current_cc}${NC}"
+    echo -e "\n${BOLD}${CYAN}=== TCP BBR Optimization ===${NC}"
+    local curr_cc
+    curr_cc=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | awk '{print $3}')
+    echo -e "Current congestion control: ${BOLD}${curr_cc:-unknown}${NC}"
 
-    if [[ "${current_cc}" == "bbr" ]]; then
+    if [[ "${curr_cc}" == "bbr" ]]; then
         echo -e "${GREEN}✓ TCP BBR is already active on this system.${NC}"
         return
     fi
 
-    read -rp "Enable TCP BBR and apply high-performance network buffers? (Y/n): " ans
-    if [[ "${ans,,}" == "n" ]]; then
-        return
-    fi
-
-    # Load BBR module
+    echo -e "Enabling TCP BBR and high-performance network buffers..."
     modprobe tcp_bbr 2>/dev/null || true
     echo "tcp_bbr" > /etc/modules-load.d/bbr.conf 2>/dev/null || true
 
     cat > /etc/sysctl.d/99-tls-relay-bbr.conf << 'EOF'
-# TLS-Relay BBR & TCP buffer optimizations
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.core.rmem_max = 67108864
 net.core.wmem_max = 67108864
 net.ipv4.tcp_rmem = 4096 87380 67108864
 net.ipv4.tcp_wmem = 4096 65536 67108864
-net.core.netdev_max_backlog = 100000
-net.ipv4.tcp_max_syn_backlog = 8192
-net.ipv4.tcp_fastopen = 3
 EOF
 
-    sysctl -p /etc/sysctl.d/99-tls-relay-bbr.conf >/dev/null 2>&1
+    sysctl -p /etc/sysctl.d/99-tls-relay-bbr.conf >/dev/null 2>&1 || true
+
     local new_cc
     new_cc=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | awk '{print $3}')
     if [[ "${new_cc}" == "bbr" ]]; then
-        echo -e "${GREEN}✓ TCP BBR successfully activated!${NC}"
+        echo -e "${GREEN}✓ TCP BBR successfully enabled!${NC}"
     else
-        echo -e "${YELLOW}Notice: BBR kernel module could not be activated (kernel may not support it).${NC}"
+        echo -e "${RED}✗ Failed to enable BBR. Ensure your Linux kernel version is 4.9 or higher.${NC}"
     fi
 }
 
-# Update binary to latest release
+# Update binary and scripts to latest release
 update_app() {
     echo -e "\n${BOLD}${CYAN}=== Check & Apply Update ===${NC}"
     local arch
     arch=$(get_arch)
     if [[ "${arch}" == "unsupported" ]]; then
-        echo -e "${RED}[ERROR]${NC} Unsupported CPU architecture."
-        return
+        echo -e "${RED}[ERROR]${NC} Unsupported CPU architecture: $(uname -m)."
+        return 1
     fi
 
     echo -e "Fetching latest release information from GitHub..."
     local latest_tag
     latest_tag=$(curl -sL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | \
                  grep '"tag_name":' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
-
     if [[ -z "${latest_tag}" ]]; then
+        latest_tag=$(curl -s -L -I -o /dev/null -w '%{url_effective}' "https://github.com/${GITHUB_REPO}/releases/latest" 2>/dev/null | rev | cut -d'/' -f1 | rev)
+    fi
+
+    if [[ -z "${latest_tag}" || "${latest_tag}" == "releases" ]]; then
         echo -e "${RED}[ERROR]${NC} Failed to fetch release information from GitHub. Check your network or GitHub API limits."
-        return
+        return 1
     fi
 
     echo -e "Latest available version: ${GREEN}${latest_tag}${NC}"
+    local old_ver
+    old_ver=$("${INSTALL_DIR}/tls-relay" -version 2>/dev/null || echo "unknown")
+    echo -e "Current installed version: ${BOLD}${old_ver}${NC}"
+
     read -rp "Proceed with update? Your database and config will be preserved. (y/N): " confirm
     if [[ "${confirm,,}" != "y" ]]; then
         echo -e "Update cancelled."
-        return
+        return 0
     fi
 
     local tar_name="tls-relay-linux-${arch}.tar.gz"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${latest_tag}/${tar_name}"
+    local checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${latest_tag}/${tar_name}.sha256"
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
@@ -455,65 +527,141 @@ update_app() {
     if ! curl -fLR --connect-timeout 15 --retry 3 -o "${tmp_dir}/${tar_name}" "${download_url}"; then
         echo -e "${RED}[ERROR]${NC} Download failed from: ${download_url}"
         rm -rf "${tmp_dir}"
-        return
+        return 1
     fi
 
-    echo -e "Extracting update..."
-    tar -zxvf "${tmp_dir}/${tar_name}" -C "${tmp_dir}" >/dev/null 2>&1
+    # Verify SHA256 Checksum
+    if curl -sLf -o "${tmp_dir}/${tar_name}.sha256" "${checksum_url}" 2>/dev/null; then
+        echo -e "Verifying SHA256 checksum..."
+        (
+            cd "${tmp_dir}"
+            if ! sha256sum -c "${tar_name}.sha256"; then
+                echo -e "${RED}[ERROR] SHA256 checksum mismatch! Aborting update.${NC}"
+                exit 1
+            fi
+        )
+        if [[ $? -ne 0 ]]; then
+            rm -rf "${tmp_dir}"
+            return 1
+        fi
+        echo -e "${GREEN}✓ Checksum verified successfully.${NC}"
+    else
+        echo -e "${YELLOW}[WARNING] Checksum file not available on GitHub.${NC}"
+        read -rp "Proceed without checksum verification? (y/N): " confirm_no_sum
+        if [[ "${confirm_no_sum,,}" != "y" ]]; then
+            echo -e "Update aborted by user."
+            rm -rf "${tmp_dir}"
+            return 1
+        fi
+    fi
 
-    if [[ ! -f "${tmp_dir}/tls-relay" ]]; then
-        echo -e "${RED}[ERROR]${NC} Update archive did not contain tls-relay binary."
+    echo -e "Extracting archive..."
+    if ! tar -zxvf "${tmp_dir}/${tar_name}" -C "${tmp_dir}"; then
+        echo -e "${RED}[ERROR] Failed to extract archive.${NC}"
         rm -rf "${tmp_dir}"
-        return
+        return 1
+    fi
+
+    # Verify all 3 required components exist before modifying system
+    if [[ ! -f "${tmp_dir}/tls-relay" || ! -f "${tmp_dir}/tls-relay.sh" || ! -f "${tmp_dir}/tls-relay.service" ]]; then
+        echo -e "${RED}[ERROR] Update archive is missing required files (tls-relay, tls-relay.sh, or tls-relay.service). Aborting.${NC}"
+        rm -rf "${tmp_dir}"
+        return 1
     fi
 
     echo -e "Stopping ${SERVICE_NAME}..."
     systemctl stop "${SERVICE_NAME}"
 
-    # Backup current binary
+    local unit_file="/etc/systemd/system/${SERVICE_NAME}.service"
+
+    # Backup current versions
     cp -f "${INSTALL_DIR}/tls-relay" "${INSTALL_DIR}/tls-relay.bak" 2>/dev/null || true
-
-    # Replace binary and CLI
-    cp -f "${tmp_dir}/tls-relay" "${INSTALL_DIR}/tls-relay"
-    chmod +x "${INSTALL_DIR}/tls-relay"
-
-    if [[ -f "${tmp_dir}/tls-relay.sh" ]]; then
-        cp -f "${tmp_dir}/tls-relay.sh" /usr/local/bin/tls-relay
-        chmod +x /usr/local/bin/tls-relay
+    cp -f "${INSTALL_DIR}/tls-relay.sh" "${INSTALL_DIR}/tls-relay.sh.bak" 2>/dev/null || true
+    if [[ -f "${unit_file}" ]]; then
+        cp -f "${unit_file}" "${INSTALL_DIR}/${SERVICE_NAME}.service.bak" 2>/dev/null || true
     fi
+
+    # Atomic installation using install to temporary file + mv
+    echo -e "Installing new binary and CLI scripts..."
+    install -m 755 "${tmp_dir}/tls-relay" "${INSTALL_DIR}/tls-relay.new" && mv -f "${INSTALL_DIR}/tls-relay.new" "${INSTALL_DIR}/tls-relay"
+    install -m 755 "${tmp_dir}/tls-relay.sh" "${INSTALL_DIR}/tls-relay.sh.new" && mv -f "${INSTALL_DIR}/tls-relay.sh.new" "${INSTALL_DIR}/tls-relay.sh"
+    install -m 755 "${tmp_dir}/tls-relay.sh" "/usr/local/bin/tls-relay.new" && mv -f "/usr/local/bin/tls-relay.new" "/usr/local/bin/tls-relay"
+
+    # Update systemd unit if changed
+    if [[ -f "${unit_file}" ]]; then
+        if ! cmp -s "${tmp_dir}/tls-relay.service" "${unit_file}"; then
+            echo -e "Updating systemd unit file..."
+            install -m 644 "${tmp_dir}/tls-relay.service" "${unit_file}.new" && mv -f "${unit_file}.new" "${unit_file}"
+            systemctl daemon-reload
+        fi
+    else
+        install -m 644 "${tmp_dir}/tls-relay.service" "${unit_file}"
+        systemctl daemon-reload
+    fi
+
+    echo -e "Starting ${SERVICE_NAME}..."
+    systemctl start "${SERVICE_NAME}"
+
+    # Wait up to 10 seconds for service to become active
+    local is_active=0
+    for i in {1..10}; do
+        if systemctl is-active --quiet "${SERVICE_NAME}"; then
+            is_active=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ ${is_active} -eq 0 ]]; then
+        echo -e "${RED}[ERROR] Service failed to start within 10s! Rolling back...${NC}"
+        [[ -f "${INSTALL_DIR}/tls-relay.bak" ]] && cp -f "${INSTALL_DIR}/tls-relay.bak" "${INSTALL_DIR}/tls-relay"
+        [[ -f "${INSTALL_DIR}/tls-relay.sh.bak" ]] && cp -f "${INSTALL_DIR}/tls-relay.sh.bak" "${INSTALL_DIR}/tls-relay.sh"
+        [[ -f "${INSTALL_DIR}/tls-relay.sh.bak" ]] && cp -f "${INSTALL_DIR}/tls-relay.sh.bak" "/usr/local/bin/tls-relay"
+        if [[ -f "${INSTALL_DIR}/${SERVICE_NAME}.service.bak" ]]; then
+            cp -f "${INSTALL_DIR}/${SERVICE_NAME}.service.bak" "${unit_file}"
+            systemctl daemon-reload
+        fi
+        systemctl start "${SERVICE_NAME}"
+        rm -rf "${tmp_dir}"
+        echo -e "${YELLOW}Rollback completed.${NC}"
+        return 1
+    fi
+
+    local new_ver
+    new_ver=$("${INSTALL_DIR}/tls-relay" -version 2>/dev/null || echo "${latest_tag}")
+    echo -e "${GREEN}✓ Update successful:${NC} ${BOLD}${old_ver}${NC} -> ${BOLD}${new_ver}${NC}"
 
     rm -rf "${tmp_dir}"
 
-    echo -e "Restarting ${SERVICE_NAME}..."
-    systemctl start "${SERVICE_NAME}"
-    sleep 1
-
-    if systemctl is-active --quiet "${SERVICE_NAME}"; then
-        echo -e "${GREEN}✓ Update to ${latest_tag} completed successfully!${NC}"
+    if [[ -t 0 ]]; then
+        echo -e "${CYAN}Relaunching CLI with updated script...${NC}"
+        exec /usr/local/bin/tls-relay
     else
-        echo -e "${RED}✗ Service failed to start after update. Rolling back...${NC}"
-        cp -f "${INSTALL_DIR}/tls-relay.bak" "${INSTALL_DIR}/tls-relay"
-        systemctl start "${SERVICE_NAME}"
+        echo "Update completed. Please run tls-relay again."
     fi
 }
 
-# Backup database
+# Backup database consistently using SQLite VACUUM INTO
 backup_database() {
     echo -e "\n${BOLD}${CYAN}=== Database Backup ===${NC}"
-    if [[ ! -f "${DB_FILE}" ]]; then
-        echo -e "${RED}[ERROR]${NC} Database file not found at ${DB_FILE}"
-        return
-    fi
-
     local backup_dir="${INSTALL_DIR}/backups"
-    mkdir -p "${backup_dir}"
+    (
+        umask 077
+        mkdir -p "${backup_dir}"
+        chmod 0700 "${backup_dir}"
+    )
     local timestamp
     timestamp=$(date +"%Y%m%d_%H%M%S")
     local backup_dest="${backup_dir}/data_${timestamp}.db"
 
-    cp "${DB_FILE}" "${backup_dest}"
-    echo -e "${GREEN}✓ Database backup saved to:${NC} ${BOLD}${backup_dest}${NC}"
-    ls -lh "${backup_dest}"
+    echo -e "${CYAN}Creating consistent point-in-time database snapshot via SQLite VACUUM INTO...${NC}"
+    if "${INSTALL_DIR}/tls-relay" -config "${CONFIG_FILE}" backup "${backup_dest}"; then
+        chmod 0600 "${backup_dest}"
+        echo -e "${GREEN}✓ Database backup saved to:${NC} ${BOLD}${backup_dest}${NC}"
+        ls -lh "${backup_dest}"
+    else
+        echo -e "${RED}[ERROR] Backup failed.${NC}"
+    fi
 }
 
 # Uninstall
@@ -607,35 +755,41 @@ show_menu() {
     done
 }
 
-# Direct CLI arguments handling
-check_root
+# Main function wrapping script execution
+main() {
+    check_root
 
-if [[ $# -gt 0 ]]; then
-    case "$1" in
-        status) show_status ;;
-        start) start_service ;;
-        stop) stop_service ;;
-        restart) restart_service ;;
-        log|logs) view_logs ;;
-        creds|credentials) manage_credentials ;;
-        mode) change_access_mode ;;
-        proxy) manage_proxy ;;
-        firewall) configure_firewall ;;
-        bbr) enable_bbr ;;
-        update) update_app ;;
-        backup) backup_database ;;
-        uninstall) uninstall_tls_relay ;;
-        help|--help|-h)
-            echo "Usage: tls-relay [command]"
-            echo "Commands: status, start, stop, restart, log, creds, mode, proxy, firewall, bbr, update, backup, uninstall"
-            ;;
-        *)
-            echo "Unknown command: $1. Run 'tls-relay help' or just 'tls-relay' for interactive menu."
-            exit 1
-            ;;
-    esac
-    exit 0
-fi
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            status) show_status ;;
+            start) start_service ;;
+            stop) stop_service ;;
+            restart) restart_service ;;
+            reload) reload_service ;;
+            log|logs) view_logs ;;
+            creds|credentials) manage_credentials ;;
+            mode) change_access_mode ;;
+            proxy) manage_proxy ;;
+            firewall) configure_firewall ;;
+            bbr) enable_bbr ;;
+            update) update_app ;;
+            backup) backup_database ;;
+            uninstall) uninstall_tls_relay ;;
+            help|--help|-h)
+                echo "Usage: tls-relay [command]"
+                echo "Commands: status, start, stop, restart, reload, log, creds, mode, proxy, firewall, bbr, update, backup, uninstall"
+                ;;
+            *)
+                echo "Unknown command: $1. Run 'tls-relay help' or just 'tls-relay' for interactive menu."
+                exit 1
+                ;;
+        esac
+        exit 0
+    fi
 
-# No args passed -> interactive menu
-show_menu
+    # No args passed -> interactive menu
+    show_menu
+}
+
+main "$@"
+exit $?

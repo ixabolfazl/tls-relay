@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,7 @@ import (
 	"github.com/ixabolfazl/tls-relay/internal/reqstats"
 	"github.com/ixabolfazl/tls-relay/internal/requestlog"
 	"github.com/ixabolfazl/tls-relay/internal/rules"
+	"github.com/ixabolfazl/tls-relay/internal/settings"
 	"github.com/ixabolfazl/tls-relay/internal/sqlitestore"
 	"github.com/ixabolfazl/tls-relay/internal/syncer"
 )
@@ -41,13 +44,30 @@ var (
 	buildDate = "unknown"
 )
 
+// RuntimeComponents holds references to runtime services and stores for dynamic reload.
+type RuntimeComponents struct {
+	Cfg          *config.Config
+	SqlStore     *sqlitestore.Store
+	RuleStore    *rules.RuleStore
+	AccessStore  *access.AccessStore
+	AllowList    *relay.PortAllowList
+	Limits       *relay.LimitTracker
+	EgressDialer *relay.EgressDialer
+	ReqLogger    *requestlog.Logger
+	PanelSrv     *panel.Server
+	PortalSrv    *portal.Server
+	Router       *frontrouter.Router
+	DNSSrv       *dnsresolver.Server
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	showVersion := flag.Bool("version", false, "display version and build information")
 	flag.BoolVar(showVersion, "v", false, "display version and build information (shorthand)")
 	initAdmin := flag.Bool("init-admin", false, "initialize or reset admin credentials in database")
 	adminUser := flag.String("user", "admin", "admin username for -init-admin")
-	adminPass := flag.String("pass", "", "admin password for -init-admin")
+	adminPass := flag.String("pass", "", "admin password for -init-admin (deprecated: use TLS_RELAY_ADMIN_PASS or -pass-stdin)")
+	passStdin := flag.Bool("pass-stdin", false, "read admin password from stdin for -init-admin")
 	flag.Parse()
 
 	if *showVersion {
@@ -56,11 +76,55 @@ func main() {
 	}
 
 	if *initAdmin {
-		if err := handleInitAdmin(*cfgPath, *adminUser, *adminPass); err != nil {
+		var pass string
+		if *adminPass != "" {
+			fmt.Fprintln(os.Stderr, "warning: -pass flag is deprecated due to process-list exposure; use TLS_RELAY_ADMIN_PASS environment variable or -pass-stdin instead")
+			pass = *adminPass
+		} else if *passStdin {
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error reading password from stdin: %v\n", err)
+				os.Exit(1)
+			}
+			pass = strings.TrimRight(string(data), "\r\n")
+		} else if envPass := os.Getenv("TLS_RELAY_ADMIN_PASS"); envPass != "" {
+			pass = envPass
+		} else {
+			fmt.Fprintln(os.Stderr, "error: password required via TLS_RELAY_ADMIN_PASS environment variable, -pass-stdin, or -pass")
+			os.Exit(1)
+		}
+
+		if err := handleInitAdmin(*cfgPath, *adminUser, pass); err != nil {
 			fmt.Fprintf(os.Stderr, "error initializing admin credentials: %v\n", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
+	}
+
+	args := flag.Args()
+	if len(args) > 0 {
+		cmd := args[0]
+		switch cmd {
+		case "settings":
+			if err := handleSettingsCmd(*cfgPath, args[1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		case "backup":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: tls-relay backup <dest-path>")
+				os.Exit(1)
+			}
+			if err := handleBackupCmd(*cfgPath, args[1]); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown subcommand: %s\nUsage: tls-relay [-config <path>] [settings get|set | backup <dest-path>]\n", cmd)
+			os.Exit(1)
+		}
 	}
 
 	if err := run(*cfgPath); err != nil {
@@ -69,42 +133,102 @@ func main() {
 	}
 }
 
-func run(cfgPath string) error {
-	// -----------------------------------------------------------------------
-	// Load configuration
-	// -----------------------------------------------------------------------
+func handleSettingsCmd(cfgPath string, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: tls-relay settings get [key] | settings set <key> <value>")
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-
-	// -----------------------------------------------------------------------
-	// Set up logging
-	// -----------------------------------------------------------------------
-	closeLog, err := logging.Setup(&cfg.Logging)
-	if err != nil {
-		return fmt.Errorf("setting up logging: %w", err)
-	}
-	defer closeLog()
-
-	// -----------------------------------------------------------------------
-	// Initialize SQLite store (source of truth)
-	// -----------------------------------------------------------------------
 	sqlStore, err := sqlitestore.New(cfg.SQLite.Path)
 	if err != nil {
-		return fmt.Errorf("initializing SQLite: %w", err)
+		return fmt.Errorf("opening SQLite database at %q: %w", cfg.SQLite.Path, err)
 	}
-	defer func() { _ = sqlStore.Close() }()
+	defer sqlStore.Close()
 
-	// -----------------------------------------------------------------------
-	// Resolve settings using strict precedence (Env Var > SQLite DB > Defaults)
-	// -----------------------------------------------------------------------
-	dbSettings, err := sqlStore.AllSettings(context.Background())
+	ctx := context.Background()
+
+	switch args[0] {
+	case "get":
+		if len(args) > 1 {
+			key := args[1]
+			val, found, err := sqlStore.GetSetting(ctx, key)
+			if err != nil {
+				return fmt.Errorf("getting setting %q: %w", key, err)
+			}
+			if !found {
+				fmt.Printf("%s: (not set in database)\n", key)
+			} else {
+				fmt.Printf("%s=%s\n", key, val)
+			}
+		} else {
+			all, err := sqlStore.AllSettings(ctx)
+			if err != nil {
+				return fmt.Errorf("getting all settings: %w", err)
+			}
+			var keys []string
+			for k := range all {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Printf("%s=%s\n", k, all[k])
+			}
+		}
+		fmt.Println("Note: Environment variables in the service environment override SQLite settings.")
+		return nil
+
+	case "set":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: tls-relay settings set <key> <value>")
+		}
+		key := args[1]
+		val := args[2]
+
+		canonVal, err := settings.ValidateSetting(key, val)
+		if err != nil {
+			return fmt.Errorf("validation error: %w", err)
+		}
+
+		if err := sqlStore.SetSetting(ctx, key, canonVal); err != nil {
+			return fmt.Errorf("saving setting %q: %w", key, err)
+		}
+
+		fmt.Printf("%s=%s\n", key, canonVal)
+		fmt.Println("Note: Environment variables in the service environment override SQLite settings.")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown settings subcommand %q (expected get or set)", args[0])
+	}
+}
+
+func handleBackupCmd(cfgPath, destPath string) error {
+	destPath = strings.TrimSpace(destPath)
+	if destPath == "" {
+		return fmt.Errorf("destination path cannot be empty")
+	}
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		slog.Warn("could not load app settings from sqlite", "error", err)
-		dbSettings = make(map[string]string)
+		return fmt.Errorf("loading config: %w", err)
 	}
+	sqlStore, err := sqlitestore.New(cfg.SQLite.Path)
+	if err != nil {
+		return fmt.Errorf("opening SQLite database at %q: %w", cfg.SQLite.Path, err)
+	}
+	defer sqlStore.Close()
 
+	ctx := context.Background()
+	if err := sqlStore.Backup(ctx, destPath); err != nil {
+		return fmt.Errorf("backup failed: %w", err)
+	}
+	fmt.Printf("Database backup created successfully at %s\n", destPath)
+	return nil
+}
+
+// ApplyConfigSettings applies database and environment settings over configuration defaults.
+func ApplyConfigSettings(cfg *config.Config, dbSettings map[string]string) {
 	envAccessMode := os.Getenv("ACCESS_MODE")
 	dbAccessMode, hasAccessMode := dbSettings["access_mode"]
 	rawAccessMode := config.ResolveSetting(envAccessMode, dbAccessMode, hasAccessMode, cfg.AccessMode)
@@ -147,7 +271,6 @@ func run(cfgPath string) error {
 	}
 	cfg.UnknownDomainPolicy = validPolicy
 
-	// Resolve allowed destination ports from SQLite if configured
 	if dbPorts, hasPorts := dbSettings["allowed_dest_ports"]; hasPorts && strings.TrimSpace(dbPorts) != "" {
 		var parsedPorts []int
 		if err := json.Unmarshal([]byte(dbPorts), &parsedPorts); err == nil && len(parsedPorts) > 0 {
@@ -155,7 +278,6 @@ func run(cfgPath string) error {
 		}
 	}
 
-	// Resolve listen ports from SQLite if configured
 	if dbListenPorts, hasListenPorts := dbSettings["listen_ports"]; hasListenPorts && strings.TrimSpace(dbListenPorts) != "" {
 		var parsedPorts []int
 		if err := json.Unmarshal([]byte(dbListenPorts), &parsedPorts); err == nil && len(parsedPorts) > 0 {
@@ -163,7 +285,6 @@ func run(cfgPath string) error {
 		}
 	}
 
-	// Resolve listen http ports from SQLite if configured
 	if dbHTTPPorts, hasHTTPPorts := dbSettings["listen_http_ports"]; hasHTTPPorts && strings.TrimSpace(dbHTTPPorts) != "" {
 		var parsedPorts []int
 		if err := json.Unmarshal([]byte(dbHTTPPorts), &parsedPorts); err == nil && len(parsedPorts) > 0 {
@@ -171,7 +292,6 @@ func run(cfgPath string) error {
 		}
 	}
 
-	// Resolve egress proxy configuration (Env > SQLite > Config)
 	envEgressEnabled := os.Getenv("EGRESS_PROXY_ENABLED")
 	dbEgressEnabled, hasEgressEnabled := dbSettings["egress_proxy_enabled"]
 	egressEnabledStr := config.ResolveSetting(envEgressEnabled, dbEgressEnabled, hasEgressEnabled, fmt.Sprintf("%t", cfg.EgressProxy.Enabled))
@@ -188,6 +308,173 @@ func run(cfgPath string) error {
 	envEgressPass := os.Getenv("EGRESS_PROXY_PASSWORD")
 	dbEgressPass, hasEgressPass := dbSettings["egress_proxy_password"]
 	cfg.EgressProxy.Password = config.ResolveSetting(envEgressPass, dbEgressPass, hasEgressPass, cfg.EgressProxy.Password)
+}
+
+// ReloadSettings re-reads settings from SQLite and dynamically updates running components without dropping connections.
+func ReloadSettings(ctx context.Context, comp *RuntimeComponents) error {
+	dbSettings, err := comp.SqlStore.AllSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("reading settings from sqlite: %w", err)
+	}
+
+	ApplyConfigSettings(comp.Cfg, dbSettings)
+
+	// 1. Access Mode
+	if comp.AccessStore != nil {
+		comp.AccessStore.SetMode(access.AccessMode(comp.Cfg.AccessMode))
+	}
+
+	// 2. Unknown Domain Policy
+	if comp.RuleStore != nil {
+		comp.RuleStore.SetUnknownDomainPolicy(comp.Cfg.UnknownDomainPolicy)
+	}
+
+	// 3. Panel Path Prefix
+	if comp.PanelSrv != nil {
+		if err := comp.PanelSrv.ApplyPathPrefix(comp.Cfg.Panel.Path); err != nil {
+			slog.Error("failed applying panel path prefix on reload", "path", comp.Cfg.Panel.Path, "error", err)
+		}
+	}
+
+	// 4. Timezone
+	if comp.PanelSrv != nil {
+		_ = comp.PanelSrv.SetTimezone(comp.Cfg.Timezone)
+	}
+
+	// 5. Max connections per IP
+	envMaxConn := os.Getenv("MAX_CONNECTIONS_PER_IP")
+	dbMaxConn, hasMaxConn := dbSettings["max_connections_per_ip"]
+	maxConnStr := config.ResolveSetting(envMaxConn, dbMaxConn, hasMaxConn, fmt.Sprintf("%d", comp.Cfg.Limits.MaxConnectionsPerIP))
+	if maxConn, err := strconv.Atoi(maxConnStr); err == nil && maxConn > 0 {
+		comp.Cfg.Limits.MaxConnectionsPerIP = maxConn
+		if comp.Limits != nil {
+			comp.Limits.SetMaxPerIP(maxConn)
+		}
+	}
+
+	// 6. Request log settings
+	envReqLogEnabled := os.Getenv("REQUEST_LOGS_ENABLED")
+	dbReqLogEnabled, hasReqLogEnabled := dbSettings["request_logs_enabled"]
+	reqLogEnabledStr := config.ResolveSetting(envReqLogEnabled, dbReqLogEnabled, hasReqLogEnabled, fmt.Sprintf("%t", comp.Cfg.Logging.RequestLogs.Enabled))
+	reqLogEnabled := reqLogEnabledStr == "true" || reqLogEnabledStr == "1"
+	if comp.ReqLogger != nil {
+		comp.ReqLogger.SetEnabled(reqLogEnabled)
+	}
+
+	envReqLogRetention := os.Getenv("REQUEST_LOGS_RETENTION")
+	dbReqLogRetention, hasReqLogRetention := dbSettings["request_logs_retention"]
+	reqLogRetentionStr := config.ResolveSetting(envReqLogRetention, dbReqLogRetention, hasReqLogRetention, comp.Cfg.Logging.RequestLogs.Retention.Duration.String())
+	if retentionDur, err := settings.ParseDurationWithDays(reqLogRetentionStr); err == nil && comp.ReqLogger != nil {
+		comp.ReqLogger.SetRetention(retentionDur)
+	}
+
+	// 7. Lookup Policy
+	lookupEnabled := dbSettings["lookup_enabled"] != "false"
+	lookupRequireRegistered := dbSettings["lookup_require_registered"] == "true"
+	if comp.PanelSrv != nil {
+		comp.PanelSrv.SetLookupPolicy(lookupEnabled, lookupRequireRegistered)
+	}
+	if comp.PortalSrv != nil {
+		comp.PortalSrv.SetLookupPolicy(lookupEnabled, lookupRequireRegistered)
+	}
+
+	// 8. Front limits
+	frontMaxIP := 60
+	if v, ok := dbSettings["http_front_max_conns_per_ip"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			frontMaxIP = n
+		}
+	}
+	frontMaxGlobal := 5000
+	if v, ok := dbSettings["http_front_max_global_conns"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			frontMaxGlobal = n
+		}
+	}
+	if comp.Router != nil && comp.Router.FrontLimits() != nil {
+		comp.Router.FrontLimits().SetMaxPerIP(frontMaxIP)
+		comp.Router.FrontLimits().SetMaxGlobal(frontMaxGlobal)
+	}
+
+	// 9. Allowed destination ports
+	if comp.AllowList != nil {
+		comp.AllowList.SetPorts(comp.Cfg.AllowedDestPorts)
+	}
+	if comp.RuleStore != nil {
+		comp.RuleStore.SetGlobalPorts(comp.Cfg.AllowedDestPorts)
+	}
+
+	// 10. Egress proxy config
+	if comp.EgressDialer != nil {
+		_ = comp.EgressDialer.UpdateConfig(comp.Cfg.EgressProxy)
+	}
+
+	// 11. DNS passthrough
+	envDNSPassthrough := os.Getenv("DNS_UNAUTHORIZED_PASSTHROUGH_ENABLED")
+	dbDNSPassthrough, hasDNSPassthrough := dbSettings["dns_unauthorized_passthrough_enabled"]
+	fallbackDNSPassthrough := fmt.Sprintf("%t", comp.Cfg.DNS.UnauthorizedPassthrough.Enabled)
+	resolvedDNSPassthrough := config.ResolveSetting(envDNSPassthrough, dbDNSPassthrough, hasDNSPassthrough, fallbackDNSPassthrough) == "true"
+	if comp.DNSSrv != nil {
+		comp.DNSSrv.SetUnauthorizedPassthrough(resolvedDNSPassthrough)
+	}
+
+	// 12. Server domain
+	if domain, ok := dbSettings["server_domain"]; ok {
+		if comp.PortalSrv != nil {
+			comp.PortalSrv.SetServerDomain(domain)
+		}
+		if comp.PanelSrv != nil {
+			comp.PanelSrv.SetServerDomain(domain)
+		}
+	}
+
+	// 13. Admin Credentials reload (clears active sessions)
+	if comp.PanelSrv != nil {
+		if err := comp.PanelSrv.ReloadCredentials(ctx); err != nil {
+			slog.Error("failed reloading admin credentials on SIGHUP", "error", err)
+		}
+	}
+
+	return nil
+}
+
+func run(cfgPath string) error {
+	// -----------------------------------------------------------------------
+	// Load configuration
+	// -----------------------------------------------------------------------
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// -----------------------------------------------------------------------
+	// Set up logging
+	// -----------------------------------------------------------------------
+	closeLog, err := logging.Setup(&cfg.Logging)
+	if err != nil {
+		return fmt.Errorf("setting up logging: %w", err)
+	}
+	defer closeLog()
+
+	// -----------------------------------------------------------------------
+	// Initialize SQLite store (source of truth)
+	// -----------------------------------------------------------------------
+	sqlStore, err := sqlitestore.New(cfg.SQLite.Path)
+	if err != nil {
+		return fmt.Errorf("initializing SQLite: %w", err)
+	}
+	defer func() { _ = sqlStore.Close() }()
+
+	// -----------------------------------------------------------------------
+	// Resolve settings using strict precedence (Env Var > SQLite DB > Defaults)
+	// -----------------------------------------------------------------------
+	dbSettings, err := sqlStore.AllSettings(context.Background())
+	if err != nil {
+		slog.Warn("could not load app settings from sqlite", "error", err)
+		dbSettings = make(map[string]string)
+	}
+
+	ApplyConfigSettings(cfg, dbSettings)
 
 	slog.Info("tls-relay starting",
 		"listen_addr", cfg.Listen.Addr,
@@ -205,10 +492,6 @@ func run(cfgPath string) error {
 	ruleStore := rules.NewRuleStore(cfg.AllowedDestPorts, cfg.UnknownDomainPolicy)
 	accessStore := access.NewAccessStore(access.AccessMode(cfg.AccessMode))
 
-	// ConnTracker tracks every active TCP connection by client IP.
-	// It is wired to the AccessStore so that when user IPs are swapped
-	// (after a disable / delete), connections for revoked IPs are closed
-	// immediately without waiting for an idle timeout.
 	connTracker := relay.NewConnTracker()
 	accessStore.SetEvictionHook(connTracker)
 
@@ -260,10 +543,7 @@ func run(cfgPath string) error {
 	)
 
 	// -----------------------------------------------------------------------
-	// Contexts for graceful shutdown:
-	// - listenerCtx controls listeners (stops accepting incoming conns on shutdown)
-	// - connCtx controls connection lifecycles (drained during grace period)
-	// - bgCtx controls background workers (flushes telemetry and writes after conns close)
+	// Contexts for graceful shutdown
 	// -----------------------------------------------------------------------
 	listenerCtx, listenerCancel := context.WithCancel(context.Background())
 	defer listenerCancel()
@@ -285,7 +565,7 @@ func run(cfgPath string) error {
 	envReqLogRetention := os.Getenv("REQUEST_LOGS_RETENTION")
 	dbReqLogRetention, hasReqLogRetention := dbSettings["request_logs_retention"]
 	reqLogRetentionStr := config.ResolveSetting(envReqLogRetention, dbReqLogRetention, hasReqLogRetention, cfg.Logging.RequestLogs.Retention.Duration.String())
-	reqLogRetention, err := parseDurationWithDays(reqLogRetentionStr)
+	reqLogRetention, err := settings.ParseDurationWithDays(reqLogRetentionStr)
 	if err != nil {
 		slog.Warn("invalid request log retention configured; falling back to default", "retention", reqLogRetentionStr, "error", err)
 		reqLogRetention = 24 * time.Hour
@@ -294,32 +574,30 @@ func run(cfgPath string) error {
 	reqLogger := requestlog.New(sqlStore, reqLogRetention, reqLogEnabled)
 	reqLoggerDone := reqLogger.Start(bgCtx)
 
-	// Start background Last Seen writer for ConnTracker
 	connTrackerDone := connTracker.StartLastSeenWriter(bgCtx, sqlStore)
 
-	// Start background usage event writer.
 	usageTracker := relay.NewUsageTracker()
 	usageTrackerDone := usageTracker.StartWriter(bgCtx, sqlStore)
 
-	// Start background request stats collector.
 	reqStats := reqstats.New()
 	reqStatsDone := reqStats.StartWriter(bgCtx, sqlStore)
 
-	// Handle SIGINT / SIGTERM.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// WaitGroup tracks in-flight connection goroutines across all listeners.
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+
 	var connWG sync.WaitGroup
 
 	// -----------------------------------------------------------------------
 	// Start one TCP relay listener per configured port
 	// -----------------------------------------------------------------------
 	var listenerWG sync.WaitGroup
-	errs := make(chan error, len(cfg.Listen.Ports)+len(cfg.Listen.HTTPPorts)+2) // +2 for panel/router + dns
+	errs := make(chan error, len(cfg.Listen.Ports)+len(cfg.Listen.HTTPPorts)+2)
 
 	for _, port := range cfg.Listen.Ports {
-		port := port // capture
+		port := port
 		srv := relay.NewServer(cfg, port, allowList, checker, limits, ruleStore, accessStore, egressDialer, connTracker)
 		srv.SetConnContext(connCtx)
 		srv.SetLogger(reqLogger)
@@ -370,8 +648,7 @@ func run(cfgPath string) error {
 	})
 
 	// -----------------------------------------------------------------------
-	// Build Public Portal Service and embed its routes into the panel mux.
-	// Both the landing page, client setup, and admin panel share port 80.
+	// Build Public Portal Service
 	// -----------------------------------------------------------------------
 	portalSrv := portal.New(cfg.MagicLink.Addr, sqlStore, accessStore, syncer)
 	portalSrv.SetServerIP(cfg.DNS.RelayIP)
@@ -380,11 +657,10 @@ func run(cfgPath string) error {
 		portalSrv.SetServerDomain(panelSrv.ServerDomain())
 	}
 	portalSrv.SetRuleStore(ruleStore)
-	// Embed portal routes into panel (no separate listener).
 	panelSrv.SetPortalServer(portalSrv)
 
 	// -----------------------------------------------------------------------
-	// Start Front Router (shares panel.Addr for Admin Panel & HTTP Relay)
+	// Start Front Router
 	// -----------------------------------------------------------------------
 	router, err := frontrouter.New(
 		cfg,
@@ -429,15 +705,14 @@ func run(cfgPath string) error {
 	}()
 
 	// -----------------------------------------------------------------------
-	// Start standalone HTTP relay listeners for any extra ports in http_ports
-	// that do not match the panel listen port.
+	// Start standalone HTTP relay listeners for extra ports
 	// -----------------------------------------------------------------------
 	_, panelPortStr, _ := net.SplitHostPort(cfg.Panel.Addr)
 	panelPort, _ := strconv.Atoi(panelPortStr)
 
 	for _, httpPort := range cfg.Listen.HTTPPorts {
 		if httpPort == panelPort {
-			continue // Handled by front router
+			continue
 		}
 		httpPort := httpPort
 		httpSrv := httprelay.NewServer(cfg, httpPort, allowList, checker, limits, ruleStore, accessStore, egressDialer, connTracker)
@@ -455,15 +730,14 @@ func run(cfgPath string) error {
 		}()
 	}
 
-	// Resolve DNS Unauthorized Passthrough Setting
+	// -----------------------------------------------------------------------
+	// Start DNS Resolver
+	// -----------------------------------------------------------------------
 	envDNSPassthrough := os.Getenv("DNS_UNAUTHORIZED_PASSTHROUGH_ENABLED")
 	dbDNSPassthrough, hasDNSPassthrough := dbSettings["dns_unauthorized_passthrough_enabled"]
 	fallbackDNSPassthrough := fmt.Sprintf("%t", cfg.DNS.UnauthorizedPassthrough.Enabled)
 	resolvedDNSPassthrough := config.ResolveSetting(envDNSPassthrough, dbDNSPassthrough, hasDNSPassthrough, fallbackDNSPassthrough) == "true"
 
-	// -----------------------------------------------------------------------
-	// Start DNS Resolver
-	// -----------------------------------------------------------------------
 	dnsSrv, err := dnsresolver.New(dnsresolver.Config{
 		Addr:               cfg.DNS.Addr,
 		RelayIP:            cfg.DNS.RelayIP,
@@ -492,7 +766,41 @@ func run(cfgPath string) error {
 	}()
 
 	// -----------------------------------------------------------------------
-	// Wait for a signal or a listener error
+	// SIGHUP Live Reload Loop
+	// -----------------------------------------------------------------------
+	runtimeComp := &RuntimeComponents{
+		Cfg:          cfg,
+		SqlStore:     sqlStore,
+		RuleStore:    ruleStore,
+		AccessStore:  accessStore,
+		AllowList:    allowList,
+		Limits:       limits,
+		EgressDialer: egressDialer,
+		ReqLogger:    reqLogger,
+		PanelSrv:     panelSrv,
+		PortalSrv:    portalSrv,
+		Router:       router,
+		DNSSrv:       dnsSrv,
+	}
+
+	go func() {
+		for {
+			select {
+			case <-listenerCtx.Done():
+				return
+			case <-hupCh:
+				slog.Info("received SIGHUP, reloading configuration and credentials from database")
+				if err := ReloadSettings(context.Background(), runtimeComp); err != nil {
+					slog.Error("error during SIGHUP reload", "error", err)
+				} else {
+					slog.Info("SIGHUP reload completed successfully")
+				}
+			}
+		}
+	}()
+
+	// -----------------------------------------------------------------------
+	// Wait for a shutdown signal, panel restart, or a listener error
 	// -----------------------------------------------------------------------
 	var listenerErr error
 	select {
@@ -504,10 +812,9 @@ func run(cfgPath string) error {
 		slog.Error("listener error", "error", listenerErr)
 	}
 
-	// 1. Cancel listener context → all listeners stop accepting, listener goroutines return.
+	// 1. Cancel listener context
 	listenerCancel()
 
-	// Drain any additional errors from the channel (don't block forever).
 	go func() {
 		listenerWG.Wait()
 		close(errs)
@@ -535,13 +842,13 @@ func run(cfgPath string) error {
 		slog.Warn("grace period elapsed; forcing exit with active connections")
 	}
 
-	// 2. Cancel connection context → immediately terminates remaining active conns & pipes.
+	// 2. Cancel connection context
 	connCancel()
 
-	// 3. Cancel background context → signals all background writers to flush and exit.
+	// 3. Cancel background context
 	bgCancel()
 
-	// 4. Wait for all background writers to drain with a 10s cap.
+	// 4. Wait for all background writers to drain
 	writersDone := make(chan struct{})
 	go func() {
 		<-reqLoggerDone
@@ -559,32 +866,6 @@ func run(cfgPath string) error {
 	}
 
 	return listenerErr
-}
-
-func parseDurationWithDays(s string) (time.Duration, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, fmt.Errorf("empty duration")
-	}
-	if strings.HasSuffix(s, "d") || strings.HasSuffix(s, "D") {
-		numStr := s[:len(s)-1]
-		days, err := strconv.Atoi(numStr)
-		if err != nil {
-			return 0, fmt.Errorf("invalid days format %q: %w", s, err)
-		}
-		if days <= 0 {
-			return 0, fmt.Errorf("duration must be positive")
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	dur, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, err
-	}
-	if dur <= 0 {
-		return 0, fmt.Errorf("duration must be positive")
-	}
-	return dur, nil
 }
 
 func handleInitAdmin(cfgPath, username, password string) error {

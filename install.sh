@@ -147,7 +147,9 @@ elif command -v iptables >/dev/null 2>&1; then
 fi
 
 # 7. Create necessary directories
-mkdir -p "${INSTALL_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+mkdir -p "${INSTALL_DIR}"
+mkdir -p "${DATA_DIR}" && chmod 0700 "${DATA_DIR}"
+mkdir -p "${LOG_DIR}" && chmod 0750 "${LOG_DIR}"
 
 # 8. Download release archive
 TAR_NAME="tls-relay-linux-${ARCH}.tar.gz"
@@ -162,16 +164,17 @@ if ! curl -fLR --connect-timeout 20 --retry 3 -o "${TMP_DIR}/${TAR_NAME}" "${DOW
     exit 1
 fi
 
-# Optional checksum verification
+# SHA256 Checksum verification
 if curl -sLf -o "${TMP_DIR}/${TAR_NAME}.sha256" "${CHECKSUM_URL}" 2>/dev/null; then
     echo -e "${CYAN}Verifying SHA256 checksum...${NC}"
-    cd "${TMP_DIR}"
-    if sha256sum -c "${TAR_NAME}.sha256" >/dev/null 2>&1; then
-        echo -e "${GREEN}✓${NC} Checksum verified."
-    else
-        echo -e "${YELLOW}Warning: Checksum verification failed or mismatch, continuing...${NC}"
+    if ! (cd "${TMP_DIR}" && sha256sum -c "${TAR_NAME}.sha256" >/dev/null 2>&1); then
+        echo -e "${RED}[ERROR] SHA256 checksum verification failed! Aborting installation.${NC}"
+        rm -rf "${TMP_DIR}"
+        exit 1
     fi
-    cd - >/dev/null
+    echo -e "${GREEN}✓${NC} Checksum verified successfully."
+else
+    echo -e "${YELLOW}Warning: Checksum file not found on GitHub (${CHECKSUM_URL}); proceeding without checksum verification...${NC}"
 fi
 
 # 9. Stop service if already running
@@ -184,19 +187,17 @@ fi
 echo -e "${CYAN}Extracting files to ${INSTALL_DIR}...${NC}"
 tar -zxvf "${TMP_DIR}/${TAR_NAME}" -C "${TMP_DIR}" >/dev/null 2>&1
 
-cp -f "${TMP_DIR}/tls-relay" "${INSTALL_DIR}/tls-relay"
-chmod +x "${INSTALL_DIR}/tls-relay"
+install -m 755 "${TMP_DIR}/tls-relay" "${INSTALL_DIR}/tls-relay.new" && mv -f "${INSTALL_DIR}/tls-relay.new" "${INSTALL_DIR}/tls-relay"
 
 # Copy default config if not present
 if [[ ! -f "${INSTALL_DIR}/config.yaml" && -f "${TMP_DIR}/config.yaml" ]]; then
     cp "${TMP_DIR}/config.yaml" "${INSTALL_DIR}/config.yaml"
 fi
 
-# Copy CLI script
+# Copy CLI script atomically to both locations
 if [[ -f "${TMP_DIR}/tls-relay.sh" ]]; then
-    cp -f "${TMP_DIR}/tls-relay.sh" "${INSTALL_DIR}/tls-relay.sh"
-    cp -f "${TMP_DIR}/tls-relay.sh" "${CLI_BIN}"
-    chmod +x "${INSTALL_DIR}/tls-relay.sh" "${CLI_BIN}"
+    install -m 755 "${TMP_DIR}/tls-relay.sh" "${INSTALL_DIR}/tls-relay.sh.new" && mv -f "${INSTALL_DIR}/tls-relay.sh.new" "${INSTALL_DIR}/tls-relay.sh"
+    install -m 755 "${TMP_DIR}/tls-relay.sh" "${CLI_BIN}.new" && mv -f "${CLI_BIN}.new" "${CLI_BIN}"
 fi
 
 # Copy systemd unit file
@@ -214,6 +215,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/tls-relay
 ExecStart=/opt/tls-relay/tls-relay -config /opt/tls-relay/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=3s
 LimitNOFILE=65535
@@ -338,7 +340,7 @@ if [[ -t 0 && "${NONINTERACTIVE:-0}" != "1" ]]; then
                 ADMIN_PASS="${input_pass}"
             fi
             echo -e "${CYAN}Updating admin credentials in database...${NC}"
-            "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}" -pass "${ADMIN_PASS}"
+            TLS_RELAY_ADMIN_PASS="${ADMIN_PASS}" "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}"
             echo -e "${GREEN}✓ Admin credentials updated.${NC}"
         fi
     else
@@ -352,7 +354,7 @@ if [[ -t 0 && "${NONINTERACTIVE:-0}" != "1" ]]; then
             ADMIN_PASS="${input_pass}"
         fi
         echo -e "${CYAN}Initializing admin credentials in database...${NC}"
-        "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}" -pass "${ADMIN_PASS}"
+        TLS_RELAY_ADMIN_PASS="${ADMIN_PASS}" "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}"
         echo -e "${GREEN}✓ Admin credentials initialized.${NC}"
     fi
 else
@@ -362,7 +364,7 @@ else
         if [[ -z "${ADMIN_PASS}" ]]; then
             ADMIN_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)
         fi
-        "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}" -pass "${ADMIN_PASS}"
+        TLS_RELAY_ADMIN_PASS="${ADMIN_PASS}" "${INSTALL_DIR}/tls-relay" -config "${INSTALL_DIR}/config.yaml" -init-admin -user "${ADMIN_USER}"
     fi
 fi
 

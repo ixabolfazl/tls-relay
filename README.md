@@ -151,7 +151,7 @@ to open the interactive management menu.
 Available operations include:
 
 * Service status
-* Start / stop / restart
+* Start / stop / restart / reload
 * Live logs
 * Admin credentials
 * Access mode
@@ -166,6 +166,7 @@ Common commands:
 
 ```bash
 tls-relay status
+tls-relay reload
 tls-relay restart
 tls-relay log
 tls-relay creds
@@ -177,6 +178,38 @@ tls-relay update
 tls-relay backup
 tls-relay uninstall
 ```
+
+### Direct Binary Subcommands
+
+The `tls-relay` binary provides subcommands to inspect and modify settings directly in the SQLite database or perform consistent backups:
+
+```bash
+# View all settings or a specific setting
+tls-relay settings get
+tls-relay settings get access_mode
+
+# Set a setting with validation
+tls-relay settings set access_mode public
+tls-relay settings set panel_path /my-secret-panel
+
+# Consistent point-in-time database snapshot via VACUUM INTO
+tls-relay backup /opt/tls-relay/backups/snapshot.db
+
+# Initialize or reset admin credentials safely
+TLS_RELAY_ADMIN_PASS="mypassword" tls-relay -init-admin -user admin
+```
+
+### Zero-Downtime Live Reload
+
+Applying settings changes does not require dropping active connections:
+
+```bash
+systemctl reload tls-relay
+# or
+tls-relay reload
+```
+
+This sends `SIGHUP` to the daemon, re-reading SQLite settings (`access_mode`, `unknown_domain_policy`, `panel_path`, `timezone`, `max_connections_per_ip`, `allowed_dest_ports`, `egress_proxy_*`, `http_front_max_*`, `lookup_*`) and re-reading admin credentials (invalidating active sessions) without restarting listeners or terminating in-flight connections.
 
 ## TLS Relay
 
@@ -364,17 +397,24 @@ The administration panel path can be randomized during installation.
 
 ## Updating
 
-Update an existing installation without removing the configuration or database:
+Update an existing installation without removing configuration or database:
 
 ```bash
 tls-relay update
 ```
+
+The updater verifies SHA256 checksums, performs atomic binary and CLI script replacements, updates the systemd unit file when needed, and tests service startup with automatic rollback if the service fails to become active.
 
 Create a database backup before updating:
 
 ```bash
 tls-relay backup
 ```
+
+> **Note for Existing Installations:** Installations running an older version of the management script must run the official installer once to receive the self-updating script and updated unit file:
+> ```bash
+> bash <(curl -Ls https://raw.githubusercontent.com/ixabolfazl/tls-relay/main/install.sh)
+> ```
 
 ## Backup
 
