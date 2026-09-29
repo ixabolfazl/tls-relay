@@ -14,6 +14,7 @@ export function createDomainRuleForm({
   initialData = {}, // { domain, group_name, mode, ports, use_egress_proxy, include_subdomains }
   groups = [],
   isEdit = false,
+  layout = isEdit ? 'stacked' : 'grid',
   onChange = null,
 } = {}) {
   const settings = store.getState().settings;
@@ -128,10 +129,10 @@ export function createDomainRuleForm({
           `
         : ''}
 
-      <!-- 4. Routing Mode (3 Options in 1 Row for Add, Stacked for Edit) -->
+      <!-- 4. Routing Mode (3 Options in 1 Row for Grid, Stacked for Dialogs/Edit) -->
       <div class="field pt-1 border-t border-border">
         <label class="field-label mb-1">Routing Mode</label>
-        <div class="${!isEdit ? 'grid grid-cols-1 md:grid-cols-3 gap-3' : 'space-y-2'}">
+        <div class="${layout === 'stacked' ? 'space-y-2' : 'grid grid-cols-1 md:grid-cols-3 gap-3'}">
           <!-- Proxy Option (Green) -->
           <label class="flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
             currentMode === 'proxy'

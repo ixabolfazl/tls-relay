@@ -14,6 +14,7 @@ import { showMenu } from '../ui/menu.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { store } from '../core/store.js';
 import { navigate } from '../core/router.js';
+import { copyText } from '../core/clipboard.js';
 
 export function mount(container) {
   let activeTab = 'accounts'; // accounts | presence
@@ -441,11 +442,20 @@ export function mount(container) {
       // Copy token/URL inline
       const copyTokenBtn = row.querySelector('.copy-token-btn');
       if (copyTokenBtn) {
-        copyTokenBtn.addEventListener('click', (e) => {
+        copyTokenBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
           const link = getMagicLinkUrl(u.magic_link);
-          navigator.clipboard.writeText(link);
-          toast.success('Connection link copied to clipboard');
+          const ok = await copyText(link);
+          if (ok) {
+            toast.success('Connection link copied to clipboard');
+            const originalHTML = copyTokenBtn.innerHTML;
+            copyTokenBtn.innerHTML = `<svg class="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`;
+            setTimeout(() => {
+              copyTokenBtn.innerHTML = originalHTML;
+            }, 1500);
+          } else {
+            toast.error(`Failed to copy link automatically. Link: ${link}`, { duration: 8000 });
+          }
         });
       }
 
@@ -472,11 +482,15 @@ export function mount(container) {
           {
             text: 'Copy Magic Link',
             icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>`,
-            onClick: () => {
+            onClick: async () => {
               if (u.magic_link) {
                 const link = getMagicLinkUrl(u.magic_link);
-                navigator.clipboard.writeText(link);
-                toast.success('Magic link copied to clipboard');
+                const ok = await copyText(link);
+                if (ok) {
+                  toast.success('Magic link copied to clipboard');
+                } else {
+                  toast.error(`Failed to copy link automatically. Link: ${link}`, { duration: 8000 });
+                }
               } else {
                 toast.error('User has no magic token configured');
               }
