@@ -52,6 +52,13 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	ipCounts := make(map[int64]int)
+	if s.sqlStore != nil {
+		if counts, err := s.sqlStore.GetUsersIPCounts(ctx); err == nil {
+			ipCounts = counts
+		}
+	}
+
 	type userDTO struct {
 		ID                 int64  `json:"id"`
 		Username           string `json:"username"`
@@ -64,6 +71,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		TotalBytesSent     int64  `json:"total_bytes_sent"`
 		TotalBytesReceived int64  `json:"total_bytes_received"`
 		TotalDNSQueries    int64  `json:"total_dns_queries"`
+		IPCount            int    `json:"ip_count"`
 	}
 	out := make([]userDTO, 0, len(users))
 	for _, u := range users {
@@ -87,6 +95,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			TotalBytesSent:     utot.Sent,
 			TotalBytesReceived: utot.Received,
 			TotalDNSQueries:    dnsTotals[u.ID],
+			IPCount:            ipCounts[u.ID],
 		})
 	}
 	jsonOK(w, map[string]interface{}{"users": out})

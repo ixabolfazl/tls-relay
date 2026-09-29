@@ -270,3 +270,56 @@ func TestUsageAPI_ResetUserUsage(t *testing.T) {
 		t.Errorf("totals after reset: sent=%d received=%d (want 0,0)", tot.Sent, tot.Received)
 	}
 }
+
+// TestListUsers_IncludesIPCount verifies that GET /api/users returns the aggregated ip_count.
+func TestListUsers_IncludesIPCount(t *testing.T) {
+	srv, sqStore, session, _ := newUsagePanelServer(t)
+	ctx := context.Background()
+
+	u1, err := sqStore.CreateUser(ctx, "countuser1", 5)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	u2, err := sqStore.CreateUser(ctx, "countuser2", 5)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	_ = sqStore.RegisterIP(ctx, u1.ID, "10.0.0.1", 5)
+	_ = sqStore.RegisterIP(ctx, u1.ID, "10.0.0.2", 5)
+
+	rec := authGET(t, srv, "/api/users", session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/users: status %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Users []struct {
+			ID      int64  `json:"id"`
+			IPCount int    `json:"ip_count"`
+			User    string `json:"username"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	foundU1, foundU2 := false, false
+	for _, u := range res.Users {
+		if u.ID == u1.ID {
+			foundU1 = true
+			if u.IPCount != 2 {
+				t.Errorf("user1 expected ip_count=2, got %d", u.IPCount)
+			}
+		}
+		if u.ID == u2.ID {
+			foundU2 = true
+			if u.IPCount != 0 {
+				t.Errorf("user2 expected ip_count=0, got %d", u.IPCount)
+			}
+		}
+	}
+	if !foundU1 || !foundU2 {
+		t.Errorf("expected both users in response: foundU1=%v, foundU2=%v", foundU1, foundU2)
+	}
+}

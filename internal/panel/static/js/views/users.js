@@ -1,6 +1,5 @@
 /**
  * Users view: account management, IP allowlists, magic links, and live presence monitoring.
- * Fixes B1 (deleteUserIP reference), B14 (encodeURIComponent for IPv6), F13 (presence polling).
  */
 
 import { html, raw, setHtml, $, $$, escapeHtml } from '../core/dom.js';
@@ -19,7 +18,7 @@ import { renderPagination } from '../ui/pagination.js';
 
 export function mount(container) {
   let isMounted = true;
-  let activeTab = 'accounts'; // accounts | presence
+  let activeFilter = 'all'; // 'all' | 'online'
   let activeRange = 'today';
   let allUsers = [];
   let presenceData = { users: [], total_online: 0, total_users: 0, active_connections: 0 };
@@ -42,224 +41,151 @@ export function mount(container) {
             <h1 class="text-2xl font-bold text-txt">Users & Access</h1>
             <p class="text-xs text-txt-muted mt-0.5">Manage user credentials, connection limits, and live presence</p>
           </div>
-          <div id="users-tab-segmented"></div>
         </div>
 
-        <!-- ACCOUNTS TAB -->
-        <div id="users-accounts-section" class="space-y-6">
-          <!-- Create User Card -->
-          <div class="card p-5">
-            <form id="create-user-form" class="flex flex-col md:flex-row items-end gap-3.5">
-              <div class="field flex-1 w-full">
-                <label class="field-label" for="new-username">Username</label>
-                <input
-                  id="new-username"
-                  type="text"
-                  class="input"
-                  placeholder="e.g. alice, work-laptop"
-                  required
-                  autocomplete="off"
-                />
-              </div>
-
-              <div class="field flex-1 w-full">
-                <label class="field-label" for="new-user-token">Token (Optional)</label>
-                <input
-                  id="new-user-token"
-                  type="text"
-                  class="input font-mono text-xs"
-                  placeholder="Leave empty to auto-generate"
-                  autocomplete="off"
-                />
-              </div>
-
-              <div class="field w-full md:w-36">
-                <label class="field-label" for="new-user-max-ips">Max IPs</label>
-                <input
-                  id="new-user-max-ips"
-                  type="number"
-                  class="input tabular-nums"
-                  min="0"
-                  max="1000"
-                  value="${store.getState().settings?.default_max_ips ?? 3}"
-                  placeholder="0 = unlimited"
-                />
-              </div>
-
-              <button id="create-user-submit-btn" type="submit" class="btn btn-primary w-full md:w-auto shrink-0">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                <span>Create User</span>
-              </button>
-            </form>
-          </div>
-
-          <!-- Accounts Table Card -->
-          <div class="card">
-            <div class="p-4 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div class="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0">
-                <div class="flex items-center gap-2">
-                  <h2 class="text-base font-semibold text-txt">Accounts</h2>
-                  <span id="users-count-badge" class="badge badge-neutral tabular-nums">0 users</span>
-                </div>
-                <div id="users-range-segmented"></div>
-              </div>
-              <div class="relative w-full sm:w-64">
-                <input
-                  id="users-search-input"
-                  type="text"
-                  class="input pl-8 text-sm"
-                  placeholder="Search users or tokens..."
-                />
-                <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-txt-subtle pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                </svg>
-              </div>
+        <!-- Create User Card -->
+        <div class="card p-5">
+          <form id="create-user-form" class="flex flex-col md:flex-row items-end gap-3.5">
+            <div class="field flex-1 w-full">
+              <label class="field-label" for="new-username">Username</label>
+              <input
+                id="new-username"
+                type="text"
+                class="input"
+                placeholder="e.g. alice, work-laptop"
+                required
+                autocomplete="off"
+              />
             </div>
 
-            <div class="overflow-x-auto">
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th class="table-th w-8"></th>
-                    <th class="table-th cursor-pointer select-none" data-sort="username">
-                      <div class="flex items-center gap-1.5">
-                        <span>User</span>
-                        <span id="sort-icon-username" class="text-txt-subtle text-xs">↕</span>
-                      </div>
-                    </th>
-                    <th class="table-th">Status</th>
-                    <th class="table-th cursor-pointer select-none" data-sort="last_seen_at">
-                      <div class="flex items-center gap-1.5">
-                        <span>Last Seen</span>
-                        <span id="sort-icon-last_seen_at" class="text-txt-subtle text-xs">↕</span>
-                      </div>
-                    </th>
-                    <th class="table-th cursor-pointer select-none text-right" data-sort="sent">
-                      <div class="flex items-center justify-end gap-1.5">
-                        <span>Sent</span>
-                        <span id="sort-icon-sent" class="text-txt-subtle text-xs">↕</span>
-                      </div>
-                    </th>
-                    <th class="table-th cursor-pointer select-none text-right" data-sort="received">
-                      <div class="flex items-center justify-end gap-1.5">
-                        <span>Received</span>
-                        <span id="sort-icon-received" class="text-txt-subtle text-xs">↕</span>
-                      </div>
-                    </th>
-                    <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
-                      <div class="flex items-center justify-end gap-1.5">
-                        <span>Total</span>
-                        <span id="sort-icon-usage" class="text-txt-subtle text-xs">↕</span>
-                      </div>
-                    </th>
-                    <th class="table-th cursor-pointer select-none text-right" data-sort="queries">
-                      <div class="flex items-center justify-end gap-1.5">
-                        <span>DNS Queries</span>
-                        <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
-                      </div>
-                    </th>
-                    <th class="table-th">Token</th>
-                    <th class="table-th w-16 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="users-table-body">
-                  <tr>
-                    <td colspan="10" class="table-td text-center py-12 text-txt-subtle">
-                      <div class="flex flex-col items-center justify-center gap-2">
-                        <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-                        <span>Loading user accounts...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="field flex-1 w-full">
+              <label class="field-label" for="new-user-token">Token (Optional)</label>
+              <input
+                id="new-user-token"
+                type="text"
+                class="input font-mono text-xs"
+                placeholder="Leave empty to auto-generate"
+                autocomplete="off"
+              />
             </div>
 
-            <div id="users-pagination" class="card-footer"></div>
-          </div>
+            <div class="field w-full md:w-36">
+              <label class="field-label" for="new-user-max-ips">Max IPs</label>
+              <input
+                id="new-user-max-ips"
+                type="number"
+                class="input tabular-nums"
+                min="0"
+                max="1000"
+                value="${store.getState().settings?.default_max_ips ?? 3}"
+                placeholder="0 = unlimited"
+              />
+            </div>
+
+            <button id="create-user-submit-btn" type="submit" class="btn btn-primary w-full md:w-auto shrink-0">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              <span>Create User</span>
+            </button>
+          </form>
         </div>
 
-        <!-- LIVE PRESENCE TAB -->
-        <div id="users-presence-section" class="space-y-6 hidden">
-          <!-- Presence KPI Bar -->
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div class="card p-4">
-              <div class="text-xs font-medium text-txt-muted">Online Users</div>
-              <div id="presence-online-kpi" class="text-2xl font-bold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">—</div>
+        <!-- Accounts Table Card -->
+        <div class="card">
+          <div class="p-4 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div class="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0">
+              <div id="users-filter-segmented"></div>
+              <div id="users-range-segmented"></div>
             </div>
-            <div class="card p-4">
-              <div class="text-xs font-medium text-txt-muted">Active Connections</div>
-              <div id="presence-conns-kpi" class="text-2xl font-bold text-txt mt-1 tabular-nums">—</div>
-            </div>
-            <div class="card p-4">
-              <div class="text-xs font-medium text-txt-muted">Total Registered Accounts</div>
-              <div id="presence-total-kpi" class="text-2xl font-bold text-txt mt-1 tabular-nums">—</div>
+            <div class="relative w-full sm:w-64">
+              <input
+                id="users-search-input"
+                type="text"
+                class="input pl-8 text-sm"
+                placeholder="Search users or tokens..."
+              />
+              <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-txt-subtle pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
             </div>
           </div>
 
-          <!-- Presence Table Card -->
-          <div class="card">
-            <div class="card-header">
-              <div class="flex items-center gap-2">
-                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                <h2 class="text-base font-semibold text-txt">Live Connected Users</h2>
-              </div>
-              <span class="text-xs text-txt-subtle">Updated live every 5s</span>
-            </div>
-
-            <div class="overflow-x-auto">
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th class="table-th">User</th>
-                    <th class="table-th">Status</th>
-                    <th class="table-th">Active Connections</th>
-                    <th class="table-th">Registered IPs</th>
-                    <th class="table-th">Active IPs</th>
-                    <th class="table-th">Last Activity</th>
-                  </tr>
-                </thead>
-                <tbody id="presence-table-body">
-                  <tr>
-                    <td colspan="6" class="table-td text-center py-12 text-txt-subtle">
-                      Loading presence...
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+          <div class="overflow-x-auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th class="table-th w-8"></th>
+                  <th class="table-th cursor-pointer select-none" data-sort="username">
+                    <div class="flex items-center gap-1.5">
+                      <span>User</span>
+                      <span id="sort-icon-username" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th">Status</th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="conns">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>Active Conns</span>
+                      <span id="sort-icon-conns" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th">Active IPs</th>
+                  <th class="table-th cursor-pointer select-none text-center" data-sort="ip_count">
+                    <div class="flex items-center justify-center gap-1.5">
+                      <span>Reg IPs</span>
+                      <span id="sort-icon-ip_count" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none" data-sort="last_seen_at">
+                    <div class="flex items-center gap-1.5">
+                      <span>Last Seen</span>
+                      <span id="sort-icon-last_seen_at" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="sent">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>Sent</span>
+                      <span id="sort-icon-sent" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="received">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>Received</span>
+                      <span id="sort-icon-received" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>Total</span>
+                      <span id="sort-icon-usage" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="queries">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>DNS Queries</span>
+                      <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th">Token</th>
+                  <th class="table-th w-16 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body">
+                <tr>
+                  <td colspan="13" class="table-td text-center py-12 text-txt-subtle">
+                    <div class="flex flex-col items-center justify-center gap-2">
+                      <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+                      <span>Loading user accounts...</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
+
+          <div id="users-pagination" class="card-footer"></div>
         </div>
       </div>
     `
   );
-
-  // Tab segmented control
-  const tabContainer = $('#users-tab-segmented', container);
-  const tabSegmented = createSegmentedControl({
-    options: [
-      { value: 'accounts', label: 'Accounts' },
-      { value: 'presence', label: 'Live Presence' },
-    ],
-    value: activeTab,
-    size: 'sm',
-    onChange: (val) => {
-      activeTab = val;
-      const accSec = $('#users-accounts-section', container);
-      const presSec = $('#users-presence-section', container);
-
-      if (activeTab === 'accounts') {
-        accSec.classList.remove('hidden');
-        presSec.classList.add('hidden');
-        presencePoller.stop();
-      } else {
-        accSec.classList.add('hidden');
-        presSec.classList.remove('hidden');
-        presencePoller.start();
-      }
-    },
-  });
-  tabContainer.appendChild(tabSegmented.el);
 
   // Search input
   $('#users-search-input', container).addEventListener('input', (e) => {
@@ -292,7 +218,7 @@ export function mount(container) {
     submitBtn.textContent = 'Creating...';
 
     try {
-      const res = await api.createUser({
+      await api.createUser({
         username,
         magic_link: tokenInput.value.trim() || undefined,
         max_ips: maxIpsVal,
@@ -312,6 +238,50 @@ export function mount(container) {
     }
   });
 
+  function getPresenceForUser(u) {
+    if (!presenceData?.users) return null;
+    return (
+      presenceData.users.find((p) => p.user_id && p.user_id === u.id) ||
+      presenceData.users.find((p) => p.username && p.username.toLowerCase() === u.username.toLowerCase()) ||
+      null
+    );
+  }
+
+  function getOnlineUserCount() {
+    const onlineSet = new Set(
+      (presenceData.users || [])
+        .filter((p) => p.status === 'Online')
+        .map((p) => (p.user_id ? String(p.user_id) : p.username.toLowerCase()))
+    );
+    return allUsers.filter((u) => onlineSet.has(String(u.id)) || onlineSet.has(u.username.toLowerCase())).length;
+  }
+
+  let filterSegObj = null;
+  function initUsersFilterSegmented() {
+    const el = $('#users-filter-segmented', container);
+    if (!el) return;
+    const onlineCount = getOnlineUserCount();
+    const options = [
+      { value: 'all', label: 'All', count: allUsers.length },
+      { value: 'online', label: 'Online', count: onlineCount },
+    ];
+    if (!filterSegObj) {
+      filterSegObj = createSegmentedControl({
+        options,
+        value: activeFilter,
+        size: 'sm',
+        onChange: (val) => {
+          activeFilter = val;
+          tableState.currentPage = 1;
+          renderAccountsTable();
+        },
+      });
+      el.appendChild(filterSegObj.el);
+    } else {
+      filterSegObj.updateOptions(options);
+    }
+  }
+
   // Fetch all users
   async function fetchUsers() {
     if (!isMounted) return;
@@ -321,15 +291,15 @@ export function mount(container) {
       allUsers = usersRes.users || [];
       presenceData = presRes || { users: [], total_online: 0, total_users: 0, active_connections: 0 };
 
-      $('#users-count-badge', container).textContent = `${allUsers.length} users`;
+      initUsersFilterSegmented();
       initUsersRangeSegmented();
       renderAccountsTable();
-      renderPresenceView();
+      presencePoller.start();
     } catch (err) {
       if (!isMounted) return;
       $('#users-table-body', container).innerHTML = `
         <tr>
-          <td colspan="10" class="table-td text-center py-8 text-danger">
+          <td colspan="13" class="table-td text-center py-8 text-danger">
             Failed to load users: ${escapeHtml(err.message)}
           </td>
         </tr>
@@ -358,19 +328,29 @@ export function mount(container) {
     const tbody = $('#users-table-body', container);
 
     let filtered = allUsers;
+    if (activeFilter === 'online') {
+      filtered = filtered.filter((u) => {
+        const p = getPresenceForUser(u);
+        return p && p.status === 'Online';
+      });
+    }
+
     if (searchQuery) {
-      filtered = allUsers.filter(
+      filtered = filtered.filter(
         (u) =>
           u.username.toLowerCase().includes(searchQuery) ||
           (u.magic_link && u.magic_link.toLowerCase().includes(searchQuery))
       );
     }
 
-    const onlineUsernames = new Set(
-      (presenceData.users || []).filter((p) => p.status === 'Online').map((p) => p.username.toLowerCase())
-    );
-
     const customComparators = {
+      username: (a, b) => a.username.localeCompare(b.username),
+      conns: (a, b) => {
+        const cA = getPresenceForUser(a)?.active_connections || 0;
+        const cB = getPresenceForUser(b)?.active_connections || 0;
+        return cA - cB;
+      },
+      ip_count: (a, b) => (a.ip_count || 0) - (b.ip_count || 0),
       usage: (a, b) => {
         const uA = (a.total_bytes_sent || 0) + (a.total_bytes_received || 0);
         const uB = (b.total_bytes_sent || 0) + (b.total_bytes_received || 0);
@@ -392,8 +372,8 @@ export function mount(container) {
     if (sorted.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="10" class="table-td text-center py-12 text-txt-subtle italic">
-            ${searchQuery ? 'No users matching your search' : 'No user accounts created yet'}
+          <td colspan="13" class="table-td text-center py-12 text-txt-subtle italic">
+            ${searchQuery ? 'No users matching your search' : activeFilter === 'online' ? 'No users currently online' : 'No user accounts created yet'}
           </td>
         </tr>
       `;
@@ -411,11 +391,18 @@ export function mount(container) {
     tbody.innerHTML = '';
 
     for (const u of sliceInfo.slice) {
-      const isOnline = onlineUsernames.has(u.username.toLowerCase());
+      const p = getPresenceForUser(u);
+      const isOnline = p && p.status === 'Online';
+      const activeConns = p?.active_connections || 0;
+      const activeIpsList = Array.isArray(p?.active_ips) ? p.active_ips : [];
+      const activeIpsDisplay = activeIpsList.length > 0 ? activeIpsList.join(', ') : '—';
       const totalBandwidth = (u.total_bytes_sent || 0) + (u.total_bytes_received || 0);
       const isEnabled = u.enabled !== false;
       const defaultMaxIPs = store.getState().settings?.default_max_ips ?? 3;
       const maxIps = u.max_ips !== undefined ? u.max_ips : defaultMaxIPs;
+      const ipCount = u.ip_count ?? 0;
+      const maxIpsStr = maxIps === 0 ? '∞' : String(maxIps);
+      const regIpsDisplay = `${ipCount} / ${maxIpsStr}`;
 
       const row = document.createElement('tr');
       row.className = 'table-row';
@@ -427,7 +414,7 @@ export function mount(container) {
 
       row.innerHTML = `
         <td class="table-td w-8 text-center">
-          <span class="inline-block w-2.5 h-2.5 rounded-full ${
+          <span class="user-online-dot inline-block w-2.5 h-2.5 rounded-full ${
             isOnline ? 'bg-emerald-500 ring-2 ring-emerald-500/20' : 'bg-slate-300 dark:bg-slate-600'
           }" title="${isOnline ? 'Online' : 'Offline'}"></span>
         </td>
@@ -441,6 +428,17 @@ export function mount(container) {
               : `<span class="badge badge-danger text-[11px]">Disabled</span>`
           }
         </td>
+        <td class="table-td text-right font-mono text-xs tabular-nums text-txt font-semibold">
+          <span class="user-active-conns">${formatCount(activeConns)}</span>
+        </td>
+        <td class="table-td font-mono text-xs text-primary-600 dark:text-primary-400 max-w-[140px] truncate" title="${escapeHtml(activeIpsDisplay)}">
+          <span class="user-active-ips">${escapeHtml(activeIpsDisplay)}</span>
+        </td>
+        <td class="table-td text-center font-mono text-xs tabular-nums text-txt-muted">
+          <button type="button" class="user-ips-btn hover:text-txt underline decoration-dotted" title="View/edit registered IPs">
+            ${escapeHtml(regIpsDisplay)}
+          </button>
+        </td>
         <td class="table-td text-xs text-txt-muted tabular-nums">
           ${formatRelativeTime(u.last_seen_at)}
         </td>
@@ -450,11 +448,8 @@ export function mount(container) {
         <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
           ${(u.total_bytes_received || 0) > 0 ? formatBytes(u.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}
         </td>
-        <td class="table-td text-right text-xs font-mono tabular-nums text-txt">
-          <div class="flex flex-col items-end">
-            <span class="font-semibold">${totalBandwidth > 0 ? formatBytes(totalBandwidth) : '<span class="text-txt-subtle">0 B</span>'}</span>
-            <span class="text-[10px] text-txt-subtle">${maxIps === 0 ? 'Unlimited IPs' : `Max ${maxIps} IP${maxIps === 1 ? '' : 's'}`}</span>
-          </div>
+        <td class="table-td text-right text-xs font-mono tabular-nums text-txt font-semibold">
+          ${totalBandwidth > 0 ? formatBytes(totalBandwidth) : '<span class="text-txt-subtle">0 B</span>'}
         </td>
         <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
           ${(u.total_dns_queries || 0) > 0 ? formatCount(u.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
@@ -477,6 +472,15 @@ export function mount(container) {
           </button>
         </td>
       `;
+
+      // Click registered IPs button
+      const ipsBtn = row.querySelector('.user-ips-btn');
+      if (ipsBtn) {
+        ipsBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openUserIPsDialog(u);
+        });
+      }
 
       // Copy token/URL inline
       const copyTokenBtn = row.querySelector('.copy-token-btn');
@@ -718,12 +722,13 @@ export function mount(container) {
             </td>
           `;
 
-          // Delete IP handler (fixes B1 & B14)
+          // Delete IP handler
           row.querySelector('.del-ip-btn').addEventListener('click', async () => {
             try {
               await api.deleteUserIP(u.id, ipObj.ip_address);
               toast.success(`Removed IP ${ipObj.ip_address}`);
               await loadIPs();
+              await fetchUsers();
             } catch (err) {
               toast.error(err.message || 'Failed to remove IP');
             }
@@ -751,6 +756,7 @@ export function mount(container) {
         toast.success(`Added IP ${ip}`);
         ipInput.value = '';
         await loadIPs();
+        await fetchUsers();
       } catch (err) {
         toast.error(err.message || 'Failed to add IP');
       }
@@ -844,58 +850,7 @@ export function mount(container) {
     }
   }
 
-  // Render Presence View
-  function renderPresenceView() {
-    $('#presence-online-kpi', container).textContent = formatCount(presenceData.total_online || 0);
-    $('#presence-conns-kpi', container).textContent = formatCount(presenceData.active_connections || 0);
-    $('#presence-total-kpi', container).textContent = formatCount(presenceData.total_users || 0);
-
-    const tbody = $('#presence-table-body', container);
-    const onlineList = (presenceData.users || []).filter((u) => u.status === 'Online');
-
-    if (onlineList.length === 0) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="6" class="table-td text-center py-12 text-txt-subtle italic">
-            No active users currently connected
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    tbody.innerHTML = '';
-    for (const u of onlineList) {
-      const row = document.createElement('tr');
-      row.className = 'table-row';
-      row.innerHTML = `
-        <td class="table-td font-medium text-txt">
-          <div class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>${escapeHtml(u.username)}</span>
-          </div>
-        </td>
-        <td class="table-td text-xs">
-          <span class="badge badge-success text-[11px]">Online</span>
-        </td>
-        <td class="table-td font-mono text-xs tabular-nums text-txt font-semibold">
-          ${formatCount(u.active_connections || 0)}
-        </td>
-        <td class="table-td font-mono text-xs text-txt-muted">
-          ${Array.isArray(u.registered_ips) ? u.registered_ips.join(', ') || '—' : '—'}
-        </td>
-        <td class="table-td font-mono text-xs text-primary-600 dark:text-primary-400">
-          ${Array.isArray(u.active_ips) ? u.active_ips.join(', ') || '—' : '—'}
-        </td>
-        <td class="table-td text-xs text-txt-muted tabular-nums">
-          ${formatRelativeTime(u.last_seen_at)}
-        </td>
-      `;
-      tbody.appendChild(row);
-    }
-  }
-
-  // Update Presence Live Poller (In-place presence update, fixes F13)
+  // In-place presence poller (fixes F13, preserves DOM state)
   async function pollPresence() {
     if (!isMounted) return;
     try {
@@ -903,33 +858,44 @@ export function mount(container) {
       if (!isMounted) return;
       presenceData = pres;
 
-      // Update KPIs
-      $('#presence-online-kpi', container).textContent = formatCount(presenceData.total_online || 0);
-      $('#presence-conns-kpi', container).textContent = formatCount(presenceData.active_connections || 0);
-      $('#presence-total-kpi', container).textContent = formatCount(presenceData.total_users || 0);
-
-      // If on presence tab, refresh table
-      if (activeTab === 'presence') {
-        renderPresenceView();
+      // Update filter counts
+      if (filterSegObj) {
+        filterSegObj.updateOptions([
+          { value: 'all', label: 'All', count: allUsers.length },
+          { value: 'online', label: 'Online', count: getOnlineUserCount() },
+        ]);
       }
 
-      // If on accounts tab, patch online dots without rebuilding accounts table (fixes F13)
-      const onlineUsernames = new Set(
-        (presenceData.users || []).filter((p) => p.status === 'Online').map((p) => p.username.toLowerCase())
-      );
-
+      // In-place patch rendered table rows without rebuilding table or losing state
       $$('#users-table-body tr[data-user-id]', container).forEach((row) => {
         const uId = row.dataset.userId;
         const u = allUsers.find((x) => String(x.id) === String(uId));
-        if (u) {
-          const isOnline = onlineUsernames.has(u.username.toLowerCase());
-          const dot = row.querySelector('td:first-child span');
-          if (dot) {
-            dot.className = `inline-block w-2.5 h-2.5 rounded-full ${
-              isOnline ? 'bg-emerald-500 ring-2 ring-emerald-500/20' : 'bg-slate-300 dark:bg-slate-600'
-            }`;
-            dot.title = isOnline ? 'Online' : 'Offline';
-          }
+        if (!u) return;
+
+        const p = getPresenceForUser(u);
+        const isOnline = p && p.status === 'Online';
+        const activeConns = p?.active_connections || 0;
+        const activeIpsList = Array.isArray(p?.active_ips) ? p.active_ips : [];
+        const activeIpsDisplay = activeIpsList.length > 0 ? activeIpsList.join(', ') : '—';
+
+        const dot = row.querySelector('.user-online-dot');
+        if (dot) {
+          dot.className = `user-online-dot inline-block w-2.5 h-2.5 rounded-full ${
+            isOnline ? 'bg-emerald-500 ring-2 ring-emerald-500/20' : 'bg-slate-300 dark:bg-slate-600'
+          }`;
+          dot.title = isOnline ? 'Online' : 'Offline';
+        }
+
+        const connsEl = row.querySelector('.user-active-conns');
+        if (connsEl) {
+          connsEl.textContent = formatCount(activeConns);
+        }
+
+        const ipsEl = row.querySelector('.user-active-ips');
+        if (ipsEl) {
+          ipsEl.textContent = activeIpsDisplay;
+          const cell = ipsEl.closest('td');
+          if (cell) cell.title = activeIpsDisplay;
         }
       });
     } catch (err) {
@@ -951,7 +917,7 @@ export function mount(container) {
   function initUsersRangeSegmented() {
     const el = $('#users-range-segmented', container);
     if (!el || usersRangeSegObj) return;
-    usersRangeSegObj = createSegmentedControl(el, {
+    usersRangeSegObj = createSegmentedControl({
       options: [
         { value: 'today', label: 'Today' },
         { value: '7d', label: '7d' },
@@ -966,10 +932,11 @@ export function mount(container) {
         fetchUsers();
       },
     });
+    el.appendChild(usersRangeSegObj.el);
   }
 
   function updateSortIcons() {
-    ['username', 'last_seen_at', 'sent', 'received', 'usage', 'queries'].forEach((k) => {
+    ['username', 'conns', 'ip_count', 'last_seen_at', 'sent', 'received', 'usage', 'queries'].forEach((k) => {
       const icon = $(`#sort-icon-${k}`, container);
       if (!icon) return;
       if (tableState.sortKey === k) {

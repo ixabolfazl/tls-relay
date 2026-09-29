@@ -152,3 +152,26 @@ func (s *Store) AllEnabledUserIPs(ctx context.Context) ([]string, error) {
 	}
 	return ips, rows.Err()
 }
+
+// GetUsersIPCounts returns a map of user_id -> count of registered IPs for that user.
+func (s *Store) GetUsersIPCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.reader.QueryContext(ctx,
+		`SELECT user_id, COUNT(*) FROM user_ips GROUP BY user_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var (
+			userID int64
+			count  int
+		)
+		if err := rows.Scan(&userID, &count); err != nil {
+			return nil, err
+		}
+		counts[userID] = count
+	}
+	return counts, rows.Err()
+}

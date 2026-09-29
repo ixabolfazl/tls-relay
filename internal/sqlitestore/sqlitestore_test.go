@@ -1481,3 +1481,39 @@ func TestDeleteExpiredRequestLogs_Batching(t *testing.T) {
 		t.Errorf("expected 0 remaining rows, got %d (%v)", remaining, err)
 	}
 }
+
+func TestGetUsersIPCounts_AggregatesCountsAcrossUsers(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u1, err := store.CreateUser(ctx, "user1", 5)
+	if err != nil {
+		t.Fatalf("CreateUser 1: %v", err)
+	}
+	u2, err := store.CreateUser(ctx, "user2", 5)
+	if err != nil {
+		t.Fatalf("CreateUser 2: %v", err)
+	}
+	u3, err := store.CreateUser(ctx, "user3", 5)
+	if err != nil {
+		t.Fatalf("CreateUser 3: %v", err)
+	}
+
+	_ = store.RegisterIP(ctx, u1.ID, "1.1.1.1", 5)
+	_ = store.RegisterIP(ctx, u1.ID, "1.1.1.2", 5)
+	_ = store.RegisterIP(ctx, u2.ID, "2.2.2.2", 5)
+
+	counts, err := store.GetUsersIPCounts(ctx)
+	if err != nil {
+		t.Fatalf("GetUsersIPCounts failed: %v", err)
+	}
+	if counts[u1.ID] != 2 {
+		t.Errorf("expected 2 IPs for user1, got %d", counts[u1.ID])
+	}
+	if counts[u2.ID] != 1 {
+		t.Errorf("expected 1 IP for user2, got %d", counts[u2.ID])
+	}
+	if counts[u3.ID] != 0 {
+		t.Errorf("expected 0 IPs for user3, got %d", counts[u3.ID])
+	}
+}
