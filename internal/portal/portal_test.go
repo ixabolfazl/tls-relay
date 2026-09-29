@@ -2,11 +2,13 @@ package portal_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
 	"github.com/ixabolfazl/tls-relay/internal/portal"
@@ -592,5 +594,235 @@ func TestSetupSuccessPage_PublicModeOmitsRegisteredBadge(t *testing.T) {
 	}
 	if body := strings.TrimSpace(w.Body.String()); body != "192.0.2.41" {
 		t.Errorf("expected '192.0.2.41', got %q", body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DNS check endpoint tests
+// ---------------------------------------------------------------------------
+
+func makeDNSCheckHandler(t *testing.T) (http.Handler, func(token string), func(token string) (bool, time.Time, string)) {
+	t.Helper()
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	srv.SetServerIP("203.0.113.10")
+
+	// Simple in-process registry stubs.
+	issued := map[string]bool{}
+	seen := map[string]time.Time{}
+
+	issueFn := func(token string) { issued[token] = true }
+	lookupFn := func(token string) (bool, time.Time, string) {
+		if t2, ok := seen[token]; ok {
+			return true, t2, "1.2.3.4"
+		}
+		return false, time.Time{}, ""
+	}
+	srv.SetDNSCheckFuncs(issueFn, lookupFn)
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	recordFn := func(token string) { seen[token] = time.Now() }
+	return mux, issueFn, func(token string) (bool, time.Time, string) {
+		_ = recordFn
+		return lookupFn(token)
+	}
+}
+
+func TestDNSCheckStart_ReturnsToken(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+
+	tokens := []string{}
+	issueFn := func(token string) { tokens = append(tokens, token) }
+	lookupFn := func(token string) (bool, time.Time, string) { return false, time.Time{}, "" }
+	srv.SetDNSCheckFuncs(issueFn, lookupFn)
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("POST", "/api/dns-check/start", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	tokenVal, ok := resp["token"].(string)
+	if !ok || len(tokenVal) < 16 {
+		t.Errorf("expected a hex token in response, got %v", resp)
+	}
+	if len(tokens) != 1 || tokens[0] != tokenVal {
+		t.Errorf("issue function not called with returned token; issued: %v", tokens)
+	}
+}
+
+func TestDNSCheckStart_WithoutRegistry_Returns404(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	// Do NOT call SetDNSCheckFuncs — registry is nil.
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("POST", "/api/dns-check/start", nil)
+	req.RemoteAddr = "10.0.0.2:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when no registry, got %d", w.Code)
+	}
+}
+
+func TestDNSCheckResult_NotSeen(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+
+	issueFn := func(token string) {}
+	lookupFn := func(token string) (bool, time.Time, string) { return false, time.Time{}, "" }
+	srv.SetDNSCheckFuncs(issueFn, lookupFn)
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/api/dns-check/result?token=abcdef1234567890", nil)
+	req.RemoteAddr = "10.0.0.3:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if seen, _ := resp["seen"].(bool); seen {
+		t.Errorf("expected seen=false for unknown token")
+	}
+}
+
+func TestDNSCheckResult_Seen(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+
+	const tok = "aabbccddeeff0011"
+	seenAt := time.Now().UTC().Truncate(time.Second)
+
+	issueFn := func(token string) {}
+	lookupFn := func(token string) (bool, time.Time, string) {
+		if token == tok {
+			return true, seenAt, "5.6.7.8"
+		}
+		return false, time.Time{}, ""
+	}
+	srv.SetDNSCheckFuncs(issueFn, lookupFn)
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/api/dns-check/result?token="+tok, nil)
+	req.RemoteAddr = "10.0.0.4:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if seen, _ := resp["seen"].(bool); !seen {
+		t.Errorf("expected seen=true for known token")
+	}
+	if resp["source_ip"] != "5.6.7.8" {
+		t.Errorf("expected source_ip='5.6.7.8', got %v", resp["source_ip"])
+	}
+}
+
+func TestDNSCheckResult_InvalidToken(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+
+	issueFn := func(token string) {}
+	lookupFn := func(token string) (bool, time.Time, string) { return false, time.Time{}, "" }
+	srv.SetDNSCheckFuncs(issueFn, lookupFn)
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	// Token too short → 400.
+	req := httptest.NewRequest("GET", "/api/dns-check/result?token=abc", nil)
+	req.RemoteAddr = "10.0.0.5:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for short token, got %d", w.Code)
+	}
+}
+
+func TestLandingPageShowsDNSCheckCard_WhenRegistrySet(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	srv.SetServerIP("203.0.113.10")
+
+	issueFn := func(token string) {}
+	lookupFn := func(token string) (bool, time.Time, string) { return false, time.Time{}, "" }
+	srv.SetDNSCheckFuncs(issueFn, lookupFn)
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.RemoteAddr = "10.0.0.6:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "dns-check-card") {
+		t.Errorf("landing page should contain dns-check-card when registry is set")
+	}
+	if !strings.Contains(body, "startDNSCheck") {
+		t.Errorf("landing page should contain DNS check JS when registry is set")
+	}
+}
+
+func TestLandingPageHidesDNSCheckCard_WhenNoRegistry(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	srv.SetServerIP("203.0.113.10")
+	// No SetDNSCheckFuncs call.
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.RemoteAddr = "10.0.0.7:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "dns-check-card") {
+		t.Errorf("landing page should NOT contain dns-check-card when no registry")
 	}
 }

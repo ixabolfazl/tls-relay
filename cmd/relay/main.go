@@ -777,6 +777,22 @@ func run(cfgPath string) error {
 	dnsSrv.SetStatsCollector(reqStats)
 	dnsSrv.SetUsageTracker(usageTracker)
 	panelSrv.SetDNSServer(dnsSrv)
+
+	// Wire DNS check registry so the landing page can test whether the client
+	// has the relay configured as its DNS server.
+	dnsCheckReg := dnsresolver.NewDNSCheckRegistry()
+	dnsSrv.SetDNSCheckRegistry(dnsCheckReg)
+	portalSrv.SetDNSCheckFuncs(
+		func(token string) { dnsCheckReg.Issue(token) },
+		func(token string) (bool, time.Time, string) {
+			entry, ok := dnsCheckReg.Lookup(token)
+			if !ok {
+				return false, time.Time{}, ""
+			}
+			return true, entry.SeenAt, entry.SourceIP
+		},
+	)
+
 	listenerWG.Add(1)
 	go func() {
 		defer listenerWG.Done()

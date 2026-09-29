@@ -66,6 +66,7 @@ type Server struct {
 	stats              *reqstats.Collector
 	usageTracker       UserDNSUsageEmitter
 	sampled            *sampledLogger
+	checkRegistry      *DNSCheckRegistry
 }
 
 // SetUpstreams dynamically updates the list of upstream DNS servers.
@@ -84,6 +85,16 @@ func (s *Server) Upstreams() []string {
 	cp := make([]string, len(*ptr))
 	copy(cp, *ptr)
 	return cp
+}
+
+// SetDNSCheckRegistry registers the DNS check token registry for probe queries.
+func (s *Server) SetDNSCheckRegistry(r *DNSCheckRegistry) {
+	s.checkRegistry = r
+}
+
+// DNSCheckRegistry returns the active check registry (may be nil).
+func (s *Server) DNSCheckRegistry() *DNSCheckRegistry {
+	return s.checkRegistry
 }
 
 // Close stops background caches and sweepers.
@@ -293,6 +304,62 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		slog.String("qname", qname),
 		slog.String("qtype", qtypeStr),
 	)
+
+	// ------------------------------------------------------------------
+	// Step 2b: DNS status check probe (dnscheck.tls-relay.invalid subdomain).
+	// Handled regardless of access mode, but still after the rate limit.
+	// Does NOT log request, does NOT emit usage stats.
+	// ------------------------------------------------------------------
+	if s.checkRegistry != nil && s.relayIP != nil {
+		if token, isProbe := isDNSCheckQuery(qname); isProbe {
+			if s.checkRegistry.IsIssued(token) {
+				_ = s.checkRegistry.Record(token, clientIP)
+				slog.Debug("dns check probe recorded",
+					slog.String("token", token),
+					slog.String("client_ip", clientIP),
+				)
+				// Answer A with the relay IP (authoritative, TTL 0).
+				if q.Qtype == dns.TypeA {
+					resp := new(dns.Msg)
+					resp.SetReply(req)
+					resp.Authoritative = true
+					resp.RecursionAvailable = false
+					resp.Answer = append(resp.Answer, &dns.A{
+						Hdr: dns.RR_Header{
+							Name:   q.Name,
+							Rrtype: dns.TypeA,
+							Class:  dns.ClassINET,
+							Ttl:    0,
+						},
+						A: s.relayIP,
+					})
+					s.writeMsg(w, req, resp)
+					return
+				}
+				// All other types: empty NOERROR.
+				resp := new(dns.Msg)
+				resp.SetReply(req)
+				resp.Authoritative = true
+				s.writeMsg(w, req, resp)
+				return
+			}
+			// Unknown or expired token: NXDOMAIN, not forwarded upstream.
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			resp.Rcode = dns.RcodeNameError
+			resp.Authoritative = true
+			s.writeMsg(w, req, resp)
+			return
+		}
+	} else if s.checkRegistry != nil && strings.HasSuffix(qname, dnsCheckSuffix) {
+		// relay_ip not configured: refuse probe silently with NXDOMAIN.
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Rcode = dns.RcodeNameError
+		resp.Authoritative = true
+		s.writeMsg(w, req, resp)
+		return
+	}
 
 	// Emit per-user DNS usage count if client IP belongs to a registered user.
 	if s.userLookup != nil && s.usageTracker != nil {

@@ -798,3 +798,152 @@ func TestHandleQuery_EmitsDomainDNSQuery(t *testing.T) {
 		t.Errorf("query 1 domain got %q, want *.wildcard.org", emitter.domainQueries[1])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DNSCheckRegistry tests
+// ---------------------------------------------------------------------------
+
+func TestDNSCheckRegistry_IssueAndRecord(t *testing.T) {
+	r := dnsresolver.NewDNSCheckRegistry()
+	defer r.Close()
+
+	const tok = "aabbccddeeff0011"
+
+	if r.IsIssued(tok) {
+		t.Fatal("token should not be issued before Issue()")
+	}
+
+	r.Issue(tok)
+	if !r.IsIssued(tok) {
+		t.Fatal("token should be issued after Issue()")
+	}
+
+	_, seen := r.Lookup(tok)
+	if seen {
+		t.Error("token should not be seen before Record()")
+	}
+
+	if !r.Record(tok, "1.2.3.4") {
+		t.Fatal("Record() should return true for issued token")
+	}
+
+	entry, seen := r.Lookup(tok)
+	if !seen {
+		t.Fatal("token should be seen after Record()")
+	}
+	if entry == nil {
+		t.Fatal("entry should not be nil after Record()")
+	}
+	if entry.SourceIP != "1.2.3.4" {
+		t.Errorf("expected source IP 1.2.3.4, got %q", entry.SourceIP)
+	}
+}
+
+func TestDNSCheckRegistry_UnknownToken(t *testing.T) {
+	r := dnsresolver.NewDNSCheckRegistry()
+	defer r.Close()
+
+	if r.Record("deadbeef12345678", "2.2.2.2") {
+		t.Error("Record() should return false for unknown token")
+	}
+}
+
+func TestDNSCheckRegistry_ProbeQueryServerSide(t *testing.T) {
+	// Bind a UDP socket to get a free port, then release it so the resolver can bind.
+	ln, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("could not bind UDP socket for probe test")
+	}
+	srvAddr := ln.LocalAddr().String()
+	_ = ln.Close()
+
+	rs := rules.NewRuleStore([]int{443}, "reject")
+	as := access.NewAccessStore(access.ModeUser)
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:    srvAddr,
+		RelayIP: "203.0.113.10",
+		QPS:     1000,
+		Burst:   1000,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	reg := dnsresolver.NewDNSCheckRegistry()
+	srv.SetDNSCheckRegistry(reg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	time.Sleep(40 * time.Millisecond) // let the listener bind
+
+	const tok = "ccddaabb11223344"
+	reg.Issue(tok)
+
+	probeName := tok + ".dnscheck.tls-relay.invalid."
+	client := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
+	msg := new(dns.Msg)
+	msg.SetQuestion(probeName, dns.TypeA)
+
+	resp, _, err := client.Exchange(msg, srvAddr)
+	if err != nil {
+		t.Fatalf("probe query failed: %v", err)
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR for probe, got %d", resp.Rcode)
+	}
+	if len(resp.Answer) == 0 {
+		t.Error("expected A record in probe response")
+	}
+
+	entry, seen := reg.Lookup(tok)
+	if !seen {
+		t.Fatal("registry should have recorded the probe token")
+	}
+	if entry == nil || entry.SourceIP == "" {
+		t.Error("registry entry should have a source IP")
+	}
+}
+
+func TestDNSCheckRegistry_UnknownProbeGetsNXDOMAIN(t *testing.T) {
+	ln, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("could not bind UDP socket for probe test")
+	}
+	srvAddr := ln.LocalAddr().String()
+	_ = ln.Close()
+
+	rs := rules.NewRuleStore([]int{443}, "reject")
+	as := access.NewAccessStore(access.ModeUser)
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:    srvAddr,
+		RelayIP: "203.0.113.10",
+		QPS:     1000,
+		Burst:   1000,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	reg := dnsresolver.NewDNSCheckRegistry()
+	srv.SetDNSCheckRegistry(reg)
+	// Do NOT issue any token.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	time.Sleep(40 * time.Millisecond)
+
+	probeName := "ccddaabb11223300.dnscheck.tls-relay.invalid."
+	client := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
+	msg := new(dns.Msg)
+	msg.SetQuestion(probeName, dns.TypeA)
+
+	resp, _, err := client.Exchange(msg, srvAddr)
+	if err != nil {
+		t.Fatalf("probe query failed: %v", err)
+	}
+	if resp.Rcode != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN for unknown probe token, got %d", resp.Rcode)
+	}
+}

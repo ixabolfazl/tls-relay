@@ -6,7 +6,9 @@ package portal
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -317,6 +319,9 @@ const landingHTMLRaw = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- DNS Status Check -->
+    {{.DNSCheckCard}}
+
     <!-- Domain Lookup -->
     {{.LookupCard}}
 
@@ -415,11 +420,14 @@ const landingHTMLRaw = `<!DOCTYPE html>
 
 {{.MagicLinkScript}}
 
+{{.DNSCheckScript}}
+
   document.addEventListener('DOMContentLoaded', () => {
     const li = document.getElementById('lookup-input');
     if (li) li.addEventListener('keydown', e => { if (e.key === 'Enter') doLookup(); });
     const mi = document.getElementById('magic-input');
     if (mi && typeof doMagicLink === 'function') mi.addEventListener('keydown', e => { if (e.key === 'Enter') doMagicLink(); });
+    if (typeof startDNSCheck === 'function') startDNSCheck();
   });
   </script>
 </body>
@@ -648,6 +656,65 @@ const landingMagicLinkScript = `
   }
 `
 
+// landingDNSCheckCardHTML is the DNS status check card injected when a DNS check registry is configured.
+const landingDNSCheckCardHTML = `
+    <!-- DNS Status Check -->
+    <div class="card" id="dns-check-card">
+      <div class="card-title">DNS Status</div>
+      <p class="hint-top">Checking whether this device uses the relay as its DNS server&hellip;</p>
+      <div id="dns-check-status" class="badge badge-warn" style="margin-top:4px;">Checking&hellip;</div>
+    </div>`
+
+const landingDNSCheckScript = `
+  (function () {
+    var _dnsCheckTimer = null;
+    var _dnsCheckAttempts = 0;
+    var _dnsCheckMaxAttempts = 15;
+    var _dnsCheckToken = null;
+
+    function updateDNSStatus(cls, msg) {
+      var el = document.getElementById('dns-check-status');
+      if (!el) return;
+      el.className = 'badge ' + cls;
+      el.textContent = msg;
+    }
+
+    async function pollDNSResult() {
+      if (!_dnsCheckToken) return;
+      _dnsCheckAttempts++;
+      try {
+        var r = await fetch('api/dns-check/result?token=' + encodeURIComponent(_dnsCheckToken));
+        var data = await r.json();
+        if (data.seen) {
+          updateDNSStatus('badge-ok', '\u2713 DNS is correctly pointing to this server');
+          return;
+        }
+      } catch (_) {}
+      if (_dnsCheckAttempts >= _dnsCheckMaxAttempts) {
+        updateDNSStatus('badge-warn', 'DNS check did not resolve \u2014 check your DNS settings');
+        return;
+      }
+      _dnsCheckTimer = setTimeout(pollDNSResult, 2000);
+    }
+
+    window.startDNSCheck = async function () {
+      var card = document.getElementById('dns-check-card');
+      if (!card) return;
+      try {
+        var r = await fetch('api/dns-check/start', { method: 'POST' });
+        if (!r.ok) { card.style.display = 'none'; return; }
+        var data = await r.json();
+        _dnsCheckToken = data.token;
+        if (!_dnsCheckToken) { card.style.display = 'none'; return; }
+        updateDNSStatus('badge-warn', 'Checking\u2026');
+        _dnsCheckTimer = setTimeout(pollDNSResult, 1000);
+      } catch (_) {
+        card.style.display = 'none';
+      }
+    };
+  })();
+`
+
 func isBotUserAgent(ua string) bool {
 	uaLower := strings.ToLower(ua)
 	bots := []string{
@@ -751,6 +818,11 @@ type Server struct {
 	connectRL               *rateLimiter
 	lookupEnabled           atomic.Bool
 	lookupRequireRegistered atomic.Bool
+	checkRL                 *rateLimiter
+	// dnsCheckIssue and dnsCheckLookup hold the funcs wired from dnsresolver.DNSCheckRegistry.
+	// Using function fields avoids an import cycle while keeping the resolver dependency optional.
+	dnsCheckIssue  func(token string)
+	dnsCheckLookup func(token string) (seen bool, seenAt time.Time, sourceIP string)
 }
 
 // New creates a portal Server.
@@ -762,10 +834,23 @@ func New(addr string, store *sqlitestore.Store, accessStore *access.AccessStore,
 		refresher:   refresher,
 		lookupRL:    newRateLimiter(10, 20),
 		connectRL:   newRateLimiter(10.0/60.0, 10),
+		checkRL:     newRateLimiter(5, 10),
 	}
 	s.lookupEnabled.Store(true)
 	s.lookupRequireRegistered.Store(false)
 	return s
+}
+
+// SetDNSCheckFuncs wires the DNS check registry callbacks from the dnsresolver package.
+// Using callbacks avoids an import cycle between portal and dnsresolver.
+func (s *Server) SetDNSCheckFuncs(
+	issue func(token string),
+	lookup func(token string) (seen bool, seenAt time.Time, sourceIP string),
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dnsCheckIssue = issue
+	s.dnsCheckLookup = lookup
 }
 
 // SetLookupPolicy sets the public domain lookup policy.
@@ -870,6 +955,8 @@ func (s *Server) RegisterHandlersWithLandingAt(mux *http.ServeMux) {
 	mux.HandleFunc("GET /setup/{magic_link}", s.handleConnect)
 	mux.HandleFunc("GET /setup", s.handleConnect)
 	mux.HandleFunc("GET /api/lookup", s.handleLookup)
+	mux.HandleFunc("POST /api/dns-check/start", s.handleDNSCheckStart)
+	mux.HandleFunc("GET /api/dns-check/result", s.handleDNSCheckResult)
 	mux.HandleFunc("GET /", s.handleLanding)
 }
 
@@ -957,6 +1044,17 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	out = strings.ReplaceAll(out, "{{.MagicLinkCard}}", magicLinkCard)
 	out = strings.ReplaceAll(out, "{{.SetupStepRegister}}", setupStepRegister)
 	out = strings.ReplaceAll(out, "{{.MagicLinkScript}}", magicLinkScript)
+	s.mu.RLock()
+	hasDNSCheck := s.dnsCheckIssue != nil && s.dnsCheckLookup != nil
+	s.mu.RUnlock()
+	dnsCheckCard := ""
+	dnsCheckScript := ""
+	if hasDNSCheck {
+		dnsCheckCard = landingDNSCheckCardHTML
+		dnsCheckScript = landingDNSCheckScript
+	}
+	out = strings.ReplaceAll(out, "{{.DNSCheckCard}}", dnsCheckCard)
+	out = strings.ReplaceAll(out, "{{.DNSCheckScript}}", dnsCheckScript)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -1160,6 +1258,85 @@ func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
 		"domain": domain,
 		"result": result,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// DNS Check handlers
+// ---------------------------------------------------------------------------
+
+// handleDNSCheckStart issues a fresh token and tells the client to probe it.
+// POST /api/dns-check/start
+func (s *Server) handleDNSCheckStart(w http.ResponseWriter, r *http.Request) {
+	clientIP := extractIP(r.RemoteAddr)
+	if !s.checkRL.allow(clientIP) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "rate limit exceeded"})
+		return
+	}
+	s.mu.RLock()
+	issue := s.dnsCheckIssue
+	s.mu.RUnlock()
+	if issue == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "dns check not configured"})
+		return
+	}
+	tokenBytes := make([]byte, 12)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "token generation failed"})
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+	issue(token)
+	slog.Debug("dns check token issued", slog.String("token", token), slog.String("client_ip", clientIP))
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"token": token})
+}
+
+// handleDNSCheckResult polls whether the probe token has been seen by the resolver.
+// GET /api/dns-check/result?token=<hex>
+func (s *Server) handleDNSCheckResult(w http.ResponseWriter, r *http.Request) {
+	clientIP := extractIP(r.RemoteAddr)
+	if !s.checkRL.allow(clientIP) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "rate limit exceeded"})
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if len(token) < 16 || len(token) > 32 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "invalid token"})
+		return
+	}
+	s.mu.RLock()
+	lookup := s.dnsCheckLookup
+	s.mu.RUnlock()
+	if lookup == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "dns check not configured"})
+		return
+	}
+	seen, seenAt, sourceIP := lookup(token)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	resp := map[string]interface{}{"seen": seen}
+	if seen {
+		resp["seen_at"] = seenAt.UTC().Format(time.RFC3339)
+		resp["source_ip"] = sourceIP
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) classifyDomain(domain string) string {
