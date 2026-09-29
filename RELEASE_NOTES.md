@@ -1,5 +1,34 @@
 # Release Notes
 
+## v1.4.1
+
+### Portal
+* **DNS Status Check on Setup Page:** The DNS status probe card is now displayed on the `/connect` (magic-link setup) page in addition to the main landing page. Clients who follow a magic link can immediately verify that their DNS is correctly pointing to the relay.
+* **Content-Security-Policy Fix:** Added a proper `Content-Security-Policy` header (`script-src 'unsafe-inline'`) on both portal pages to resolve the inline-script CSP console error reported by browsers.
+
+### Admin Dashboard
+* **Removed Daily Trend Charts:** The "Daily Activity Trend", "Daily Connection Trend", and "Daily Request Trend" sparklines have been removed from the DNS, TLS, and HTTP sections.
+* **DNS / TLS / HTTP Sections Redesigned:** Each service section now uses the same KPI card style as the top row — no background color blocks, consistent with the rest of the dashboard.
+* **Download and Upload KPI Cards:** The single "Total Bandwidth" card has been split into three: **Total Bandwidth**, **Download** (↓ bytes received), and **Upload** (↑ bytes sent), displayed as separate KPI cards with color-coded labels.
+* **Removed Redundant KPI Cards:** The "Total Users" and "Blacklisted" cards have been removed to make room for the new Download/Upload cards.
+
+### Users Table
+* **Status Badge Inline:** The user status badge (Active / Disabled) is now shown inline next to the username instead of in a separate column.
+* **Removed Reg IPs Column:** The registered IP count (`ip / max`) column has been removed from the table; this detail is still available in the Edit User and Registered IPs dialogs.
+* **Removed Token Column:** The truncated magic-link token column has been removed; the token can still be copied or reset via the Actions menu.
+* **Traffic Column:** The separate Sent and Received columns have been merged into a single **Traffic** column showing upload (↑) and download (↓) values stacked, with color-coded directional icons.
+
+### Domains Table
+* **Removed Created At Column:** The creation date column has been removed from both flat and grouped views.
+* **Removed Group Column (Flat View):** The group name badge column has been removed from the flat view; group information is still visible in the grouped view header rows.
+* **Traffic Column:** The separate Sent and Received columns have been merged into a single **Traffic** column with the same stacked ↑↓ format as the users table.
+* **Grouped View Fix:** The group header row colspan has been corrected to match the reduced column count.
+
+### Egress Proxy Test
+* **Exit IP and Country Info:** The "Test Proxy Connection" button now connects through the configured proxy to `cloudflare.com/cdn-cgi/trace` and returns the proxy's **exit IP address**, **country flag emoji**, **country code**, and **round-trip latency**. The latency badge is color-coded: green under 100 ms, amber under 300 ms, and red above.
+
+---
+
 ## v1.4.0
 
 ### Admin Dashboard
