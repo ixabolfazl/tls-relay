@@ -9,8 +9,7 @@ import (
 
 const (
 	// dnsCheckSuffix is the reserved suffix for DNS probe queries.
-	// Must be in dnscheck.tls-relay.invalid. (RFC 2606 .invalid zone).
-	dnsCheckSuffix = ".dnscheck.tls-relay.invalid"
+	dnsCheckSuffix = ".dnscheck.relay-probe.net"
 
 	// dnsCheckMaxTokens is the upper bound on simultaneously tracked tokens.
 	dnsCheckMaxTokens = 10000

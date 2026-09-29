@@ -543,7 +543,7 @@ const setupHTMLRaw = `<!DOCTYPE html>
     res.textContent = 'Checking...';
 
     try {
-      const r = await fetch('api/lookup?domain=' + encodeURIComponent(raw));
+      const r = await fetch('/api/lookup?domain=' + encodeURIComponent(raw));
       const data = await r.json();
       if (!r.ok) {
         res.className = 'result visible res-bad';
@@ -685,11 +685,17 @@ const landingDNSCheckScript = `
       el.textContent = msg;
     }
 
+    function triggerProbe(token) {
+      var host = token + '.dnscheck.relay-probe.net';
+      try { fetch('//' + host + '/p', { mode: 'no-cors', cache: 'no-store' }).catch(function () {}); } catch (_) {}
+      try { new Image().src = '//' + host + '/p.gif'; } catch (_) {}
+    }
+
     async function pollDNSResult() {
       if (!_dnsCheckToken) return;
       _dnsCheckAttempts++;
       try {
-        var r = await fetch('api/dns-check/result?token=' + encodeURIComponent(_dnsCheckToken));
+        var r = await fetch('/api/dns-check/result?token=' + encodeURIComponent(_dnsCheckToken));
         var data = await r.json();
         if (data.seen) {
           updateDNSStatus('badge-ok', '\u2713 DNS is correctly pointing to this server');
@@ -707,15 +713,16 @@ const landingDNSCheckScript = `
       var card = document.getElementById('dns-check-card');
       if (!card) return;
       try {
-        var r = await fetch('api/dns-check/start', { method: 'POST' });
-        if (!r.ok) { card.style.display = 'none'; return; }
+        var r = await fetch('/api/dns-check/start', { method: 'POST' });
+        if (!r.ok) { updateDNSStatus('badge-warn', 'DNS check unavailable'); return; }
         var data = await r.json();
         _dnsCheckToken = data.token;
-        if (!_dnsCheckToken) { card.style.display = 'none'; return; }
+        if (!_dnsCheckToken) { updateDNSStatus('badge-warn', 'DNS check unavailable'); return; }
+        triggerProbe(_dnsCheckToken);
         updateDNSStatus('badge-warn', 'Checking\u2026');
         _dnsCheckTimer = setTimeout(pollDNSResult, 1000);
       } catch (_) {
-        card.style.display = 'none';
+        updateDNSStatus('badge-warn', 'DNS check unavailable');
       }
     };
   })();
@@ -1009,6 +1016,10 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	s.renderLanding(w, r)
 }
 
+const portalCSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
+	"connect-src 'self' *.dnscheck.relay-probe.net; " +
+	"img-src 'self' data: *.dnscheck.relay-probe.net"
+
 func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	clientIP := extractIP(r.RemoteAddr)
 	dnsIP := s.getServerIP(r)
@@ -1064,7 +1075,7 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:")
+	w.Header().Set("Content-Security-Policy", portalCSP)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(out))
@@ -1210,7 +1221,7 @@ func (s *Server) replyConnect(w http.ResponseWriter, r *http.Request, code int, 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:")
+	w.Header().Set("Content-Security-Policy", portalCSP)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(out))

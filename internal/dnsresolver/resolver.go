@@ -306,7 +306,7 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	)
 
 	// ------------------------------------------------------------------
-	// Step 2b: DNS status check probe (dnscheck.tls-relay.invalid subdomain).
+	// Step 2b: DNS status check probe (dnscheck.relay-probe.net subdomain).
 	// Handled regardless of access mode, but still after the rate limit.
 	// Does NOT log request, does NOT emit usage stats.
 	// ------------------------------------------------------------------

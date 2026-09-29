@@ -880,7 +880,7 @@ func TestDNSCheckRegistry_ProbeQueryServerSide(t *testing.T) {
 	const tok = "ccddaabb11223344"
 	reg.Issue(tok)
 
-	probeName := tok + ".dnscheck.tls-relay.invalid."
+	probeName := tok + ".dnscheck.relay-probe.net."
 	client := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
 	msg := new(dns.Msg)
 	msg.SetQuestion(probeName, dns.TypeA)
@@ -934,7 +934,7 @@ func TestDNSCheckRegistry_UnknownProbeGetsNXDOMAIN(t *testing.T) {
 	go func() { _ = srv.ListenAndServe(ctx) }()
 	time.Sleep(40 * time.Millisecond)
 
-	probeName := "ccddaabb11223300.dnscheck.tls-relay.invalid."
+	probeName := "ccddaabb11223300.dnscheck.relay-probe.net."
 	client := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
 	msg := new(dns.Msg)
 	msg.SetQuestion(probeName, dns.TypeA)

@@ -34,7 +34,7 @@
 *   **`internal/httprelay`**: Mirrored pipeline matching `internal/relay` but adapted for plain HTTP stream routing by examining the decrypted HTTP Host header.
 *   **`internal/httphost`**: High-performance HTTP parser reading the request line and extracting the Host header on the shared port.
 *   **`internal/frontrouter`**: Gathers all shared listener traffic. Parses headers first, resolves domain configuration, and directs matching relay traffic to `internal/httprelay` or routes unmatched traffic to the `internal/panel` HTTP server.
-*   **`internal/dnsresolver`**: Custom DNS resolver filtering client IPs, updating metrics, and routing matching configuration domains authoritatively to the relay IP. Also intercepts `<token>.dnscheck.tls-relay.invalid.` probe queries (via `DNSCheckRegistry`) so the portal landing page can verify client DNS configuration without touching the hot path.
+*   **`internal/dnsresolver`**: Custom DNS resolver filtering client IPs, updating metrics, and routing matching configuration domains authoritatively to the relay IP. Also intercepts `<token>.dnscheck.relay-probe.net.` probe queries (via `DNSCheckRegistry`) so the portal landing page can verify client DNS configuration without touching the hot path.
 *   **`internal/rules`**: Core lookup structure maintaining normalized rules mapping domains to mode (proxy/direct/block) and destination port lists. Uses `atomic.Pointer` for lock-free hot path reads.
 *   **`internal/access`**: Fast, thread-safe IP access control check validating clients against registered user IPs and blacklist rules.
 *   **`internal/sni`**: Extracts Server Name Indication (SNI) hostnames from raw TLS ClientHello handshakes.

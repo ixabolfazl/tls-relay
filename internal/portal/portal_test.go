@@ -800,6 +800,19 @@ func TestLandingPageShowsDNSCheckCard_WhenRegistrySet(t *testing.T) {
 	if !strings.Contains(body, "startDNSCheck") {
 		t.Errorf("landing page should contain DNS check JS when registry is set")
 	}
+	if !strings.Contains(body, "triggerProbe") {
+		t.Errorf("landing page should contain triggerProbe in DNS check JS")
+	}
+	if !strings.Contains(body, "/api/dns-check/start") {
+		t.Errorf("landing page should use absolute path /api/dns-check/start")
+	}
+	if !strings.Contains(body, "/api/dns-check/result?token=") {
+		t.Errorf("landing page should use absolute path /api/dns-check/result?token=")
+	}
+	csp := w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "*.dnscheck.relay-probe.net") {
+		t.Errorf("expected CSP to allow *.dnscheck.relay-probe.net, got: %s", csp)
+	}
 }
 
 func TestLandingPageHidesDNSCheckCard_WhenNoRegistry(t *testing.T) {
@@ -824,5 +837,53 @@ func TestLandingPageHidesDNSCheckCard_WhenNoRegistry(t *testing.T) {
 	body := w.Body.String()
 	if strings.Contains(body, "dns-check-card") {
 		t.Errorf("landing page should NOT contain dns-check-card when no registry")
+	}
+}
+
+func TestConnectPage_DNSCheckAndCSP(t *testing.T) {
+	store := newTestStore(t)
+	user, err := store.CreateUser(context.Background(), "testuser", 3)
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	as := access.NewAccessStore(access.ModeUser)
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	srv.SetServerIP("203.0.113.10")
+	srv.SetDNSCheckFuncs(func(token string) {}, func(token string) (bool, time.Time, string) {
+		return false, time.Time{}, ""
+	})
+
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/connect/"+user.MagicLink, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "text/html")
+	req.RemoteAddr = "192.168.1.100:5000"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	csp := w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "*.dnscheck.relay-probe.net") {
+		t.Errorf("expected CSP in connect page to allow *.dnscheck.relay-probe.net, got: %s", csp)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "dns-check-card") {
+		t.Errorf("connect page should contain dns-check-card")
+	}
+	if !strings.Contains(body, "triggerProbe") {
+		t.Errorf("connect page should contain triggerProbe function")
+	}
+	if !strings.Contains(body, "/api/dns-check/start") {
+		t.Errorf("connect page should contain absolute /api/dns-check/start")
+	}
+	if !strings.Contains(body, "/api/lookup?domain=") {
+		t.Errorf("connect page should contain absolute /api/lookup?domain=")
+	}
+	if strings.Contains(body, "fetch('api/dns-check") || strings.Contains(body, "fetch('api/lookup") {
+		t.Errorf("connect page should NOT contain relative fetch paths (api/...)")
 	}
 }
