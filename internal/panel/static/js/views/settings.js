@@ -307,12 +307,18 @@ export function mount(container) {
                   </div>
                 </div>
 
-                <div class="flex items-center gap-3 pt-2">
+                <div class="flex items-center gap-3 pt-2 flex-wrap">
                   <button id="set-test-proxy-btn" type="button" class="btn btn-secondary btn-sm">
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                     <span>Test Proxy Connection</span>
                   </button>
-                  <span id="set-proxy-test-result" class="text-xs font-medium"></span>
+                  <div id="set-proxy-test-result" class="hidden text-xs font-medium flex items-center gap-2 flex-wrap">
+                    <span id="set-proxy-test-flag" class="text-lg leading-none"></span>
+                    <span id="set-proxy-test-ip" class="font-mono"></span>
+                    <span id="set-proxy-test-country" class="text-txt-muted"></span>
+                    <span id="set-proxy-test-latency" class="tabular-nums"></span>
+                  </div>
+                  <span id="set-proxy-test-error" class="hidden text-xs font-medium text-danger"></span>
                 </div>
               </div>
               <div class="card-footer">
@@ -1078,32 +1084,45 @@ export function mount(container) {
   // Test Egress Proxy (supports real-time typed values without saving first)
   $('#set-test-proxy-btn', container).addEventListener('click', async () => {
     const resultEl = $('#set-proxy-test-result', container);
+    const errorEl = $('#set-proxy-test-error', container);
     const addr = $('#set-egress-addr', container).value.trim();
     const user = $('#set-egress-user', container).value.trim();
     const pass = $('#set-egress-pass', container).value;
 
-    resultEl.className = 'text-xs text-txt-muted';
-    resultEl.textContent = 'Testing connection...';
+    resultEl.classList.add('hidden');
+    errorEl.classList.add('hidden');
+    const btn = $('#set-test-proxy-btn', container);
+    const origText = btn.querySelector('span').textContent;
+    btn.querySelector('span').textContent = 'Testing...';
+    btn.disabled = true;
 
     try {
-      const res = await api.testProxy({
-        addr,
-        user,
-        password: pass,
-      });
+      const res = await api.testProxy({ addr, user, password: pass });
       if (res.ok) {
-        resultEl.className = 'text-xs text-emerald-600 dark:text-emerald-400 font-semibold';
-        resultEl.textContent = `Success (${res.latency_ms || 0} ms latency)`;
-        toast.success(`Proxy connection successful (${res.latency_ms || 0} ms latency)`);
+        const flagEl = $('#set-proxy-test-flag', container);
+        const ipEl = $('#set-proxy-test-ip', container);
+        const countryEl = $('#set-proxy-test-country', container);
+        const latEl = $('#set-proxy-test-latency', container);
+
+        flagEl.textContent = res.flag || '🌐';
+        ipEl.textContent = res.ip || '—';
+        countryEl.textContent = res.country ? `(${res.country})` : '';
+        latEl.textContent = `${res.latency_ms ?? 0} ms`;
+        latEl.className = 'tabular-nums ' + (res.latency_ms < 100 ? 'text-emerald-600 dark:text-emerald-400' : res.latency_ms < 300 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400');
+        resultEl.classList.remove('hidden');
+        toast.success(`Proxy OK — ${res.flag || ''} ${res.ip || ''} (${res.latency_ms ?? 0} ms)`);
       } else {
-        resultEl.className = 'text-xs text-danger font-semibold';
-        resultEl.textContent = `Failed: ${res.error || 'Connection failed'}`;
+        errorEl.textContent = `Failed: ${res.error || 'Connection failed'}`;
+        errorEl.classList.remove('hidden');
         toast.error(`Proxy test failed: ${res.error || 'Connection failed'}`);
       }
     } catch (err) {
-      resultEl.className = 'text-xs text-danger font-semibold';
-      resultEl.textContent = `Error: ${err.message}`;
+      errorEl.textContent = `Error: ${err.message}`;
+      errorEl.classList.remove('hidden');
       toast.error(`Proxy test error: ${err.message}`);
+    } finally {
+      btn.querySelector('span').textContent = origText;
+      btn.disabled = false;
     }
   });
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -201,4 +202,19 @@ func (e *EgressDialer) Enabled() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.enabled
+}
+
+// HTTPClient returns an *http.Client that routes connections through the SOCKS5
+// proxy when a dialer is configured. The returned client has a per-request
+// timeout equal to the provided timeout value.
+func (e *EgressDialer) HTTPClient(timeout time.Duration) *http.Client {
+	dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return e.DialContext(ctx, network, addr)
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: dialFn,
+		},
+	}
 }

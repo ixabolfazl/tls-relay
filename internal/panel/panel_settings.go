@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -672,13 +673,12 @@ func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 	var req testProxyRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	var latency time.Duration
-	var err error
-
 	req.Addr = strings.TrimSpace(req.Addr)
+
+	var ed *relay.EgressDialer
 	if req.Addr != "" {
 		normAddr, normErr := normalizeAndValidateEgressAddr(req.Addr)
 		if normErr != nil {
@@ -701,32 +701,69 @@ func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		latency, err = tempEd.TestConnection(ctx, "1.1.1.1:53")
+		ed = tempEd
 	} else {
 		s.mu.RLock()
-		ed := s.egressDialer
+		ed = s.egressDialer
 		s.mu.RUnlock()
-
 		if ed == nil {
 			jsonErr(w, "Egress proxy dialer is not initialized", http.StatusBadRequest)
 			return
 		}
-		latency, err = ed.TestConnection(ctx, "1.1.1.1:53")
 	}
 
+	hc := ed.HTTPClient(9 * time.Second)
+	const traceURL = "https://cloudflare.com/cdn-cgi/trace"
+
+	hreq, _ := http.NewRequestWithContext(ctx, http.MethodGet, traceURL, nil)
+	start := time.Now()
+	resp, err := hc.Do(hreq)
+	latencyMS := time.Since(start).Milliseconds()
+
 	if err != nil {
-		slog.Warn("proxy test connection failed", "error", err)
+		slog.Warn("proxy test HTTP request failed", "error", err)
 		jsonOK(w, map[string]interface{}{
 			"ok":    false,
 			"error": err.Error(),
 		})
 		return
 	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	// Parse key=value pairs from cloudflare trace
+	proxyIP := ""
+	country := ""
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "ip="); ok {
+			proxyIP = after
+		} else if after, ok := strings.CutPrefix(line, "loc="); ok {
+			country = after
+		}
+	}
+
+	flag := countryCodeToFlag(country)
 
 	jsonOK(w, map[string]interface{}{
 		"ok":         true,
-		"latency_ms": latency.Milliseconds(),
+		"ip":         proxyIP,
+		"flag":       flag,
+		"country":    country,
+		"latency_ms": latencyMS,
 	})
+}
+
+// countryCodeToFlag converts a 2-letter ISO 3166-1 alpha-2 country code to a flag emoji.
+func countryCodeToFlag(code string) string {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if len(code) != 2 {
+		return ""
+	}
+	// Regional indicator symbols: offset from 'A' = 0x1F1E6
+	r1 := rune(0x1F1E6 + int(code[0]-'A'))
+	r2 := rune(0x1F1E6 + int(code[1]-'A'))
+	return string([]rune{r1, r2})
 }
 
 type testDNSRequest struct {

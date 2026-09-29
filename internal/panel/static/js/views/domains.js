@@ -136,29 +136,11 @@ export function mount(container) {
                       <span id="sort-icon-domain" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
-                  <th class="table-th cursor-pointer select-none" data-sort="group_name">
-                    <div class="flex items-center gap-1.5">
-                      <span>Group</span>
-                      <span id="sort-icon-group_name" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
                   <th class="table-th">Ports</th>
                   <th class="table-th">Egress</th>
-                  <th class="table-th cursor-pointer select-none text-right" data-sort="sent">
-                    <div class="flex items-center justify-end gap-1.5">
-                      <span>Sent</span>
-                      <span id="sort-icon-sent" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
-                  <th class="table-th cursor-pointer select-none text-right" data-sort="received">
-                    <div class="flex items-center justify-end gap-1.5">
-                      <span>Received</span>
-                      <span id="sort-icon-received" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
                   <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
                     <div class="flex items-center justify-end gap-1.5">
-                      <span>Total</span>
+                      <span>Traffic</span>
                       <span id="sort-icon-usage" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
@@ -168,18 +150,12 @@ export function mount(container) {
                       <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
-                  <th class="table-th cursor-pointer select-none" data-sort="created_at">
-                    <div class="flex items-center gap-1.5">
-                      <span>Created</span>
-                      <span id="sort-icon-created_at" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
                   <th class="table-th w-16 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody id="dom-table-body">
                 <tr>
-                  <td colspan="11" class="table-td text-center py-12 text-txt-subtle">
+                  <td colspan="7" class="table-td text-center py-12 text-txt-subtle">
                     <div class="flex flex-col items-center justify-center gap-2">
                       <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                       <span>Loading domain rules...</span>
@@ -470,7 +446,7 @@ export function mount(container) {
         <td class="table-td w-10 text-center">
           <input type="checkbox" class="checkbox group-checkbox mx-auto" ${isAllGroupSelected ? 'checked' : ''} />
         </td>
-        <td colspan="10" class="table-td cursor-pointer">
+        <td colspan="6" class="table-td cursor-pointer">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2 text-txt">
               <svg class="w-4 h-4 text-txt-subtle transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -546,29 +522,26 @@ export function mount(container) {
           ${modeBadge}
         </div>
       </td>
-      <td class="table-td text-xs text-txt-muted">
-        ${d.group_name ? `<span class="badge badge-neutral">${escapeHtml(d.group_name)}</span>` : '—'}
-      </td>
       <td class="table-td font-mono text-xs text-txt-muted">
         ${formatPorts(d.ports)}
       </td>
       <td class="table-td text-xs">
         ${isEgress ? `<span class="badge badge-success">Enabled</span>` : `<span class="text-txt-subtle">—</span>`}
       </td>
-      <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
-        ${(d.total_bytes_sent || 0) > 0 ? formatBytes(d.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}
-      </td>
-      <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
-        ${(d.total_bytes_received || 0) > 0 ? formatBytes(d.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}
-      </td>
-      <td class="table-td text-right font-mono text-xs tabular-nums font-semibold text-txt">
-        ${totalBytes > 0 ? formatBytes(totalBytes) : '<span class="text-txt-subtle">0 B</span>'}
+      <td class="table-td text-right font-mono text-xs tabular-nums">
+        <div class="flex flex-col items-end gap-0.5">
+          <div class="flex items-center gap-1 text-violet-600 dark:text-violet-400">
+            <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
+            <span>${(d.total_bytes_sent || 0) > 0 ? formatBytes(d.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}</span>
+          </div>
+          <div class="flex items-center gap-1 text-sky-600 dark:text-sky-400">
+            <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+            <span>${(d.total_bytes_received || 0) > 0 ? formatBytes(d.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}</span>
+          </div>
+        </div>
       </td>
       <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
         ${(d.total_dns_queries || 0) > 0 ? formatCount(d.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
-      </td>
-      <td class="table-td text-xs text-txt-muted">
-        ${formatDate(d.created_at)}
       </td>
       <td class="table-td text-right">
         <button type="button" class="dom-row-menu-btn btn-icon-sm text-txt-muted hover:text-txt" aria-label="Domain actions">
@@ -1242,7 +1215,7 @@ export function mount(container) {
   });
 
   function updateSortIcons() {
-    ['domain', 'group_name', 'sent', 'received', 'usage', 'queries', 'created_at'].forEach((k) => {
+    ['domain', 'usage', 'queries'].forEach((k) => {
       const icon = $(`#sort-icon-${k}`, container);
       if (!icon) return;
       if (tableState.sortKey === k) {

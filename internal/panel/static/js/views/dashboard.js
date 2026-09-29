@@ -1,5 +1,5 @@
 /**
- * Dashboard view: live KPIs, service counters, sparklines, and top talkers.
+ * Dashboard view: live KPIs, service counters, and top talkers.
  */
 
 import { html, raw, setHtml, $, escapeHtml } from '../core/dom.js';
@@ -8,7 +8,6 @@ import { formatBytes, formatCount, formatDuration } from '../core/format.js';
 import { Poller } from '../core/poller.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { toast } from '../ui/toast.js';
-import { renderSparkline } from '../ui/sparkline.js';
 
 export function mount(container) {
   let isMounted = true;
@@ -32,7 +31,7 @@ export function mount(container) {
           </div>
         </div>
 
-        <!-- 8 KPI Cards -->
+        <!-- KPI Cards: Active Conns | Online Users | Domain Rules | Uptime | Total BW | Download | Upload | DNS Queries -->
         <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
           <div class="card p-3.5 flex flex-col justify-between">
             <span class="text-xs font-medium text-txt-muted">Active Conns</span>
@@ -47,20 +46,26 @@ export function mount(container) {
             <div id="kpi-domains" class="text-xl font-bold text-txt mt-1 tabular-nums">—</div>
           </div>
           <div class="card p-3.5 flex flex-col justify-between">
-            <span class="text-xs font-medium text-txt-muted">Total Users</span>
-            <div id="kpi-users" class="text-xl font-bold text-txt mt-1 tabular-nums">—</div>
-          </div>
-          <div class="card p-3.5 flex flex-col justify-between">
-            <span class="text-xs font-medium text-txt-muted">Blacklisted</span>
-            <div id="kpi-blacklist" class="text-xl font-bold text-txt mt-1 tabular-nums">—</div>
-          </div>
-          <div class="card p-3.5 flex flex-col justify-between">
             <span class="text-xs font-medium text-txt-muted">Uptime</span>
             <div id="kpi-uptime" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
           </div>
           <div class="card p-3.5 flex flex-col justify-between">
             <span class="text-xs font-medium text-txt-muted">Total Bandwidth</span>
             <div id="kpi-bandwidth" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
+          </div>
+          <div class="card p-3.5 flex flex-col justify-between">
+            <span class="text-xs font-medium text-sky-600 dark:text-sky-400 flex items-center gap-1">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+              Download
+            </span>
+            <div id="kpi-download" class="text-lg font-bold text-sky-600 dark:text-sky-400 mt-1 tabular-nums">—</div>
+          </div>
+          <div class="card p-3.5 flex flex-col justify-between">
+            <span class="text-xs font-medium text-violet-600 dark:text-violet-400 flex items-center gap-1">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
+              Upload
+            </span>
+            <div id="kpi-upload" class="text-lg font-bold text-violet-600 dark:text-violet-400 mt-1 tabular-nums">—</div>
           </div>
           <div class="card p-3.5 flex flex-col justify-between">
             <span class="text-xs font-medium text-txt-muted">DNS Queries</span>
@@ -104,115 +109,82 @@ export function mount(container) {
         </div>
 
         <!-- DNS Section -->
-        <div class="card">
-          <div class="card-header">
-            <div class="flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-sky-500"></span>
-              <h2 class="text-base font-semibold text-txt">DNS Resolver</h2>
-            </div>
-            <span id="dns-total-badge" class="badge badge-neutral tabular-nums">0 queries</span>
+        <div class="card p-4">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="w-2.5 h-2.5 rounded-full bg-sky-500 flex-shrink-0"></span>
+            <h2 class="text-sm font-semibold text-txt">DNS Resolver</h2>
+            <span id="dns-total-badge" class="badge badge-neutral tabular-nums ml-auto">0 queries</span>
           </div>
-          <div class="card-body space-y-4">
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Total Queries</div>
-                <div id="dns-total" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                <div class="text-xs text-emerald-700 dark:text-emerald-400">Authorized</div>
-                <div id="dns-authorized" class="text-lg font-bold text-emerald-700 dark:text-emerald-400 mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-sky-500/10 border border-sky-500/20">
-                <div class="text-xs text-sky-700 dark:text-sky-400">Passthrough</div>
-                <div id="dns-passthrough" class="text-lg font-bold text-sky-700 dark:text-sky-400 mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-rose-500/10 border border-rose-500/20">
-                <div class="text-xs text-rose-700 dark:text-rose-400">Blocked / Rejected</div>
-                <div id="dns-blocked" class="text-lg font-bold text-rose-700 dark:text-rose-400 mt-0.5 tabular-nums">—</div>
-              </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Total Queries</span>
+              <div id="dns-total" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
             </div>
-            <div class="pt-3 border-t border-border/50">
-              <div class="flex items-center justify-between text-xs text-txt-muted mb-1.5">
-                <span>Daily Activity Trend</span>
-                <span class="text-[11px] text-txt-subtle font-mono">queries/day</span>
-              </div>
-              <div id="sparkline-dns" class="h-9"></div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-emerald-600 dark:text-emerald-400">Authorized</span>
+              <div id="dns-authorized" class="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">—</div>
+            </div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-sky-600 dark:text-sky-400">Passthrough</span>
+              <div id="dns-passthrough" class="text-lg font-bold text-sky-600 dark:text-sky-400 mt-1 tabular-nums">—</div>
+            </div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-rose-600 dark:text-rose-400">Blocked / Rejected</span>
+              <div id="dns-blocked" class="text-lg font-bold text-rose-600 dark:text-rose-400 mt-1 tabular-nums">—</div>
             </div>
           </div>
         </div>
 
         <!-- TLS Section -->
-        <div class="card">
-          <div class="card-header">
-            <div class="flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-              <h2 class="text-base font-semibold text-txt">TLS SNI Relay (Port 443)</h2>
-            </div>
-            <span id="tls-bandwidth-badge" class="badge badge-neutral tabular-nums">0 B</span>
+        <div class="card p-4">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0"></span>
+            <h2 class="text-sm font-semibold text-txt">TLS SNI Relay (Port 443)</h2>
+            <span id="tls-bandwidth-badge" class="badge badge-neutral tabular-nums ml-auto">0 B</span>
           </div>
-          <div class="card-body space-y-4">
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Total Bandwidth</div>
-                <div id="tls-bandwidth" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Total Connections</div>
-                <div id="tls-requests" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                <div class="text-xs text-emerald-700 dark:text-emerald-400">Registered Users</div>
-                <div id="tls-registered" class="text-lg font-bold text-emerald-700 dark:text-emerald-400 mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Unregistered / Direct</div>
-                <div id="tls-unregistered" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Total Bandwidth</span>
+              <div id="tls-bandwidth" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
             </div>
-            <div class="pt-3 border-t border-border/50">
-              <div class="flex items-center justify-between text-xs text-txt-muted mb-1.5">
-                <span>Daily Connection Trend</span>
-                <span class="text-[11px] text-txt-subtle font-mono">conns/day</span>
-              </div>
-              <div id="sparkline-tls" class="h-9"></div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Total Connections</span>
+              <div id="tls-requests" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
+            </div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-emerald-600 dark:text-emerald-400">Registered</span>
+              <div id="tls-registered" class="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">—</div>
+            </div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Unregistered</span>
+              <div id="tls-unregistered" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
             </div>
           </div>
         </div>
 
         <!-- HTTP Section -->
-        <div class="card">
-          <div class="card-header">
-            <div class="flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-              <h2 class="text-base font-semibold text-txt">HTTP Host Relay (Port 80)</h2>
-            </div>
-            <span id="http-bandwidth-badge" class="badge badge-neutral tabular-nums">0 B</span>
+        <div class="card p-4">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-500 flex-shrink-0"></span>
+            <h2 class="text-sm font-semibold text-txt">HTTP Host Relay (Port 80)</h2>
+            <span id="http-bandwidth-badge" class="badge badge-neutral tabular-nums ml-auto">0 B</span>
           </div>
-          <div class="card-body space-y-4">
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Total Bandwidth</div>
-                <div id="http-bandwidth" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Total Requests</div>
-                <div id="http-requests" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                <div class="text-xs text-emerald-700 dark:text-emerald-400">Registered Users</div>
-                <div id="http-registered" class="text-lg font-bold text-emerald-700 dark:text-emerald-400 mt-0.5 tabular-nums">—</div>
-              </div>
-              <div class="p-3.5 rounded-lg bg-surface-2/60 border border-border">
-                <div class="text-xs text-txt-muted">Unregistered / Direct</div>
-                <div id="http-unregistered" class="text-lg font-bold text-txt mt-0.5 tabular-nums">—</div>
-              </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Total Bandwidth</span>
+              <div id="http-bandwidth" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
             </div>
-            <div class="pt-3 border-t border-border/50">
-              <div class="flex items-center justify-between text-xs text-txt-muted mb-1.5">
-                <span>Daily Request Trend</span>
-                <span class="text-[11px] text-txt-subtle font-mono">requests/day</span>
-              </div>
-              <div id="sparkline-http" class="h-9"></div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Total Requests</span>
+              <div id="http-requests" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
+            </div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-emerald-600 dark:text-emerald-400">Registered</span>
+              <div id="http-registered" class="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">—</div>
+            </div>
+            <div class="card p-3.5 flex flex-col justify-between">
+              <span class="text-xs font-medium text-txt-muted">Unregistered</span>
+              <div id="http-unregistered" class="text-lg font-bold text-txt mt-1 tabular-nums">—</div>
             </div>
           </div>
         </div>
@@ -246,7 +218,14 @@ export function mount(container) {
       const stats = await api.getStats(activeRange);
       if (!isMounted) return;
 
-      const totalBandwidth = stats.global_bytes_total || (stats.tls_bytes_total || 0) + (stats.http_bytes_total || 0);
+      const tlsSent = stats.tls_bytes_sent || 0;
+      const tlsRecv = stats.tls_bytes_received || 0;
+      const httpSent = stats.http_bytes_sent || 0;
+      const httpRecv = stats.http_bytes_received || 0;
+
+      const totalDownload = tlsRecv + httpRecv;
+      const totalUpload = tlsSent + httpSent;
+      const totalBandwidth = stats.global_bytes_total || (totalDownload + totalUpload);
       const dnsTotal = stats.dns_requests_total || 0;
       const dnsAuth = stats.dns_requests_authorized || 0;
       const dnsPass = stats.dns_requests_unauthorized_passthrough || 0;
@@ -255,10 +234,10 @@ export function mount(container) {
       $('#kpi-conns', container).textContent = formatCount(stats.active_connections);
       $('#kpi-online', container).textContent = formatCount(stats.online_users);
       $('#kpi-domains', container).textContent = formatCount(stats.total_domain_rules);
-      $('#kpi-users', container).textContent = formatCount(stats.total_users);
-      $('#kpi-blacklist', container).textContent = formatCount(stats.total_blacklist);
       $('#kpi-uptime', container).textContent = formatDuration(stats.uptime_seconds);
       $('#kpi-bandwidth', container).textContent = formatBytes(totalBandwidth);
+      $('#kpi-download', container).textContent = formatBytes(totalDownload);
+      $('#kpi-upload', container).textContent = formatBytes(totalUpload);
       $('#kpi-dns-queries', container).textContent = formatCount(dnsTotal);
 
       // DNS
@@ -269,8 +248,6 @@ export function mount(container) {
       $('#dns-blocked', container).textContent = formatCount(dnsBlock);
 
       // TLS
-      const tlsSent = stats.tls_bytes_sent || 0;
-      const tlsRecv = stats.tls_bytes_received || 0;
       const tlsTotalBytes = stats.tls_bytes_total || (tlsSent + tlsRecv);
       const tlsReqs = stats.tls_requests_total || 0;
       const tlsReg = stats.tls_requests_registered || 0;
@@ -283,8 +260,6 @@ export function mount(container) {
       $('#tls-unregistered', container).textContent = formatCount(tlsUnreg);
 
       // HTTP
-      const httpSent = stats.http_bytes_sent || 0;
-      const httpRecv = stats.http_bytes_received || 0;
       const httpTotalBytes = stats.http_bytes_total || (httpSent + httpRecv);
       const httpReqs = stats.http_requests_total || 0;
       const httpReg = stats.http_requests_registered || 0;
@@ -297,43 +272,6 @@ export function mount(container) {
       $('#http-unregistered', container).textContent = formatCount(httpUnreg);
     } catch (err) {
       console.warn('Dashboard stats error:', err);
-    }
-  }
-
-  function extractDailySeries(days = []) {
-    const map = new Map();
-    for (const d of days) {
-      if (!map.has(d.date)) {
-        map.set(d.date, 0);
-      }
-      map.set(d.date, map.get(d.date) + (d.count || 0));
-    }
-    const sortedDates = Array.from(map.keys()).sort();
-    return sortedDates.map((date) => map.get(date));
-  }
-
-  // Sparklines updater
-  async function fetchSparklines() {
-    if (!isMounted) return;
-    try {
-      const [dnsData, tlsData, httpData] = await Promise.all([
-        api.getRequestStatsDaily('DNS', activeRange),
-        api.getRequestStatsDaily('TLS', activeRange),
-        api.getRequestStatsDaily('HTTP', activeRange),
-      ]);
-      if (!isMounted) return;
-
-      renderSparkline($('#sparkline-dns', container), extractDailySeries(dnsData.days), {
-        color: '#0284c7',
-      });
-      renderSparkline($('#sparkline-tls', container), extractDailySeries(tlsData.days), {
-        color: '#10b981',
-      });
-      renderSparkline($('#sparkline-http', container), extractDailySeries(httpData.days), {
-        color: '#f59e0b',
-      });
-    } catch (err) {
-      console.warn('Dashboard sparklines error:', err);
     }
   }
 
@@ -428,11 +366,6 @@ export function mount(container) {
       .join('');
   }
 
-  // Combined slower background updater (sparklines and top talkers every 30s)
-  async function updateSlowMetrics() {
-    await Promise.all([fetchSparklines(), fetchTopTalkers()]);
-  }
-
   // Refresh button
   $('#dash-refresh-btn', container).addEventListener('click', () => {
     statsPoller.trigger();
@@ -440,9 +373,9 @@ export function mount(container) {
     toast.info('Metrics refreshed');
   });
 
-  // Pollers: stats every 5s, sparklines + top talkers every 30s
+  // Pollers: stats every 5s, top talkers every 30s
   const statsPoller = new Poller(updateStats, 5000, { immediate: true });
-  const slowPoller = new Poller(updateSlowMetrics, 30000, { immediate: true });
+  const slowPoller = new Poller(fetchTopTalkers, 30000, { immediate: true });
 
   statsPoller.start();
   slowPoller.start();

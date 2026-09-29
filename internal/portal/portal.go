@@ -484,6 +484,9 @@ const setupHTMLRaw = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- DNS Status Check -->
+    {{.DNSCheckCard}}
+
     <!-- Domain Support Check -->
     {{.LookupCard}}
 
@@ -540,7 +543,7 @@ const setupHTMLRaw = `<!DOCTYPE html>
     res.textContent = 'Checking...';
 
     try {
-      const r = await fetch('/api/lookup?domain=' + encodeURIComponent(raw));
+      const r = await fetch('api/lookup?domain=' + encodeURIComponent(raw));
       const data = await r.json();
       if (!r.ok) {
         res.className = 'result visible res-bad';
@@ -549,19 +552,21 @@ const setupHTMLRaw = `<!DOCTYPE html>
       }
       if (data.result === 'proxy') {
         res.className = 'result visible res-ok';
-        res.textContent = '✓ Supported: ' + data.domain + ' is routed through the relay.';
+        res.textContent = '\u2713 Supported: ' + data.domain + ' is routed through the relay.';
       } else if (data.result === 'blocked') {
         res.className = 'result visible res-bad';
-        res.textContent = '✕ Blocked: ' + data.domain + ' is explicitly blocked.';
+        res.textContent = '\u2715 Blocked: ' + data.domain + ' is explicitly blocked.';
       } else {
         res.className = 'result visible res-warn';
-        res.textContent = '— Unsupported: ' + data.domain + ' is not in the relay rule list.';
+        res.textContent = '\u2014 Unsupported: ' + data.domain + ' is not in the relay rule list.';
       }
     } catch (e) {
       res.className = 'result visible res-bad';
       res.textContent = 'Network error. Please try again.';
     }
   }
+
+{{.DNSCheckScript}}
 
   document.addEventListener('DOMContentLoaded', () => {
     const input = document.getElementById('domain-input');
@@ -570,6 +575,7 @@ const setupHTMLRaw = `<!DOCTYPE html>
         if (e.key === 'Enter') checkDomain();
       });
     }
+    if (typeof startDNSCheck === 'function') startDNSCheck();
   });
   </script>
 </body>
@@ -1058,6 +1064,7 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(out))
@@ -1189,9 +1196,21 @@ func (s *Server) replyConnect(w http.ResponseWriter, r *http.Request, code int, 
 		lookupCard = setupLookupCardHTML
 	}
 	out = strings.ReplaceAll(out, "{{.LookupCard}}", lookupCard)
+	s.mu.RLock()
+	hasDNSCheck := s.dnsCheckIssue != nil && s.dnsCheckLookup != nil
+	s.mu.RUnlock()
+	dnsCheckCard := ""
+	dnsCheckScript := ""
+	if hasDNSCheck {
+		dnsCheckCard = landingDNSCheckCardHTML
+		dnsCheckScript = landingDNSCheckScript
+	}
+	out = strings.ReplaceAll(out, "{{.DNSCheckCard}}", dnsCheckCard)
+	out = strings.ReplaceAll(out, "{{.DNSCheckScript}}", dnsCheckScript)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(out))

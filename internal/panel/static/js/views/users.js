@@ -120,7 +120,6 @@ export function mount(container) {
                       <span id="sort-icon-username" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
-                  <th class="table-th">Status</th>
                   <th class="table-th cursor-pointer select-none text-right" data-sort="conns">
                     <div class="flex items-center justify-end gap-1.5">
                       <span>Active Conns</span>
@@ -128,33 +127,15 @@ export function mount(container) {
                     </div>
                   </th>
                   <th class="table-th">Active IPs</th>
-                  <th class="table-th cursor-pointer select-none text-center" data-sort="ip_count">
-                    <div class="flex items-center justify-center gap-1.5">
-                      <span>Reg IPs</span>
-                      <span id="sort-icon-ip_count" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
                   <th class="table-th cursor-pointer select-none" data-sort="last_seen_at">
                     <div class="flex items-center gap-1.5">
                       <span>Last Seen</span>
                       <span id="sort-icon-last_seen_at" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
-                  <th class="table-th cursor-pointer select-none text-right" data-sort="sent">
-                    <div class="flex items-center justify-end gap-1.5">
-                      <span>Sent</span>
-                      <span id="sort-icon-sent" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
-                  <th class="table-th cursor-pointer select-none text-right" data-sort="received">
-                    <div class="flex items-center justify-end gap-1.5">
-                      <span>Received</span>
-                      <span id="sort-icon-received" class="text-txt-subtle text-xs">↕</span>
-                    </div>
-                  </th>
                   <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
                     <div class="flex items-center justify-end gap-1.5">
-                      <span>Total</span>
+                      <span>Traffic</span>
                       <span id="sort-icon-usage" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
@@ -164,13 +145,12 @@ export function mount(container) {
                       <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
-                  <th class="table-th">Token</th>
                   <th class="table-th w-16 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody id="users-table-body">
                 <tr>
-                  <td colspan="13" class="table-td text-center py-12 text-txt-subtle">
+                  <td colspan="9" class="table-td text-center py-12 text-txt-subtle">
                     <div class="flex flex-col items-center justify-center gap-2">
                       <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                       <span>Loading user accounts...</span>
@@ -419,14 +399,14 @@ export function mount(container) {
           }" title="${isOnline ? 'Online' : 'Offline'}"></span>
         </td>
         <td class="table-td font-medium text-txt">
-          <span>${escapeHtml(u.username)}</span>
-        </td>
-        <td class="table-td text-xs">
-          ${
-            isEnabled
-              ? `<span class="badge badge-success text-[11px]">Active</span>`
-              : `<span class="badge badge-danger text-[11px]">Disabled</span>`
-          }
+          <div class="flex items-center gap-2">
+            <span>${escapeHtml(u.username)}</span>
+            ${
+              isEnabled
+                ? `<span class="badge badge-success text-[10px] py-0">Active</span>`
+                : `<span class="badge badge-danger text-[10px] py-0">Disabled</span>`
+            }
+          </div>
         </td>
         <td class="table-td text-right font-mono text-xs tabular-nums text-txt font-semibold">
           <span class="user-active-conns">${formatCount(activeConns)}</span>
@@ -434,37 +414,23 @@ export function mount(container) {
         <td class="table-td font-mono text-xs text-primary-600 dark:text-primary-400 max-w-[140px] truncate" title="${escapeHtml(activeIpsDisplay)}">
           <span class="user-active-ips">${escapeHtml(activeIpsDisplay)}</span>
         </td>
-        <td class="table-td text-center font-mono text-xs tabular-nums text-txt-muted">
-          <button type="button" class="user-ips-btn hover:text-txt underline decoration-dotted" title="View/edit registered IPs">
-            ${escapeHtml(regIpsDisplay)}
-          </button>
-        </td>
         <td class="table-td text-xs text-txt-muted tabular-nums">
           ${formatRelativeTime(u.last_seen_at)}
         </td>
-        <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
-          ${(u.total_bytes_sent || 0) > 0 ? formatBytes(u.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}
-        </td>
-        <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
-          ${(u.total_bytes_received || 0) > 0 ? formatBytes(u.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}
-        </td>
-        <td class="table-td text-right text-xs font-mono tabular-nums text-txt font-semibold">
-          ${totalBandwidth > 0 ? formatBytes(totalBandwidth) : '<span class="text-txt-subtle">0 B</span>'}
+        <td class="table-td text-right font-mono text-xs tabular-nums">
+          <div class="flex flex-col items-end gap-0.5">
+            <div class="flex items-center gap-1 text-violet-600 dark:text-violet-400">
+              <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
+              <span>${(u.total_bytes_sent || 0) > 0 ? formatBytes(u.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}</span>
+            </div>
+            <div class="flex items-center gap-1 text-sky-600 dark:text-sky-400">
+              <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+              <span>${(u.total_bytes_received || 0) > 0 ? formatBytes(u.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}</span>
+            </div>
+          </div>
         </td>
         <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
           ${(u.total_dns_queries || 0) > 0 ? formatCount(u.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
-        </td>
-        <td class="table-td font-mono text-xs text-txt-muted">
-          <div class="flex items-center gap-1.5">
-            <span>${escapeHtml(tokenTruncated)}</span>
-            ${
-              u.magic_link
-                ? `<button type="button" class="copy-token-btn btn-icon-sm -my-1 text-txt-subtle hover:text-txt" title="Copy token">
-                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                   </button>`
-                : ''
-            }
-          </div>
         </td>
         <td class="table-td text-right">
           <button type="button" class="user-menu-btn btn-icon-sm text-txt-muted hover:text-txt" aria-label="User actions">
@@ -472,35 +438,6 @@ export function mount(container) {
           </button>
         </td>
       `;
-
-      // Click registered IPs button
-      const ipsBtn = row.querySelector('.user-ips-btn');
-      if (ipsBtn) {
-        ipsBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openUserIPsDialog(u);
-        });
-      }
-
-      // Copy token/URL inline
-      const copyTokenBtn = row.querySelector('.copy-token-btn');
-      if (copyTokenBtn) {
-        copyTokenBtn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const link = getMagicLinkUrl(u.magic_link);
-          const ok = await copyText(link);
-          if (ok) {
-            toast.success('Connection link copied to clipboard');
-            const originalHTML = copyTokenBtn.innerHTML;
-            copyTokenBtn.innerHTML = `<svg class="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`;
-            setTimeout(() => {
-              copyTokenBtn.innerHTML = originalHTML;
-            }, 1500);
-          } else {
-            toast.error(`Failed to copy link automatically. Link: ${link}`, { duration: 8000 });
-          }
-        });
-      }
 
       // Actions Menu
       const menuBtn = row.querySelector('.user-menu-btn');
@@ -936,7 +873,7 @@ export function mount(container) {
   }
 
   function updateSortIcons() {
-    ['username', 'conns', 'ip_count', 'last_seen_at', 'sent', 'received', 'usage', 'queries'].forEach((k) => {
+    ['username', 'conns', 'last_seen_at', 'usage', 'queries'].forEach((k) => {
       const icon = $(`#sort-icon-${k}`, container);
       if (!icon) return;
       if (tableState.sortKey === k) {
