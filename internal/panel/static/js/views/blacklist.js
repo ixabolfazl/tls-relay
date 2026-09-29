@@ -9,6 +9,7 @@ import { formatDate } from '../core/format.js';
 import { TableState } from '../ui/table.js';
 import { dialog } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
+import { renderPagination } from '../ui/pagination.js';
 
 export function mount(container) {
   let entries = [];
@@ -109,14 +110,7 @@ export function mount(container) {
             </table>
           </div>
 
-          <div id="bl-pagination" class="card-footer">
-            <div id="bl-page-info" class="text-xs text-txt-muted">Showing 0 of 0</div>
-            <div class="flex items-center gap-2">
-              <button id="bl-prev-page-btn" type="button" class="btn btn-secondary btn-sm" disabled>Previous</button>
-              <span id="bl-page-num" class="text-xs font-medium text-txt px-2">Page 1</span>
-              <button id="bl-next-page-btn" type="button" class="btn btn-secondary btn-sm" disabled>Next</button>
-            </div>
-          </div>
+          <div id="bl-pagination" class="card-footer"></div>
         </div>
       </div>
     `
@@ -188,7 +182,13 @@ export function mount(container) {
           </td>
         </tr>
       `;
-      updatePagination(0, 0, 0, 1, 1);
+      renderPagination($('#bl-pagination', container), {
+        currentPage: 1,
+        totalPages: 1,
+        totalItems: 0,
+        pageSize: tableState.pageSize,
+        onPageChange: () => {},
+      });
       updateBulkBar(filtered);
       return;
     }
@@ -243,13 +243,16 @@ export function mount(container) {
       tbody.appendChild(row);
     }
 
-    updatePagination(
-      sliceInfo.startIdx,
-      sliceInfo.endIdx,
-      sliceInfo.total,
-      sliceInfo.currentPage,
-      sliceInfo.totalPages
-    );
+    renderPagination($('#bl-pagination', container), {
+      currentPage: sliceInfo.currentPage,
+      totalPages: sliceInfo.totalPages,
+      totalItems: sliceInfo.total,
+      pageSize: tableState.pageSize,
+      onPageChange: (newPage) => {
+        tableState.setPage(newPage);
+        renderTable();
+      },
+    });
     tableState.updateHeaderCheckbox($('#bl-select-all', container), sliceInfo.slice);
     updateBulkBar(filtered);
   }
@@ -302,28 +305,6 @@ export function mount(container) {
     } catch (err) {
       toast.error(err.message || 'Failed to bulk delete blacklist entries');
     }
-  });
-
-  // Pagination
-  function updatePagination(start, end, total, page, totalPages) {
-    $('#bl-page-info', container).textContent =
-      total > 0 ? `Showing ${start}–${end} of ${total}` : 'Showing 0 of 0';
-    $('#bl-page-num', container).textContent = `Page ${page} of ${totalPages}`;
-
-    $('#bl-prev-page-btn', container).disabled = page <= 1;
-    $('#bl-next-page-btn', container).disabled = page >= totalPages;
-  }
-
-  $('#bl-prev-page-btn', container).addEventListener('click', () => {
-    if (tableState.currentPage > 1) {
-      tableState.currentPage--;
-      renderTable();
-    }
-  });
-
-  $('#bl-next-page-btn', container).addEventListener('click', () => {
-    tableState.currentPage++;
-    renderTable();
   });
 
   // Initial load

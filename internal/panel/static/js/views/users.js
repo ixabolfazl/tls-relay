@@ -15,6 +15,7 @@ import { createSegmentedControl } from '../ui/segmented.js';
 import { store } from '../core/store.js';
 import { navigate } from '../core/router.js';
 import { copyText } from '../core/clipboard.js';
+import { renderPagination } from '../ui/pagination.js';
 
 export function mount(container) {
   let isMounted = true;
@@ -152,14 +153,7 @@ export function mount(container) {
               </table>
             </div>
 
-            <div id="users-pagination" class="card-footer">
-              <div id="users-page-info" class="text-xs text-txt-muted">Showing 0 of 0</div>
-              <div class="flex items-center gap-2">
-                <button id="users-prev-page-btn" type="button" class="btn btn-secondary btn-sm" disabled>Previous</button>
-                <span id="users-page-num" class="text-xs font-medium text-txt px-2">Page 1</span>
-                <button id="users-next-page-btn" type="button" class="btn btn-secondary btn-sm" disabled>Next</button>
-              </div>
-            </div>
+            <div id="users-pagination" class="card-footer"></div>
           </div>
         </div>
 
@@ -377,7 +371,13 @@ export function mount(container) {
           </td>
         </tr>
       `;
-      updatePagination(0, 0, 0, 1, 1);
+      renderPagination($('#users-pagination', container), {
+        currentPage: 1,
+        totalPages: 1,
+        totalItems: 0,
+        pageSize: tableState.pageSize,
+        onPageChange: () => {},
+      });
       return;
     }
 
@@ -527,13 +527,16 @@ export function mount(container) {
       tbody.appendChild(row);
     }
 
-    updatePagination(
-      sliceInfo.startIdx,
-      sliceInfo.endIdx,
-      sliceInfo.total,
-      sliceInfo.currentPage,
-      sliceInfo.totalPages
-    );
+    renderPagination($('#users-pagination', container), {
+      currentPage: sliceInfo.currentPage,
+      totalPages: sliceInfo.totalPages,
+      totalItems: sliceInfo.total,
+      pageSize: tableState.pageSize,
+      onPageChange: (newPage) => {
+        tableState.setPage(newPage);
+        renderAccountsTable();
+      },
+    });
   }
 
   // Edit User Dialog
@@ -922,28 +925,6 @@ export function mount(container) {
       }
     });
   }
-
-  // Pagination
-  function updatePagination(start, end, total, page, totalPages) {
-    $('#users-page-info', container).textContent =
-      total > 0 ? `Showing ${start}–${end} of ${total}` : 'Showing 0 of 0';
-    $('#users-page-num', container).textContent = `Page ${page} of ${totalPages}`;
-
-    $('#users-prev-page-btn', container).disabled = page <= 1;
-    $('#users-next-page-btn', container).disabled = page >= totalPages;
-  }
-
-  $('#users-prev-page-btn', container).addEventListener('click', () => {
-    if (tableState.currentPage > 1) {
-      tableState.currentPage--;
-      renderAccountsTable();
-    }
-  });
-
-  $('#users-next-page-btn', container).addEventListener('click', () => {
-    tableState.currentPage++;
-    renderAccountsTable();
-  });
 
   // Initial load
   fetchUsers();

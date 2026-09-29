@@ -14,6 +14,7 @@ import { createCombobox } from '../ui/combobox.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { createDomainRuleForm } from './domain-rule-form.js';
 import { renderGroupedBarChart } from '../ui/chart.js';
+import { renderPagination } from '../ui/pagination.js';
 import {
   parseDomainTokens,
   isValidDomainToken,
@@ -168,14 +169,7 @@ export function mount(container) {
           </div>
 
           <!-- Pagination Footer -->
-          <div id="dom-pagination" class="card-footer">
-            <div id="dom-page-info" class="text-xs text-txt-muted">Showing 0 of 0</div>
-            <div class="flex items-center gap-2">
-              <button id="dom-prev-page-btn" type="button" class="btn btn-secondary btn-sm" disabled>Previous</button>
-              <span id="dom-page-num" class="text-xs font-medium text-txt px-2">Page 1</span>
-              <button id="dom-next-page-btn" type="button" class="btn btn-secondary btn-sm" disabled>Next</button>
-            </div>
-          </div>
+          <div id="dom-pagination" class="card-footer"></div>
         </div>
       </div>
     `
@@ -379,7 +373,13 @@ export function mount(container) {
           </td>
         </tr>
       `;
-      updatePagination(0, 0, 0, 1, 1);
+      renderPagination($('#dom-pagination', container), {
+        currentPage: 1,
+        totalPages: 1,
+        totalItems: 0,
+        pageSize: tableState.pageSize,
+        onPageChange: () => {},
+      });
       updateBulkBar(filteredDomains);
       return;
     }
@@ -387,17 +387,26 @@ export function mount(container) {
     if (viewMode === 'flat') {
       const sliceInfo = tableState.getPageSlice(sortedDomains);
       renderFlatRows(tbody, sliceInfo.slice);
-      updatePagination(
-        sliceInfo.startIdx,
-        sliceInfo.endIdx,
-        sliceInfo.total,
-        sliceInfo.currentPage,
-        sliceInfo.totalPages
-      );
+      renderPagination($('#dom-pagination', container), {
+        currentPage: sliceInfo.currentPage,
+        totalPages: sliceInfo.totalPages,
+        totalItems: sliceInfo.total,
+        pageSize: tableState.pageSize,
+        onPageChange: (newPage) => {
+          tableState.setPage(newPage);
+          renderTable();
+        },
+      });
       tableState.updateHeaderCheckbox($('#dom-select-all', container), sliceInfo.slice);
     } else {
       renderGroupedRows(tbody, sortedDomains);
-      updatePagination(1, sortedDomains.length, sortedDomains.length, 1, 1);
+      renderPagination($('#dom-pagination', container), {
+        currentPage: 1,
+        totalPages: 1,
+        totalItems: sortedDomains.length,
+        pageSize: sortedDomains.length,
+        onPageChange: () => {},
+      });
       tableState.updateHeaderCheckbox($('#dom-select-all', container), sortedDomains);
     }
 
@@ -1307,31 +1316,6 @@ export function mount(container) {
       }
     });
   }
-
-  // Pagination controls
-  function updatePagination(start, end, total, page, totalPages) {
-    $('#dom-page-info', container).textContent =
-      total > 0 ? `Showing ${start}–${end} of ${total}` : 'Showing 0 of 0';
-    $('#dom-page-num', container).textContent = `Page ${page} of ${totalPages}`;
-
-    const prevBtn = $('#dom-prev-page-btn', container);
-    const nextBtn = $('#dom-next-page-btn', container);
-
-    prevBtn.disabled = page <= 1;
-    nextBtn.disabled = page >= totalPages;
-  }
-
-  $('#dom-prev-page-btn', container).addEventListener('click', () => {
-    if (tableState.currentPage > 1) {
-      tableState.currentPage--;
-      renderTable();
-    }
-  });
-
-  $('#dom-next-page-btn', container).addEventListener('click', () => {
-    tableState.currentPage++;
-    renderTable();
-  });
 
   // Initial load
   fetchDomains();
