@@ -70,6 +70,15 @@
 
           <!-- Topbar Actions -->
           <div class="flex items-center gap-2.5 shrink-0">
+            <!-- Update Available Notification Badge -->
+            <div id="topbar-update-banner" class="hidden items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary-500/10 border border-primary-500/20 text-xs font-medium text-primary-700 dark:text-primary-300">
+              <span class="w-1.5 h-1.5 rounded-full bg-primary-500 animate-pulse"></span>
+              <a id="topbar-update-link" href="#" target="_blank" rel="noopener noreferrer" class="hover:underline">Update available</a>
+              <button id="topbar-update-dismiss-btn" type="button" class="ml-1 text-txt-subtle hover:text-txt -mr-1 p-0.5 rounded-full" aria-label="Dismiss update notification" title="Dismiss">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+
             <!-- Theme Toggle -->
             <button id="theme-toggle-btn" type="button" class="btn-icon" aria-label="Toggle light/dark theme" title="Toggle theme">
               <svg class="w-5 h-5 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">

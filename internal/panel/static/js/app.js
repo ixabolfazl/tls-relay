@@ -31,6 +31,8 @@ async function checkAuthAndBoot() {
       adminUserBadge.textContent = settings.admin_username;
     }
 
+    checkUpdateAvailable();
+
     if (!routerInitialized) {
       initRouter();
       routerInitialized = true;
@@ -86,6 +88,43 @@ function initShellEvents() {
       checkAuthAndBoot();
     }
   });
+}
+
+async function checkUpdateAvailable() {
+  const banner = $('#topbar-update-banner');
+  const link = $('#topbar-update-link');
+  const dismissBtn = $('#topbar-update-dismiss-btn');
+  if (!banner || !link) return;
+
+  let dismissed = false;
+  try {
+    dismissed = window.sessionStorage?.getItem('dismissed_update_notification') === 'true';
+  } catch {}
+  if (dismissed) return;
+
+  try {
+    const data = await api.getVersion();
+    if (!data || !data.update_available) return;
+
+    link.textContent = `${data.latest_version || 'New release'} available`;
+    if (data.release_url) {
+      link.href = data.release_url;
+    }
+    banner.classList.remove('hidden');
+    banner.classList.add('flex');
+
+    if (dismissBtn) {
+      dismissBtn.onclick = () => {
+        banner.classList.add('hidden');
+        banner.classList.remove('flex');
+        try {
+          window.sessionStorage?.setItem('dismissed_update_notification', 'true');
+        } catch {}
+      };
+    }
+  } catch {
+    // Ignore update check failures on frontend
+  }
 }
 
 // Start application

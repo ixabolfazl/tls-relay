@@ -46,6 +46,7 @@ type settingsResponse struct {
 	HttpFrontMaxGlobalConns    int    `json:"http_front_max_global_conns"`
 	AdminUsername              string `json:"admin_username"`
 	UptimeSeconds              int64  `json:"uptime_seconds"`
+	UpdateCheckEnabled         bool   `json:"update_check_enabled"`
 }
 
 func parseDurationWithDays(s string) (time.Duration, error) {
@@ -186,6 +187,13 @@ func (s *Server) currentSettings() settingsResponse {
 
 	lookupEn, lookupReq := s.LookupPolicy()
 
+	updateCheckEnabled := true
+	if s.sqlStore != nil {
+		if val, found, err := s.sqlStore.GetSetting(context.Background(), "update_check_enabled"); err == nil && found {
+			updateCheckEnabled = (val != "false")
+		}
+	}
+
 	return settingsResponse{
 		AccessMode:                 mode,
 		PanelPath:                  s.DisplayPath(),
@@ -212,6 +220,7 @@ func (s *Server) currentSettings() settingsResponse {
 		HttpFrontMaxGlobalConns:    frontMaxGlobal,
 		AdminUsername:              username,
 		UptimeSeconds:              uptime,
+		UpdateCheckEnabled:         updateCheckEnabled,
 	}
 }
 
@@ -241,6 +250,7 @@ type updateSettingsRequest struct {
 	LookupRequireRegistered    *bool   `json:"lookup_require_registered,omitempty"`
 	HttpFrontMaxConnsPerIP     *int    `json:"http_front_max_conns_per_ip,omitempty"`
 	HttpFrontMaxGlobalConns    *int    `json:"http_front_max_global_conns,omitempty"`
+	UpdateCheckEnabled         *bool   `json:"update_check_enabled,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -436,6 +446,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toPersist["http_front_max_global_conns"] = strconv.Itoa(*req.HttpFrontMaxGlobalConns)
+	}
+
+	if req.UpdateCheckEnabled != nil {
+		val := "false"
+		if *req.UpdateCheckEnabled {
+			val = "true"
+		}
+		toPersist["update_check_enabled"] = val
 	}
 
 	var candidateDNSUpstream *string

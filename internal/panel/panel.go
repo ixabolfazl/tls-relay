@@ -26,6 +26,7 @@ import (
 	"github.com/ixabolfazl/tls-relay/internal/requestlog"
 	"github.com/ixabolfazl/tls-relay/internal/rules"
 	"github.com/ixabolfazl/tls-relay/internal/sqlitestore"
+	"github.com/ixabolfazl/tls-relay/internal/updatecheck"
 )
 
 //go:embed static
@@ -280,6 +281,8 @@ type Server struct {
 	startTime               time.Time
 	httpServer              *http.Server
 	portalSrv               PortalHandlerRegistrar
+	version                 string
+	updateChecker           *updatecheck.Checker
 }
 
 // New creates a Server. Username and password are read from SQLite if stored,
@@ -338,6 +341,8 @@ func New(
 		sessions:      newSessionStore(),
 		loginLimiter:  newLoginLimiter(5, 5*time.Minute),
 		startTime:     time.Now(),
+		version:       "dev",
+		updateChecker: updatecheck.NewChecker("dev"),
 	}
 	s.lookupEnabled.Store(true)
 	s.lookupRequireRegistered.Store(false)
@@ -516,6 +521,32 @@ func (s *Server) DefaultMaxIPs() int {
 		return 3
 	}
 	return s.defaultMaxIPs
+}
+
+// SetVersion sets the running server version and updates the update checker.
+func (s *Server) SetVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.version = v
+	if s.updateChecker != nil {
+		s.updateChecker.SetCurrentVersion(v)
+	} else {
+		s.updateChecker = updatecheck.NewChecker(v)
+	}
+}
+
+// Version returns the current server version string.
+func (s *Server) Version() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
+}
+
+// SetUpdateChecker sets the update checker instance.
+func (s *Server) SetUpdateChecker(c *updatecheck.Checker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateChecker = c
 }
 
 // ReloadCredentials re-reads admin credentials from SQLite under the mutex and clears all active sessions.
@@ -936,6 +967,7 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(route("PUT", "/api/admin/credentials"), s.auth(s.handleUpdateAdminCredentials))
 	mux.HandleFunc(route("POST", "/api/service/restart"), s.auth(s.handleServiceRestart))
 	mux.HandleFunc(route("GET", "/api/request-stats/daily"), s.auth(s.handleGetRequestStatsDaily))
+	mux.HandleFunc(route("GET", "/api/version"), s.auth(s.handleGetVersion))
 }
 
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {

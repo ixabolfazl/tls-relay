@@ -109,6 +109,7 @@ export const api = {
   getStats: (range = 'today') => apiFetch(`api/stats?range=${encodeURIComponent(range)}`),
   getRequestStatsDaily: (type, range = 'today') =>
     apiFetch(`api/request-stats/daily?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}`),
+  getVersion: () => apiFetch('api/version'),
 
   // Domains
   getDomains: (range = '') =>

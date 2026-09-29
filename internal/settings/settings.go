@@ -235,7 +235,7 @@ func ValidateSetting(key, val string) (string, error) {
 	case "dns_upstream_addr":
 		_, canon, err := ValidateUpstreamList(val)
 		return canon, err
-	case "lookup_enabled", "lookup_require_registered":
+	case "lookup_enabled", "lookup_require_registered", "update_check_enabled":
 		canon, _, err := ValidateBool(val)
 		return canon, err
 	case "http_front_max_conns_per_ip", "http_front_max_global_conns":

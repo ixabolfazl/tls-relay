@@ -61,6 +61,9 @@ func TestValidateSetting_Table(t *testing.T) {
 		{"dns_upstream_addr", "1.1.1.1, 8.8.8.8, 9.9.9.9, 1.0.0.1, 8.8.4.4, 9.9.9.10", true, ""},
 		{"http_front_max_conns_per_ip", "60", false, "60"},
 		{"http_front_max_global_conns", "5000", false, "5000"},
+		{"update_check_enabled", "true", false, "true"},
+		{"update_check_enabled", "false", false, "false"},
+		{"update_check_enabled", "invalid", true, ""},
 		{"unknown_key", "val", true, ""},
 	}
 

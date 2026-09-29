@@ -352,6 +352,20 @@ export function mount(container) {
                   </div>
                   <span class="field-hint">Use a secret path prefix (e.g. "/aB3xK9") to hide admin interface. Redirects automatically upon change.</span>
                 </div>
+
+                <div class="pt-3 border-t border-border">
+                  <div class="flex items-center justify-between p-3.5 rounded-xl border border-border bg-surface-2/40">
+                    <div class="space-y-0.5">
+                      <label for="set-update-check-switch" class="text-sm font-medium text-txt cursor-pointer select-none">
+                        Check for Updates
+                      </label>
+                      <p class="text-xs text-txt-muted">
+                        Automatically check GitHub releases and notify when a newer version of tls-relay is available.
+                      </p>
+                    </div>
+                    <input id="set-update-check-switch" type="checkbox" class="checkbox shrink-0" />
+                  </div>
+                </div>
               </div>
               <div class="card-footer">
                 <span class="text-xs text-txt-subtle">Timezone and server domain take effect immediately</span>
@@ -570,6 +584,10 @@ export function mount(container) {
       }
       $('#set-server-domain-input', container).value = settings.server_domain || '';
       $('#set-panel-path-input', container).value = settings.panel_path || '/';
+      const updateCheckSwitch = $('#set-update-check-switch', container);
+      if (updateCheckSwitch) {
+        updateCheckSwitch.checked = settings.update_check_enabled !== false;
+      }
 
       // Service Uptime
       $('#set-service-uptime', container).textContent = formatDuration(settings.uptime_seconds);
@@ -1115,15 +1133,18 @@ export function mount(container) {
     }
   });
 
-  // Save General (Timezone & Server Domain)
+  // Save General (Timezone & Server Domain & Update Check)
   $('#set-save-general-btn', container).addEventListener('click', async () => {
     const tz = $('#set-timezone-select', container).value;
     const serverDomain = $('#set-server-domain-input', container).value.trim();
+    const updateCheckSwitch = $('#set-update-check-switch', container);
+    const updateCheck = updateCheckSwitch ? updateCheckSwitch.checked : true;
 
     try {
       await api.updateSettings({
         timezone: tz,
         server_domain: serverDomain,
+        update_check_enabled: updateCheck,
       });
       toast.success('General settings saved');
       await loadSettings();

@@ -636,6 +636,7 @@ func run(cfgPath string) error {
 	if err != nil {
 		return fmt.Errorf("building panel server: %w", err)
 	}
+	panelSrv.SetVersion(version)
 	panelSrv.SetConnTracker(connTracker)
 	panelSrv.SetRequestLogger(reqLogger)
 	panelSrv.SetLimitTracker(limits)
