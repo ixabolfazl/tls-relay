@@ -135,13 +135,19 @@ func (ut *UsageTracker) DroppedCount() int64 {
 	return ut.droppedCount.Load()
 }
 
-// StartWriter launches the background batch-flush goroutine.  It mirrors the
-// shape of ConnTracker.StartLastSeenWriter.  store must not be nil.
-func (ut *UsageTracker) StartWriter(ctx context.Context, store UsageStore) {
+// StartWriter launches the background batch-flush goroutine. It returns a done channel
+// that closes when the writer finishes draining upon context cancellation.
+func (ut *UsageTracker) StartWriter(ctx context.Context, store UsageStore) <-chan struct{} {
+	done := make(chan struct{})
 	if store == nil {
-		return
+		close(done)
+		return done
 	}
-	go ut.runWriter(ctx, store)
+	go func() {
+		defer close(done)
+		ut.runWriter(ctx, store)
+	}()
+	return done
 }
 
 func (ut *UsageTracker) runWriter(ctx context.Context, store UsageStore) {

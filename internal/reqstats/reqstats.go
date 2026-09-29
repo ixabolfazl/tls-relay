@@ -78,12 +78,19 @@ func (c *Collector) DroppedCount() int64 {
 	return c.droppedCount.Load()
 }
 
-// StartWriter launches the background batch writer goroutine.
-func (c *Collector) StartWriter(ctx context.Context, store StatsStore) {
+// StartWriter launches the background batch writer goroutine. It returns a done channel
+// that closes when the writer finishes draining upon context cancellation.
+func (c *Collector) StartWriter(ctx context.Context, store StatsStore) <-chan struct{} {
+	done := make(chan struct{})
 	if store == nil {
-		return
+		close(done)
+		return done
 	}
-	go c.runWriter(ctx, store)
+	go func() {
+		defer close(done)
+		c.runWriter(ctx, store)
+	}()
+	return done
 }
 
 func (c *Collector) runWriter(ctx context.Context, store StatsStore) {

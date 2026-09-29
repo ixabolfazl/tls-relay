@@ -262,10 +262,14 @@ func run(cfgPath string) error {
 	// -----------------------------------------------------------------------
 	// Contexts for graceful shutdown:
 	// - listenerCtx controls listeners (stops accepting incoming conns on shutdown)
+	// - connCtx controls connection lifecycles (drained during grace period)
 	// - bgCtx controls background workers (flushes telemetry and writes after conns close)
 	// -----------------------------------------------------------------------
 	listenerCtx, listenerCancel := context.WithCancel(context.Background())
 	defer listenerCancel()
+
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
@@ -288,18 +292,18 @@ func run(cfgPath string) error {
 	}
 
 	reqLogger := requestlog.New(sqlStore, reqLogRetention, reqLogEnabled)
-	reqLogger.Start(bgCtx)
+	reqLoggerDone := reqLogger.Start(bgCtx)
 
 	// Start background Last Seen writer for ConnTracker
-	connTracker.StartLastSeenWriter(bgCtx, sqlStore)
+	connTrackerDone := connTracker.StartLastSeenWriter(bgCtx, sqlStore)
 
 	// Start background usage event writer.
 	usageTracker := relay.NewUsageTracker()
-	usageTracker.StartWriter(bgCtx, sqlStore)
+	usageTrackerDone := usageTracker.StartWriter(bgCtx, sqlStore)
 
 	// Start background request stats collector.
 	reqStats := reqstats.New()
-	reqStats.StartWriter(bgCtx, sqlStore)
+	reqStatsDone := reqStats.StartWriter(bgCtx, sqlStore)
 
 	// Handle SIGINT / SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -317,6 +321,7 @@ func run(cfgPath string) error {
 	for _, port := range cfg.Listen.Ports {
 		port := port // capture
 		srv := relay.NewServer(cfg, port, allowList, checker, limits, ruleStore, accessStore, egressDialer, connTracker)
+		srv.SetConnContext(connCtx)
 		srv.SetLogger(reqLogger)
 		srv.SetUsageTracker(usageTracker)
 		srv.SetStatsCollector(reqStats)
@@ -397,6 +402,7 @@ func run(cfgPath string) error {
 	if err != nil {
 		return fmt.Errorf("building front router: %w", err)
 	}
+	router.SetConnContext(connCtx)
 
 	listenerWG.Add(1)
 	go func() {
@@ -419,6 +425,7 @@ func run(cfgPath string) error {
 		}
 		httpPort := httpPort
 		httpSrv := httprelay.NewServer(cfg, httpPort, allowList, checker, limits, ruleStore, accessStore, egressDialer, connTracker)
+		httpSrv.SetConnContext(connCtx)
 		httpSrv.SetLogger(reqLogger)
 		httpSrv.SetUsageTracker(usageTracker)
 		httpSrv.SetStatsCollector(reqStats)
@@ -512,9 +519,28 @@ func run(cfgPath string) error {
 		slog.Warn("grace period elapsed; forcing exit with active connections")
 	}
 
-	// 2. Stop background workers so final telemetry from in-flight connections is committed to SQLite.
+	// 2. Cancel connection context → immediately terminates remaining active conns & pipes.
+	connCancel()
+
+	// 3. Cancel background context → signals all background writers to flush and exit.
 	bgCancel()
-	time.Sleep(100 * time.Millisecond)
+
+	// 4. Wait for all background writers to drain with a 10s cap.
+	writersDone := make(chan struct{})
+	go func() {
+		<-reqLoggerDone
+		<-connTrackerDone
+		<-usageTrackerDone
+		<-reqStatsDone
+		close(writersDone)
+	}()
+
+	select {
+	case <-writersDone:
+		slog.Info("all background writers flushed and stopped")
+	case <-time.After(10 * time.Second):
+		slog.Warn("timeout waiting for background writers to flush; proceeding with shutdown")
+	}
 
 	return listenerErr
 }

@@ -2,6 +2,7 @@ package requestlog
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -103,9 +104,24 @@ func (l *Logger) Emit(event Event) {
 }
 
 // Start launches the background worker goroutines (batch writer and retention cleanup).
-func (l *Logger) Start(ctx context.Context) {
-	go l.runWorker(ctx)
-	go l.runRetentionCleaner(ctx)
+// It returns a done channel that closes when both workers finish draining upon context cancellation.
+func (l *Logger) Start(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		l.runWorker(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		l.runRetentionCleaner(ctx)
+	}()
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done
 }
 
 func (l *Logger) runWorker(ctx context.Context) {

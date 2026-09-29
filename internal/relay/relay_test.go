@@ -237,3 +237,149 @@ func TestPipe_InFlightRealTimeAccounting(t *testing.T) {
 		t.Errorf("progressSent got %d, want %d", progressSent.Load(), len(testData))
 	}
 }
+
+func TestPipe_IdleOneDirectionStreamsOther(t *testing.T) {
+	client1, client2 := net.Pipe()
+	dest1, dest2 := net.Pipe()
+
+	var sent, recv atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 100ms idle timeout
+	go relay.Pipe(ctx, client1, dest1, 100*time.Millisecond, 0, &sent, &recv)
+
+	// Stream from dest to client for 250ms (longer than the 100ms idle timeout)
+	// while client sends 0 bytes. Pipe must remain open.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4)
+		for i := 0; i < 6; i++ {
+			if _, err := dest2.Write([]byte("data")); err != nil {
+				t.Errorf("dest write error: %v", err)
+				return
+			}
+			if _, err := client2.Read(buf); err != nil {
+				t.Errorf("client read error: %v", err)
+				return
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-done:
+		// Succeeded keeping connection open despite 0 client bytes
+	case <-time.After(1 * time.Second):
+		t.Fatal("streaming timed out")
+	}
+
+	_ = client2.Close()
+	_ = dest2.Close()
+}
+
+func TestPipe_ResetClosesBoth(t *testing.T) {
+	client1, client2 := net.Pipe()
+	dest1, dest2 := net.Pipe()
+
+	var sent, recv atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pipeDone := make(chan struct{})
+	go func() {
+		defer close(pipeDone)
+		relay.Pipe(ctx, client1, dest1, 100*time.Millisecond, 0, &sent, &recv)
+	}()
+
+	// Abruptly close client2 (causes ErrClosedPipe, a non-EOF error on client1)
+	_ = client2.Close()
+
+	// Pipe should close dest1 immediately
+	buf := make([]byte, 10)
+	_, err := dest2.Read(buf)
+	if err == nil {
+		t.Fatal("expected dest to be closed after client reset")
+	}
+
+	select {
+	case <-pipeDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("pipe failed to exit after reset")
+	}
+	_ = dest2.Close()
+}
+
+func TestPipe_MaxDurationClosesActive(t *testing.T) {
+	client1, client2 := net.Pipe()
+	dest1, dest2 := net.Pipe()
+
+	var sent, recv atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Max duration of 80ms
+	pipeDone := make(chan struct{})
+	go func() {
+		defer close(pipeDone)
+		relay.Pipe(ctx, client1, dest1, 5*time.Second, 80*time.Millisecond, &sent, &recv)
+	}()
+
+	// Keep sending data
+	stopWriting := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopWriting:
+				return
+			default:
+				_, _ = client2.Write([]byte("x"))
+				buf := make([]byte, 1)
+				_, _ = dest2.Read(buf)
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}()
+
+	select {
+	case <-pipeDone:
+		// Pipe closed by max duration timer
+	case <-time.After(1 * time.Second):
+		t.Fatal("pipe failed to close by max duration timeout")
+	}
+
+	close(stopWriting)
+	_ = client2.Close()
+	_ = dest2.Close()
+}
+
+func TestPipe_HalfCloseTimeout(t *testing.T) {
+	oldTimeout := relay.HalfCloseTimeout
+	relay.HalfCloseTimeout = 50 * time.Millisecond
+	defer func() { relay.HalfCloseTimeout = oldTimeout }()
+
+	client1, client2 := net.Pipe()
+	dest1, dest2 := net.Pipe()
+
+	var sent, recv atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pipeDone := make(chan struct{})
+	go func() {
+		defer close(pipeDone)
+		relay.Pipe(ctx, client1, dest1, 5*time.Second, 0, &sent, &recv)
+	}()
+
+	// Close client2 to trigger EOF/half-close on client1
+	_ = client2.Close()
+
+	// After HalfCloseTimeout (50ms), dest must also be closed
+	select {
+	case <-pipeDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("pipe failed to close after HalfCloseTimeout")
+	}
+	_ = dest2.Close()
+}

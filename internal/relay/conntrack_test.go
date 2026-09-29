@@ -232,6 +232,7 @@ func TestConnTracker_UserPresenceLifecycle(t *testing.T) {
 
 func TestConnTracker_LastSeenAsyncDBWorker(t *testing.T) {
 	ct := relay.NewConnTracker()
+	ct.SetLastSeenFlushInterval(20 * time.Millisecond)
 
 	ct.SetUserMappings([]relay.UserMappingInfo{
 		{
@@ -250,8 +251,8 @@ func TestConnTracker_LastSeenAsyncDBWorker(t *testing.T) {
 	ct.Register("198.51.100.50", conn)
 	ct.Unregister("198.51.100.50", conn)
 
-	// Wait briefly for worker goroutine to process channel message
-	time.Sleep(50 * time.Millisecond)
+	// Wait briefly for worker goroutine to process batch flush
+	time.Sleep(60 * time.Millisecond)
 
 	store.mu.Lock()
 	lastSeen, ok := store.lastSeens[42]
@@ -262,6 +263,93 @@ func TestConnTracker_LastSeenAsyncDBWorker(t *testing.T) {
 	}
 	if lastSeen.IsZero() {
 		t.Error("lastSeen timestamp should not be zero")
+	}
+}
+
+type mockBatchStore struct {
+	mu     sync.Mutex
+	called bool
+	batch  map[int64]time.Time
+}
+
+func (m *mockBatchStore) UpdateUserLastSeen(_ context.Context, _ int64, _ time.Time) error {
+	return nil
+}
+
+func (m *mockBatchStore) UpdateUsersLastSeen(_ context.Context, updates map[int64]time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.called = true
+	m.batch = make(map[int64]time.Time, len(updates))
+	for k, v := range updates {
+		m.batch[k] = v
+	}
+	return nil
+}
+
+func TestConnTracker_BatchLastSeenUpdater(t *testing.T) {
+	ct := relay.NewConnTracker()
+	ct.SetLastSeenFlushInterval(20 * time.Millisecond)
+
+	ct.SetUserMappings([]relay.UserMappingInfo{
+		{UserID: 1, Username: "u1", IPs: []string{"10.0.0.1"}},
+		{UserID: 2, Username: "u2", IPs: []string{"10.0.0.2"}},
+	})
+
+	store := &mockBatchStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := ct.StartLastSeenWriter(ctx, store)
+
+	c1 := &fakeConn{}
+	c2 := &fakeConn{}
+	ct.Register("10.0.0.1", c1)
+	ct.Register("10.0.0.2", c2)
+
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	<-done
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.called {
+		t.Fatal("expected BatchLastSeenUpdater to be invoked")
+	}
+	if len(store.batch) != 2 {
+		t.Fatalf("expected 2 batch entries, got %d", len(store.batch))
+	}
+}
+
+func TestConnTracker_NoGhostUsersOnMappingChange(t *testing.T) {
+	ct := relay.NewConnTracker()
+
+	// Initially user 1 owns 192.168.1.50
+	ct.SetUserMappings([]relay.UserMappingInfo{
+		{UserID: 1, Username: "user1", IPs: []string{"192.168.1.50"}},
+	})
+
+	c := &fakeConn{}
+	ct.Register("192.168.1.50", c)
+
+	stats := ct.GetPresenceStats()
+	if stats.Users[0].ActiveConnections != 1 {
+		t.Fatalf("expected user 1 to have 1 connection, got %d", stats.Users[0].ActiveConnections)
+	}
+
+	// Mapping changes: IP 192.168.1.50 is now mapped to user 2
+	ct.SetUserMappings([]relay.UserMappingInfo{
+		{UserID: 1, Username: "user1", IPs: []string{}},
+		{UserID: 2, Username: "user2", IPs: []string{"192.168.1.50"}},
+	})
+
+	// When connection closes, it must decrement user 1 (the user resolved at Register), NOT user 2!
+	ct.Unregister("192.168.1.50", c)
+
+	statsAfter := ct.GetPresenceStats()
+	for _, u := range statsAfter.Users {
+		if u.ActiveConnections != 0 {
+			t.Errorf("user %d should have 0 active connections, got %d", u.UserID, u.ActiveConnections)
+		}
 	}
 }
 

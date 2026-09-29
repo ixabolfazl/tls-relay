@@ -75,11 +75,48 @@ func ReadSNI(r io.Reader) (peeked []byte, hostname string, err error) {
 	}
 
 	hsLen := int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
-	if len(payload) < 4+hsLen {
-		return raw, "", fmt.Errorf("%w: handshake body truncated", ErrNotTLS)
+	needed := 4 + hsLen
+
+	const maxTotalHandshake = 32 * 1024
+	if needed > maxTotalHandshake {
+		return raw, "", ErrMessageTooLarge
 	}
 
-	body := payload[4 : 4+hsLen]
+	// Fragmented ClientHello across consecutive records (up to 8 records and 32 KiB total)
+	recordsRead := 1
+	for len(payload) < needed {
+		recordsRead++
+		if recordsRead > 8 {
+			return raw, "", ErrMessageTooLarge
+		}
+
+		recHdr := make([]byte, 5)
+		if _, err = io.ReadFull(r, recHdr); err != nil {
+			return raw, "", fmt.Errorf("reading TLS record header: %w", err)
+		}
+		raw = append(raw, recHdr...)
+
+		if recHdr[0] != 0x16 {
+			return raw, "", ErrNotTLS
+		}
+		if recHdr[1] != 0x03 {
+			return raw, "", ErrNotTLS
+		}
+
+		recLen := int(binary.BigEndian.Uint16(recHdr[3:5]))
+		if recLen > maxClientHelloSize || len(raw)+recLen > maxTotalHandshake {
+			return raw, "", ErrMessageTooLarge
+		}
+
+		recPayload := make([]byte, recLen)
+		if _, err = io.ReadFull(r, recPayload); err != nil {
+			return raw, "", fmt.Errorf("reading TLS record payload: %w", err)
+		}
+		raw = append(raw, recPayload...)
+		payload = append(payload, recPayload...)
+	}
+
+	body := payload[4:needed]
 
 	// -----------------------------------------------------------------------
 	// ClientHello body layout:

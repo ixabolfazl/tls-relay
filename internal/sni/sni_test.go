@@ -156,3 +156,120 @@ func TestReadSNI_LongHostname(t *testing.T) {
 		t.Errorf("hostname mismatch: got %q", got)
 	}
 }
+
+func buildHandshakePayload(hostname string) []byte {
+	raw := buildClientHello(hostname)
+	// Strip 5-byte TLS record header, returning raw handshake message
+	return raw[5:]
+}
+
+func makeRecord(contentType byte, payload []byte) []byte {
+	rec := []byte{
+		contentType,
+		0x03, 0x01,
+		byte(len(payload) >> 8),
+		byte(len(payload)),
+	}
+	return append(rec, payload...)
+}
+
+func TestReadSNI_FragmentedAcrossTwoRecords(t *testing.T) {
+	want := "fragmented.example.com"
+	hs := buildHandshakePayload(want)
+
+	splitIdx := 25
+	rec1 := makeRecord(0x16, hs[:splitIdx])
+	rec2 := makeRecord(0x16, hs[splitIdx:])
+	allBytes := append(rec1, rec2...)
+
+	peeked, got, err := sni.ReadSNI(bytes.NewReader(allBytes))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if !bytes.Equal(peeked, allBytes) {
+		t.Errorf("peeked bytes mismatch: got %d bytes, want %d bytes", len(peeked), len(allBytes))
+	}
+}
+
+func TestReadSNI_FragmentedAcrossThreeRecords_SplitInsideSNI(t *testing.T) {
+	want := "split-inside-sni.test.internal"
+	hs := buildHandshakePayload(want)
+
+	// Find the hostname inside hs to split precisely inside the SNI name
+	nameIdx := bytes.Index(hs, []byte(want))
+	if nameIdx == -1 {
+		t.Fatal("could not find hostname inside handshake payload")
+	}
+
+	split1 := nameIdx - 5 // split before extension
+	split2 := nameIdx + 5 // split right inside hostname
+
+	rec1 := makeRecord(0x16, hs[:split1])
+	rec2 := makeRecord(0x16, hs[split1:split2])
+	rec3 := makeRecord(0x16, hs[split2:])
+	allBytes := append(append(rec1, rec2...), rec3...)
+
+	peeked, got, err := sni.ReadSNI(bytes.NewReader(allBytes))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if !bytes.Equal(peeked, allBytes) {
+		t.Errorf("peeked bytes mismatch")
+	}
+}
+
+func TestReadSNI_NonHandshakeRecordInMiddle(t *testing.T) {
+	want := "example.com"
+	hs := buildHandshakePayload(want)
+
+	rec1 := makeRecord(0x16, hs[:20])
+	rec2 := makeRecord(0x15, []byte{0x02, 0x28}) // Alert record (0x15) in the middle
+	allBytes := append(rec1, rec2...)
+
+	_, _, err := sni.ReadSNI(bytes.NewReader(allBytes))
+	if !errors.Is(err, sni.ErrNotTLS) {
+		t.Errorf("expected ErrNotTLS for non-handshake record in middle, got %v", err)
+	}
+}
+
+func TestReadSNI_OversizedHandshakeMessage(t *testing.T) {
+	// Construct record with handshake header claiming 40 KiB (> 32 KiB cap)
+	rec := makeRecord(0x16, []byte{
+		0x01,             // ClientHello
+		0x00, 0xa0, 0x00, // 40960 bytes
+		0x03, 0x03,
+	})
+
+	_, _, err := sni.ReadSNI(bytes.NewReader(rec))
+	if !errors.Is(err, sni.ErrMessageTooLarge) {
+		t.Errorf("expected ErrMessageTooLarge, got %v", err)
+	}
+}
+
+func TestReadSNI_TooManyFragments(t *testing.T) {
+	want := "fragment.limit.test"
+	hs := buildHandshakePayload(want)
+
+	// First record has 10 bytes (valid handshake header + some body)
+	var allBytes []byte
+	allBytes = append(allBytes, makeRecord(0x16, hs[:10])...)
+	pos := 10
+	// 7 more records with 2 bytes each (total 8 records so far)
+	for i := 0; i < 7; i++ {
+		allBytes = append(allBytes, makeRecord(0x16, hs[pos:pos+2])...)
+		pos += 2
+	}
+	// 9th record with remainder
+	allBytes = append(allBytes, makeRecord(0x16, hs[pos:])...)
+
+	_, _, err := sni.ReadSNI(bytes.NewReader(allBytes))
+	if !errors.Is(err, sni.ErrMessageTooLarge) {
+		t.Errorf("expected ErrMessageTooLarge when fragments exceed 8 records, got %v", err)
+	}
+}

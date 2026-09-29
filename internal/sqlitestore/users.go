@@ -109,6 +109,32 @@ func (s *Store) UpdateUserLastSeen(ctx context.Context, userID int64, lastSeen t
 	return err
 }
 
+// UpdateUsersLastSeen updates multiple users' last_seen_at timestamps in a single transaction.
+func (s *Store) UpdateUsersLastSeen(ctx context.Context, updates map[int64]time.Time) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `UPDATE users SET last_seen_at = ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for userID, lastSeen := range updates {
+		ts := FormatTime(lastSeen)
+		if _, err := stmt.ExecContext(ctx, ts, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // IsIPRegistered checks if an IP address is registered to any enabled user.
 func (s *Store) IsIPRegistered(ctx context.Context, ip string) (bool, error) {
 	var exists bool

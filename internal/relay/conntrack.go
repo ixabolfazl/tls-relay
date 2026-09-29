@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,17 +41,13 @@ type UserPresenceSummary struct {
 }
 
 type userPresenceState struct {
-	userID          int64
-	username        string
-	registeredIPs   map[string]struct{}
-	activeConns     int
-	firstActiveTime time.Time
-	lastSeenTime    time.Time
-}
-
-type lastSeenEvent struct {
-	userID   int64
-	lastSeen time.Time
+	userID           int64
+	username         string
+	registeredIPs    map[string]struct{}
+	activeConns      atomic.Int64
+	firstActiveNanos atomic.Int64 // unix nano, 0 when inactive
+	lastSeenNanos    atomic.Int64 // unix nano, 0 when never
+	dirty            atomic.Bool  // marks last-seen as pending DB flush
 }
 
 // DBUserStore is an interface for updating user last seen timestamps asynchronously.
@@ -58,60 +55,143 @@ type DBUserStore interface {
 	UpdateUserLastSeen(ctx context.Context, userID int64, lastSeen time.Time) error
 }
 
+// BatchLastSeenUpdater is an optional interface for updating user last seen timestamps in batch.
+type BatchLastSeenUpdater interface {
+	UpdateUsersLastSeen(ctx context.Context, updates map[int64]time.Time) error
+}
+
+type userMappingSnapshot struct {
+	ipToUser   map[string]int64
+	userStates map[int64]*userPresenceState
+}
+
+const numShards = 16
+
+type connShard struct {
+	mu    sync.Mutex
+	conns map[string]map[net.Conn]int64 // ip -> (conn -> resolvedUserID)
+}
+
+func shardIndex(ip string) int {
+	var h uint32 = 2166136261
+	for i := 0; i < len(ip); i++ {
+		h ^= uint32(ip[i])
+		h *= 16777619
+	}
+	return int(h % numShards)
+}
+
 // ConnTracker maintains a registry of all active TCP connections keyed by
 // client IP. It is used to forcibly close connections belonging to IPs that
 // are no longer permitted, and to track per-user live online presence.
 //
+// Lookups are lock-free; connection registration is sharded into 16 mutex-protected shards.
 // All methods are safe for concurrent use.
 type ConnTracker struct {
-	mu         sync.Mutex
-	conns      map[string]map[net.Conn]struct{} // ip → set of open conns
-	ipToUser   map[string]int64                 // ip → user_id
-	userState  map[int64]*userPresenceState     // user_id → user presence state
-	lastSeenCh chan lastSeenEvent
+	snapshot      atomic.Pointer[userMappingSnapshot]
+	shards        [numShards]connShard
+	masterMu      sync.Mutex
+	masterStates  map[int64]*userPresenceState
+	flushInterval atomic.Int64 // nanoseconds
 }
 
 // NewConnTracker creates a new ConnTracker.
 func NewConnTracker() *ConnTracker {
-	return &ConnTracker{
-		conns:      make(map[string]map[net.Conn]struct{}),
-		ipToUser:   make(map[string]int64),
-		userState:  make(map[int64]*userPresenceState),
-		lastSeenCh: make(chan lastSeenEvent, 256),
+	ct := &ConnTracker{
+		masterStates: make(map[int64]*userPresenceState),
 	}
+	for i := 0; i < numShards; i++ {
+		ct.shards[i].conns = make(map[string]map[net.Conn]int64)
+	}
+	ct.flushInterval.Store(int64(10 * time.Second))
+	initSnap := &userMappingSnapshot{
+		ipToUser:   make(map[string]int64),
+		userStates: make(map[int64]*userPresenceState),
+	}
+	ct.snapshot.Store(initSnap)
+	return ct
 }
 
-// StartLastSeenWriter starts a background worker that processes last seen updates asynchronously.
-func (ct *ConnTracker) StartLastSeenWriter(ctx context.Context, store DBUserStore) {
+// SetLastSeenFlushInterval configures the period between batch DB flushes.
+func (ct *ConnTracker) SetLastSeenFlushInterval(d time.Duration) {
+	ct.flushInterval.Store(int64(d))
+}
+
+// StartLastSeenWriter starts a background worker that processes last seen updates in batches.
+// Returns a done channel that closes when the worker finishes draining on shutdown.
+func (ct *ConnTracker) StartLastSeenWriter(ctx context.Context, store DBUserStore) <-chan struct{} {
+	done := make(chan struct{})
 	if store == nil {
-		return
+		close(done)
+		return done
 	}
 	go func() {
+		defer close(done)
+		interval := time.Duration(ct.flushInterval.Load())
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		flush := func(fCtx context.Context) {
+			dirtyUpdates := make(map[int64]time.Time)
+
+			snap := ct.snapshot.Load()
+			if snap != nil {
+				for uid, state := range snap.userStates {
+					if state.dirty.Swap(false) {
+						ls := state.lastSeenNanos.Load()
+						if ls > 0 {
+							dirtyUpdates[uid] = time.Unix(0, ls)
+						}
+					}
+				}
+			}
+
+			ct.masterMu.Lock()
+			for uid, state := range ct.masterStates {
+				if snap == nil || snap.userStates[uid] == nil {
+					if state.dirty.Swap(false) {
+						ls := state.lastSeenNanos.Load()
+						if ls > 0 {
+							dirtyUpdates[uid] = time.Unix(0, ls)
+						}
+					}
+				}
+			}
+			ct.masterMu.Unlock()
+
+			if len(dirtyUpdates) == 0 {
+				return
+			}
+
+			if batchStore, ok := store.(BatchLastSeenUpdater); ok {
+				if err := batchStore.UpdateUsersLastSeen(fCtx, dirtyUpdates); err != nil {
+					slog.Error("failed to batch update user last_seen_at in DB", "error", err)
+				}
+			} else {
+				for uid, ls := range dirtyUpdates {
+					if err := store.UpdateUserLastSeen(fCtx, uid, ls); err != nil {
+						slog.Error("failed to update user last_seen_at in DB", "user_id", uid, "error", err)
+					}
+				}
+			}
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-				defer cancel()
-				for {
-					select {
-					case ev, ok := <-ct.lastSeenCh:
-						if ok {
-							_ = store.UpdateUserLastSeen(shutdownCtx, ev.userID, ev.lastSeen)
-						}
-					default:
-						return
-					}
-				}
-			case ev, ok := <-ct.lastSeenCh:
-				if !ok {
-					return
-				}
-				if err := store.UpdateUserLastSeen(ctx, ev.userID, ev.lastSeen); err != nil {
-					slog.Error("failed to update user last_seen_at in DB", "user_id", ev.userID, "error", err)
-				}
+				flush(shutdownCtx)
+				cancel()
+				return
+			case <-ticker.C:
+				flush(ctx)
 			}
 		}
 	}()
+	return done
 }
 
 func canonicalIP(raw string) string {
@@ -129,29 +209,31 @@ func canonicalIP(raw string) string {
 }
 
 // SetUserMappings updates the in-memory mapping of IPs to Users.
+// User state objects are reused across swaps by user ID.
 func (ct *ConnTracker) SetUserMappings(users []UserMappingInfo) {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
+	ct.masterMu.Lock()
+	defer ct.masterMu.Unlock()
 
 	newIPToUser := make(map[string]int64)
 	newUserState := make(map[int64]*userPresenceState)
 
 	for _, u := range users {
-		existingState, exists := ct.userState[u.UserID]
-		state := &userPresenceState{
-			userID:        u.UserID,
-			username:      u.Username,
-			registeredIPs: make(map[string]struct{}),
-		}
-
-		if exists {
-			state.activeConns = existingState.activeConns
-			state.firstActiveTime = existingState.firstActiveTime
-			state.lastSeenTime = existingState.lastSeenTime
-		} else if u.LastSeenAt != "" {
-			if parsed, err := parseTime(u.LastSeenAt); err == nil {
-				state.lastSeenTime = parsed
+		state, exists := ct.masterStates[u.UserID]
+		if !exists {
+			state = &userPresenceState{
+				userID:        u.UserID,
+				username:      u.Username,
+				registeredIPs: make(map[string]struct{}),
 			}
+			if u.LastSeenAt != "" {
+				if parsed, err := parseTime(u.LastSeenAt); err == nil && !parsed.IsZero() {
+					state.lastSeenNanos.Store(parsed.UnixNano())
+				}
+			}
+			ct.masterStates[u.UserID] = state
+		} else {
+			state.username = u.Username
+			state.registeredIPs = make(map[string]struct{})
 		}
 
 		for _, rawIP := range u.IPs {
@@ -164,22 +246,39 @@ func (ct *ConnTracker) SetUserMappings(users []UserMappingInfo) {
 		newUserState[u.UserID] = state
 	}
 
-	ct.ipToUser = newIPToUser
-	ct.userState = newUserState
+	newSnap := &userMappingSnapshot{
+		ipToUser:   newIPToUser,
+		userStates: newUserState,
+	}
+	ct.snapshot.Store(newSnap)
+}
+
+func (ct *ConnTracker) getUserState(userID int64) *userPresenceState {
+	snap := ct.snapshot.Load()
+	if snap != nil {
+		if st, ok := snap.userStates[userID]; ok {
+			return st
+		}
+	}
+	ct.masterMu.Lock()
+	defer ct.masterMu.Unlock()
+	return ct.masterStates[userID]
 }
 
 // LookupUser checks if the given client IP belongs to a registered user.
 // Returns (userID, username, true) if found, otherwise (0, "", false).
+// This is completely lock-free via atomic snapshot read.
 func (ct *ConnTracker) LookupUser(ip string) (int64, string, bool) {
 	normIP := canonicalIP(ip)
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-
-	userID, ok := ct.ipToUser[normIP]
+	snap := ct.snapshot.Load()
+	if snap == nil {
+		return 0, "", false
+	}
+	userID, ok := snap.ipToUser[normIP]
 	if !ok {
 		return 0, "", false
 	}
-	state, ok := ct.userState[userID]
+	state, ok := snap.userStates[userID]
 	if !ok {
 		return userID, "", true
 	}
@@ -188,63 +287,71 @@ func (ct *ConnTracker) LookupUser(ip string) (int64, string, bool) {
 
 // Register records conn as an active connection for the given client IP
 // and updates user presence state if the IP belongs to a registered user.
+// The resolved user ID is bound to the connection record.
 func (ct *ConnTracker) Register(ip string, conn net.Conn) {
 	normIP := canonicalIP(ip)
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-
-	if ct.conns[normIP] == nil {
-		ct.conns[normIP] = make(map[net.Conn]struct{})
+	snap := ct.snapshot.Load()
+	var userID int64
+	if snap != nil {
+		userID = snap.ipToUser[normIP]
 	}
-	ct.conns[normIP][conn] = struct{}{}
 
-	if userID, ok := ct.ipToUser[normIP]; ok {
-		if state, ok := ct.userState[userID]; ok {
+	idx := shardIndex(normIP)
+	shard := &ct.shards[idx]
+	shard.mu.Lock()
+	if shard.conns[normIP] == nil {
+		shard.conns[normIP] = make(map[net.Conn]int64)
+	}
+	shard.conns[normIP][conn] = userID
+	shard.mu.Unlock()
+
+	if userID > 0 {
+		if state := ct.getUserState(userID); state != nil {
 			now := time.Now()
-			state.activeConns++
-			if state.activeConns == 1 {
-				state.firstActiveTime = now
+			newConns := state.activeConns.Add(1)
+			if newConns == 1 {
+				state.firstActiveNanos.Store(now.UnixNano())
 			}
-			state.lastSeenTime = now
-
-			select {
-			case ct.lastSeenCh <- lastSeenEvent{userID: userID, lastSeen: now}:
-			default:
-			}
+			state.lastSeenNanos.Store(now.UnixNano())
+			state.dirty.Store(true)
 		}
 	}
 }
 
-// Unregister removes conn from the tracker and updates user presence state.
+// Unregister removes conn from the tracker and decrements the user counter
+// for the user resolved at Register time (preventing ghost "Online" users).
 func (ct *ConnTracker) Unregister(ip string, conn net.Conn) {
 	normIP := canonicalIP(ip)
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
+	idx := shardIndex(normIP)
+	shard := &ct.shards[idx]
 
-	set := ct.conns[normIP]
-	if set != nil {
-		delete(set, conn)
-		if len(set) == 0 {
-			delete(ct.conns, normIP)
+	shard.mu.Lock()
+	var resolvedUserID int64
+	var found bool
+	if set := shard.conns[normIP]; set != nil {
+		if uid, ok := set[conn]; ok {
+			resolvedUserID = uid
+			found = true
+			delete(set, conn)
+			if len(set) == 0 {
+				delete(shard.conns, normIP)
+			}
 		}
 	}
+	shard.mu.Unlock()
 
-	if userID, ok := ct.ipToUser[normIP]; ok {
-		if state, ok := ct.userState[userID]; ok {
+	if found && resolvedUserID > 0 {
+		if state := ct.getUserState(resolvedUserID); state != nil {
+			newConns := state.activeConns.Add(-1)
+			if newConns < 0 {
+				state.activeConns.Store(0)
+				newConns = 0
+			}
 			now := time.Now()
-			if state.activeConns > 0 {
-				state.activeConns--
-			}
-			state.lastSeenTime = now
-			if state.activeConns == 0 {
-				state.firstActiveTime = time.Time{}
-			}
-
-			// Queue async DB write without blocking TCP connection thread.
-			select {
-			case ct.lastSeenCh <- lastSeenEvent{userID: userID, lastSeen: now}:
-			default:
-				slog.Warn("lastSeenCh worker queue is full; skipping DB write queue", "user_id", userID)
+			state.lastSeenNanos.Store(now.UnixNano())
+			state.dirty.Store(true)
+			if newConns == 0 {
+				state.firstActiveNanos.Store(0)
 			}
 		}
 	}
@@ -253,16 +360,23 @@ func (ct *ConnTracker) Unregister(ip string, conn net.Conn) {
 // EvictNotAllowed closes every active connection whose client IP is NOT present
 // in the allowedIPs set.
 func (ct *ConnTracker) EvictNotAllowed(allowedIPs map[string]struct{}) {
-	ct.mu.Lock()
 	var toClose []net.Conn
-	for ip, set := range ct.conns {
-		if _, ok := allowedIPs[ip]; !ok {
-			for conn := range set {
-				toClose = append(toClose, conn)
+	for i := 0; i < numShards; i++ {
+		shard := &ct.shards[i]
+		shard.mu.Lock()
+		for ip, set := range shard.conns {
+			if allowedIPs == nil {
+				for conn := range set {
+					toClose = append(toClose, conn)
+				}
+			} else if _, ok := allowedIPs[ip]; !ok {
+				for conn := range set {
+					toClose = append(toClose, conn)
+				}
 			}
 		}
+		shard.mu.Unlock()
 	}
-	ct.mu.Unlock()
 
 	for _, conn := range toClose {
 		_ = conn.Close()
@@ -274,17 +388,20 @@ func (ct *ConnTracker) EvictBlacklisted(isBlacklisted func(net.IP) bool) {
 	if isBlacklisted == nil {
 		return
 	}
-	ct.mu.Lock()
 	var toClose []net.Conn
-	for ipStr, set := range ct.conns {
-		ip := net.ParseIP(ipStr)
-		if ip != nil && isBlacklisted(ip) {
-			for conn := range set {
-				toClose = append(toClose, conn)
+	for i := 0; i < numShards; i++ {
+		shard := &ct.shards[i]
+		shard.mu.Lock()
+		for ipStr, set := range shard.conns {
+			ip := net.ParseIP(ipStr)
+			if ip != nil && isBlacklisted(ip) {
+				for conn := range set {
+					toClose = append(toClose, conn)
+				}
 			}
 		}
+		shard.mu.Unlock()
 	}
-	ct.mu.Unlock()
 
 	for _, conn := range toClose {
 		_ = conn.Close()
@@ -293,43 +410,61 @@ func (ct *ConnTracker) EvictBlacklisted(isBlacklisted func(net.IP) bool) {
 
 // ActiveCount returns the total number of currently tracked TCP connections.
 func (ct *ConnTracker) ActiveCount() int {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
 	total := 0
-	for _, set := range ct.conns {
-		total += len(set)
+	for i := 0; i < numShards; i++ {
+		shard := &ct.shards[i]
+		shard.mu.Lock()
+		for _, set := range shard.conns {
+			total += len(set)
+		}
+		shard.mu.Unlock()
 	}
 	return total
 }
 
 // GetPresenceStats returns current aggregate metrics and user list for presence tracking.
 func (ct *ConnTracker) GetPresenceStats() UserPresenceSummary {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
+	snap := ct.snapshot.Load()
+	userCount := 0
+	if snap != nil {
+		userCount = len(snap.userStates)
+	}
 
 	summary := UserPresenceSummary{
-		Users: make([]UserPresenceDTO, 0, len(ct.userState)),
+		Users: make([]UserPresenceDTO, 0, userCount),
 	}
 
 	userActiveIPs := make(map[int64]map[string]struct{})
 	summary.ActiveConnections = 0
-	for ip, set := range ct.conns {
-		if len(set) > 0 {
-			summary.ActiveConnections += len(set)
-			if userID, ok := ct.ipToUser[ip]; ok {
-				if userActiveIPs[userID] == nil {
-					userActiveIPs[userID] = make(map[string]struct{})
+
+	for i := 0; i < numShards; i++ {
+		shard := &ct.shards[i]
+		shard.mu.Lock()
+		for ip, set := range shard.conns {
+			if len(set) > 0 {
+				summary.ActiveConnections += len(set)
+				for _, uid := range set {
+					if uid > 0 {
+						if userActiveIPs[uid] == nil {
+							userActiveIPs[uid] = make(map[string]struct{})
+						}
+						userActiveIPs[uid][ip] = struct{}{}
+					}
 				}
-				userActiveIPs[userID][ip] = struct{}{}
 			}
 		}
+		shard.mu.Unlock()
 	}
 
-	for _, state := range ct.userState {
-		summary.TotalUsers++
+	if snap == nil {
+		return summary
+	}
 
+	for _, state := range snap.userStates {
+		summary.TotalUsers++
+		active := int(state.activeConns.Load())
 		status := "Offline"
-		if state.activeConns > 0 {
+		if active > 0 {
 			status = "Online"
 			summary.TotalOnline++
 		} else {
@@ -351,13 +486,13 @@ func (ct *ConnTracker) GetPresenceStats() UserPresenceSummary {
 		}
 
 		firstActiveStr := ""
-		if !state.firstActiveTime.IsZero() {
-			firstActiveStr = state.firstActiveTime.UTC().Format(time.RFC3339)
+		if fa := state.firstActiveNanos.Load(); fa > 0 {
+			firstActiveStr = time.Unix(0, fa).UTC().Format(time.RFC3339)
 		}
 
 		lastSeenStr := ""
-		if !state.lastSeenTime.IsZero() {
-			lastSeenStr = state.lastSeenTime.UTC().Format(time.RFC3339)
+		if ls := state.lastSeenNanos.Load(); ls > 0 {
+			lastSeenStr = time.Unix(0, ls).UTC().Format(time.RFC3339)
 		}
 
 		summary.Users = append(summary.Users, UserPresenceDTO{
@@ -366,7 +501,7 @@ func (ct *ConnTracker) GetPresenceStats() UserPresenceSummary {
 			RegisteredIPs:     ips,
 			ActiveIPs:         activeIPs,
 			Status:            status,
-			ActiveConnections: state.activeConns,
+			ActiveConnections: active,
 			FirstActiveAt:     firstActiveStr,
 			LastSeenAt:        lastSeenStr,
 		})

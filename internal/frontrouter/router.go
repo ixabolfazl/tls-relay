@@ -43,6 +43,7 @@ type Router struct {
 	usageTracker *relay.UsageTracker
 	stats        *reqstats.Collector
 	relayServer  *httprelay.Server
+	connCtx      context.Context
 }
 
 // New constructs a new FrontRouter.
@@ -100,6 +101,14 @@ func (r *Router) SetCustomDialer(fn func(ctx context.Context, network, addr stri
 	}
 }
 
+// SetConnContext sets the connection context for graceful draining.
+func (r *Router) SetConnContext(ctx context.Context) {
+	r.connCtx = ctx
+	if r.relayServer != nil {
+		r.relayServer.SetConnContext(ctx)
+	}
+}
+
 // ServeListener accepts connections from ln and dispatches them until ctx is cancelled.
 // connWG tracks in-flight connection processing for graceful shutdown.
 func (r *Router) ServeListener(ctx context.Context, ln net.Listener, connWG *sync.WaitGroup) error {
@@ -139,6 +148,11 @@ func (r *Router) ServeListener(ctx context.Context, ln net.Listener, connWG *syn
 
 		relay.SetTCPKeepalive(conn, r.cfg.Timeouts.TCPKeepalive.Duration)
 
+		connCtx := r.connCtx
+		if connCtx == nil {
+			connCtx = ctx
+		}
+
 		if connWG != nil {
 			connWG.Add(1)
 		}
@@ -146,7 +160,7 @@ func (r *Router) ServeListener(ctx context.Context, ln net.Listener, connWG *syn
 			if connWG != nil {
 				defer connWG.Done()
 			}
-			r.dispatchConn(ctx, conn, pln)
+			r.dispatchConn(connCtx, conn, pln)
 		}()
 	}
 }

@@ -1,8 +1,11 @@
 package relay
 
 import (
+	"context"
+	"errors"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestSecurityChecker_IsBlocked(t *testing.T) {
@@ -164,5 +167,97 @@ func TestSecurityChecker_AddOwnIPs(t *testing.T) {
 	}
 	if reason := sc.isBlocked(net.ParseIP("::ffff:" + testIP)); reason != "own_ip" {
 		t.Fatalf("expected own_ip for mapped %s, got %q", testIP, reason)
+	}
+}
+
+func TestSecurityChecker_ResolveAndValidateAll_Cache(t *testing.T) {
+	sc, err := NewSecurityChecker(true, false, nil)
+	if err != nil {
+		t.Fatalf("NewSecurityChecker: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Seed cache directly to test hit without real DNS dependency
+	cachedIPs := []net.IP{net.ParseIP("93.184.216.34")}
+	sc.setCache("example.com", dnsCacheEntry{
+		ips:       cachedIPs,
+		expiresAt: time.Now().Add(30 * time.Second),
+	})
+
+	ips, reason, err := sc.ResolveAndValidateAll(ctx, "EXAMPLE.COM")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+	if len(ips) != 1 || !ips[0].Equal(cachedIPs[0]) {
+		t.Fatalf("expected cached IP %v, got %v", cachedIPs, ips)
+	}
+
+	// Negative cache hit
+	sc.setCache("blocked.local", dnsCacheEntry{
+		reason:    "private",
+		expiresAt: time.Now().Add(10 * time.Second),
+	})
+	ips, reason, err = sc.ResolveAndValidateAll(ctx, "blocked.local")
+	if err != nil || reason != "private" || len(ips) != 0 {
+		t.Fatalf("expected negative cache reason private, got (%v, %s, %v)", ips, reason, err)
+	}
+}
+
+func TestDialAny_MultiIPAttempts(t *testing.T) {
+	ctx := context.Background()
+
+	ip1 := net.ParseIP("192.0.2.1")
+	ip2 := net.ParseIP("192.0.2.2")
+	ip3 := net.ParseIP("192.0.2.3")
+
+	var attempted []string
+	dial := func(dCtx context.Context, network, addr string) (net.Conn, error) {
+		attempted = append(attempted, addr)
+		if addr == "192.0.2.2:443" {
+			c1, _ := net.Pipe()
+			return c1, nil
+		}
+		return nil, errors.New("dial failed")
+	}
+
+	conn, err := DialAny(ctx, []net.IP{ip1, ip2, ip3}, 443, dial)
+	if err != nil {
+		t.Fatalf("expected success on second IP, got: %v", err)
+	}
+	defer conn.Close()
+
+	if len(attempted) != 2 {
+		t.Fatalf("expected 2 attempts before success, got %d (%v)", len(attempted), attempted)
+	}
+	if attempted[0] != "192.0.2.1:443" || attempted[1] != "192.0.2.2:443" {
+		t.Fatalf("unexpected attempted addresses: %v", attempted)
+	}
+}
+
+func TestDialAny_MaxThreeAddresses(t *testing.T) {
+	ctx := context.Background()
+	ips := []net.IP{
+		net.ParseIP("192.0.2.1"),
+		net.ParseIP("192.0.2.2"),
+		net.ParseIP("192.0.2.3"),
+		net.ParseIP("192.0.2.4"),
+	}
+
+	var attempts int
+	dial := func(dCtx context.Context, network, addr string) (net.Conn, error) {
+		attempts++
+		return nil, errors.New("fail")
+	}
+
+	conn, err := DialAny(ctx, ips, 80, dial)
+	if conn != nil || err == nil {
+		t.Fatalf("expected dial to fail for all")
+	}
+	if attempts != 3 {
+		t.Fatalf("expected at most 3 attempts, got %d", attempts)
 	}
 }

@@ -36,6 +36,7 @@ type Server struct {
 	usageTracker *relay.UsageTracker
 	stats        *reqstats.Collector
 	customDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+	connCtx      context.Context
 }
 
 // NewServer constructs a new HTTP relay server.
@@ -83,6 +84,11 @@ func (s *Server) SetCustomDialer(fn func(ctx context.Context, network, addr stri
 	s.customDialer = fn
 }
 
+// SetConnContext sets the connection context for graceful draining.
+func (s *Server) SetConnContext(ctx context.Context) {
+	s.connCtx = ctx
+}
+
 func (s *Server) egressMode() string {
 	if s.egressDialer != nil {
 		return s.egressDialer.Mode()
@@ -124,10 +130,15 @@ func (s *Server) ListenAndServe(ctx context.Context, wg *sync.WaitGroup) error {
 
 		relay.SetTCPKeepalive(conn, s.cfg.Timeouts.TCPKeepalive.Duration)
 
+		connCtx := s.connCtx
+		if connCtx == nil {
+			connCtx = ctx
+		}
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.HandleConn(ctx, conn, nil, "")
+			s.HandleConn(connCtx, conn, nil, "")
 		}()
 	}
 }
@@ -363,7 +374,7 @@ func (s *Server) handleConn(
 	// -----------------------------------------------------------------------
 	// 5. SSRF / internal IP validation
 	// -----------------------------------------------------------------------
-	destIP, reason, err := s.security.ResolveAndValidate(host)
+	destIPs, reason, err := s.security.ResolveAndValidateAll(ctx, host)
 	if err != nil {
 		fields.Status = "rejected_dns"
 		slog.Warn("http connection rejected: DNS error", "client_ip", clientIP, "host", host, "error", err)
@@ -375,24 +386,28 @@ func (s *Server) handleConn(
 			"client_ip", clientIP, "host", host, "reason", reason)
 		return
 	}
-	fields.DestIP = destIP.String()
+	if len(destIPs) > 0 {
+		fields.DestIP = destIPs[0].String()
+	}
 
 	// -----------------------------------------------------------------------
 	// 6. Dial destination
 	// -----------------------------------------------------------------------
-	dialAddr := relay.AddrForIP(destIP, s.port)
-	var destConn net.Conn
-	if s.customDialer != nil {
-		destConn, err = s.customDialer(ctx, "tcp", dialAddr)
-	} else if s.egressDialer != nil {
-		destConn, err = s.egressDialer.DialContextWithOverride(ctx, "tcp", dialAddr, ruleUseProxy)
-	} else {
+	dialFunc := func(dCtx context.Context, network, addr string) (net.Conn, error) {
+		if s.customDialer != nil {
+			return s.customDialer(dCtx, network, addr)
+		}
+		if s.egressDialer != nil {
+			return s.egressDialer.DialContextWithOverride(dCtx, network, addr, ruleUseProxy)
+		}
 		var dialer net.Dialer
-		destConn, err = dialer.DialContext(ctx, "tcp", dialAddr)
+		return dialer.DialContext(dCtx, network, addr)
 	}
+
+	destConn, err := relay.DialAny(ctx, destIPs, s.port, dialFunc)
 	if err != nil {
 		fields.Status = "rejected_dial"
-		slog.Warn("http connection rejected: dial failed", "client_ip", clientIP, "host", host, "addr", dialAddr, "error", err)
+		slog.Warn("http connection rejected: dial failed", "client_ip", clientIP, "host", host, "error", err)
 		return
 	}
 	relay.SetTCPKeepalive(destConn, s.cfg.Timeouts.TCPKeepalive.Duration)
@@ -409,7 +424,7 @@ func (s *Server) handleConn(
 
 	fields.Status = "connected"
 	slog.Info("http relay established",
-		"client_ip", clientIP, "host", host, "dest", dialAddr)
+		"client_ip", clientIP, "host", host, "dest", destConn.RemoteAddr().String())
 
 	// -----------------------------------------------------------------------
 	// 8. Bidirectional pipe with in-flight usage accounting

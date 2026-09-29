@@ -37,6 +37,8 @@ type Server struct {
 	logger       *requestlog.Logger
 	usageTracker *UsageTracker
 	stats        *reqstats.Collector
+	customDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+	connCtx      context.Context
 }
 
 // NewServer constructs a relay Server for a specific port.
@@ -62,6 +64,16 @@ func NewServer(
 		egressDialer: egressDialer,
 		connTracker:  connTracker,
 	}
+}
+
+// SetCustomDialer sets a custom dialer function on the relay server (useful for tests).
+func (s *Server) SetCustomDialer(fn func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	s.customDialer = fn
+}
+
+// SetConnContext sets the context used for managing active connections.
+func (s *Server) SetConnContext(ctx context.Context) {
+	s.connCtx = ctx
 }
 
 // SetLogger sets the request log system for the relay server.
@@ -131,6 +143,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, wg *sync.WaitGroup)
 		// faster than the idle timeout, preventing ghost-online presence entries.
 		SetTCPKeepalive(conn, s.cfg.Timeouts.TCPKeepalive.Duration)
 
+		connCtx := s.connCtx
+		if connCtx == nil {
+			connCtx = ctx
+		}
+
 		if wg != nil {
 			wg.Add(1)
 		}
@@ -138,7 +155,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, wg *sync.WaitGroup)
 			if wg != nil {
 				defer wg.Done()
 			}
-			s.handleConn(ctx, conn)
+			s.handleConn(connCtx, conn)
 		}()
 	}
 }
@@ -344,7 +361,7 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 	// -----------------------------------------------------------------------
 	// 5. SSRF / internal IP validation
 	// -----------------------------------------------------------------------
-	destIP, reason, err := s.security.ResolveAndValidate(hostname)
+	destIPs, reason, err := s.security.ResolveAndValidateAll(ctx, hostname)
 	if err != nil {
 		fields.Status = "rejected_dns"
 		slog.Warn("connection rejected: DNS error", "client_ip", clientIP, "sni", hostname, "error", err)
@@ -356,22 +373,28 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 			"client_ip", clientIP, "sni", hostname, "reason", reason)
 		return
 	}
-	fields.DestIP = destIP.String()
+	if len(destIPs) > 0 {
+		fields.DestIP = destIPs[0].String()
+	}
 
 	// -----------------------------------------------------------------------
 	// 6. Dial destination (by validated IP to prevent DNS rebinding)
 	// -----------------------------------------------------------------------
-	dialAddr := AddrForIP(destIP, s.port)
-	var destConn net.Conn
-	if s.egressDialer != nil {
-		destConn, err = s.egressDialer.DialContextWithOverride(ctx, "tcp", dialAddr, ruleUseProxy)
-	} else {
+	dialFunc := func(dCtx context.Context, network, addr string) (net.Conn, error) {
+		if s.egressDialer != nil {
+			return s.egressDialer.DialContextWithOverride(dCtx, network, addr, ruleUseProxy)
+		}
+		if s.customDialer != nil {
+			return s.customDialer(dCtx, network, addr)
+		}
 		var dialer net.Dialer
-		destConn, err = dialer.DialContext(ctx, "tcp", dialAddr)
+		return dialer.DialContext(dCtx, network, addr)
 	}
+
+	destConn, err := DialAny(ctx, destIPs, s.port, dialFunc)
 	if err != nil {
 		fields.Status = "rejected_dial"
-		slog.Warn("connection rejected: dial failed", "client_ip", clientIP, "sni", hostname, "addr", dialAddr, "error", err)
+		slog.Warn("connection rejected: dial failed", "client_ip", clientIP, "sni", hostname, "error", err)
 		return
 	}
 	// Apply TCP keepalive on directly-dialed destination connections too.
@@ -391,7 +414,7 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 
 	fields.Status = "connected"
 	slog.Info("relay established",
-		"client_ip", clientIP, "sni", hostname, "dest", dialAddr)
+		"client_ip", clientIP, "sni", hostname, "dest", destConn.RemoteAddr().String())
 
 	// -----------------------------------------------------------------------
 	// 8. Bidirectional pipe with idle + max-duration timeouts & in-flight usage accounting
@@ -423,6 +446,9 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 	fields.Status = "closed"
 }
 
+// HalfCloseTimeout is the maximum duration to wait for the other direction after clean EOF.
+var HalfCloseTimeout = 60 * time.Second
+
 // Pipe runs a bidirectional copy between client and dest, enforcing idle and
 // max-duration timeouts. It blocks until both directions are done.
 func Pipe(
@@ -437,39 +463,107 @@ func Pipe(
 		progressCb = onProgress[0]
 	}
 
-	// If max connection duration is set, enforce it via a deadline on both conns.
-	if maxDuration > 0 {
-		deadline := time.Now().Add(maxDuration)
-		_ = client.SetDeadline(deadline)
-		_ = dest.SetDeadline(deadline)
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			_ = client.Close()
+			_ = dest.Close()
+		})
 	}
+
+	// MaxConnectionDuration enforced via time.AfterFunc, not SetDeadline.
+	if maxDuration > 0 {
+		timer := time.AfterFunc(maxDuration, closeBoth)
+		defer timer.Stop()
+	}
+
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+
+	ctxDone := make(chan struct{})
+	// If context is cancelled (shutdown), close both connections immediately.
+	go func() {
+		select {
+		case <-ctx.Done():
+			closeBoth()
+		case <-ctxDone:
+		}
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// client → destination
-	go func() {
+	copyDir := func(dst, src net.Conn, counter *atomic.Int64, halfClose func()) {
 		defer wg.Done()
-		_, _ = CopyWithIdle(dest, client, idleTimeout, bytesSent)
-		// Half-close: signal EOF to destination.
+		bufPtr := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufPtr)
+		buf := *bufPtr
+
+		for {
+			if idleTimeout > 0 {
+				_ = src.SetReadDeadline(time.Now().Add(idleTimeout))
+			}
+
+			nr, readErr := src.Read(buf)
+			if nr > 0 {
+				lastActivity.Store(time.Now().UnixNano())
+				if idleTimeout > 0 {
+					_ = dst.SetWriteDeadline(time.Now().Add(idleTimeout))
+				}
+				nw, writeErr := dst.Write(buf[:nr])
+				if nw > 0 {
+					lastActivity.Store(time.Now().UnixNano())
+					if counter != nil {
+						counter.Add(int64(nw))
+					}
+				}
+				if writeErr != nil {
+					closeBoth()
+					return
+				}
+			}
+
+			if readErr != nil {
+				if readErr == io.EOF {
+					halfClose()
+					time.AfterFunc(HalfCloseTimeout, closeBoth)
+					return
+				}
+
+				if IsTimeout(readErr) && idleTimeout > 0 {
+					last := time.Unix(0, lastActivity.Load())
+					if time.Since(last) < idleTimeout {
+						// Other direction was active recently: re-arm and continue
+						continue
+					}
+				}
+
+				// Non-EOF error (reset, real timeout, etc.) closes both immediately
+				closeBoth()
+				return
+			}
+		}
+	}
+
+	// client → destination
+	go copyDir(dest, client, bytesSent, func() {
 		if tc, ok := dest.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
+		} else if cw, ok := dest.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
 		}
-	}()
+	})
 
 	// destination → client
-	go func() {
-		defer wg.Done()
-		_, _ = CopyWithIdle(client, dest, idleTimeout, bytesReceived)
-		// Half-close: signal EOF to client.
+	go copyDir(client, dest, bytesReceived, func() {
 		if tc, ok := client.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
+		} else if cw, ok := client.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
 		}
-	}()
+	})
 
-	ctxDone := make(chan struct{})
 	tickerDone := make(chan struct{})
-
 	if progressCb != nil {
 		go func() {
 			ticker := time.NewTicker(3 * time.Second)
@@ -501,18 +595,9 @@ func Pipe(
 		}()
 	}
 
-	// If context is cancelled (shutdown), close both connections immediately.
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = client.Close()
-			_ = dest.Close()
-		case <-ctxDone:
-		}
-	}()
-
 	wg.Wait()
 	close(ctxDone)
+	closeBoth()
 	if progressCb != nil {
 		close(tickerDone)
 	}

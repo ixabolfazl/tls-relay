@@ -2,12 +2,17 @@
 package relay
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // PortAllowList is a thread-safe set of destination ports that the relay is
@@ -73,6 +78,13 @@ func (pal *PortAllowList) Ports() []int {
 // SSRF / internal-network guard
 // -----------------------------------------------------------------------
 
+type dnsCacheEntry struct {
+	ips       []net.IP
+	reason    string
+	err       error
+	expiresAt time.Time
+}
+
 // SecurityChecker holds the configuration for IP-level validation.
 type SecurityChecker struct {
 	mu           sync.RWMutex
@@ -83,6 +95,10 @@ type SecurityChecker struct {
 
 	// CGNAT: 100.64.0.0/10
 	cgnat *net.IPNet
+
+	sf       singleflight.Group
+	cacheMu  sync.RWMutex
+	dnsCache map[string]dnsCacheEntry
 }
 
 var blockedPrivateCIDRs = func() []*net.IPNet {
@@ -117,6 +133,7 @@ func NewSecurityChecker(blockPrivate, blockOwn bool, extraCIDRs []string) (*Secu
 		blockOwn:     blockOwn,
 		cgnat:        cgnat,
 		ownIPs:       make(map[string]struct{}),
+		dnsCache:     make(map[string]dnsCacheEntry),
 	}
 
 	for _, cidr := range extraCIDRs {
@@ -263,55 +280,158 @@ func (sc *SecurityChecker) isBlocked(ip net.IP) string {
 	return ""
 }
 
-// ResolveAndValidate resolves hostname to IP addresses, validates each one,
-// and returns the first safe IP to dial (as a string) plus an error if all are
-// blocked or DNS fails.
+func (sc *SecurityChecker) getCache(host string) (dnsCacheEntry, bool) {
+	sc.cacheMu.RLock()
+	defer sc.cacheMu.RUnlock()
+	entry, ok := sc.dnsCache[host]
+	if !ok || time.Now().After(entry.expiresAt) {
+		return dnsCacheEntry{}, false
+	}
+	return entry, true
+}
+
+func (sc *SecurityChecker) setCache(host string, entry dnsCacheEntry) {
+	sc.cacheMu.Lock()
+	defer sc.cacheMu.Unlock()
+
+	const maxEntries = 10000
+	if len(sc.dnsCache) >= maxEntries {
+		now := time.Now()
+		// Evict expired first
+		for k, v := range sc.dnsCache {
+			if now.After(v.expiresAt) {
+				delete(sc.dnsCache, k)
+			}
+		}
+		// If still at capacity, evict arbitrary entries
+		if len(sc.dnsCache) >= maxEntries {
+			for k := range sc.dnsCache {
+				delete(sc.dnsCache, k)
+				if len(sc.dnsCache) < 9500 {
+					break
+				}
+			}
+		}
+	}
+	sc.dnsCache[host] = entry
+}
+
+// ResolveAndValidateAll resolves hostname to IP addresses, validates each one,
+// and returns all safe IPs ordered IPv4 first, then IPv6.
 //
-// To defend against DNS rebinding: we resolve once, validate all returned IPs,
-// and return the specific validated IP so the caller dials by IP (not hostname).
+// Defends against DNS rebinding by resolving once, validating all IPs, and returning
+// validated IPs so the caller dials by IP.
+// Results are cached for 30s (validated) or 10s (errors/blocked), bounded to 10k entries,
+// and deduped with singleflight.
+func (sc *SecurityChecker) ResolveAndValidateAll(ctx context.Context, hostname string) (ips []net.IP, reason string, err error) {
+	normHost := strings.ToLower(strings.TrimSpace(hostname))
+	if normHost == "" {
+		return nil, "", errors.New("empty hostname")
+	}
+
+	if entry, ok := sc.getCache(normHost); ok {
+		if entry.err != nil {
+			return nil, "", entry.err
+		}
+		if entry.reason != "" {
+			return nil, entry.reason, nil
+		}
+		res := make([]net.IP, len(entry.ips))
+		copy(res, entry.ips)
+		return res, "", nil
+	}
+
+	val, sfErr, _ := sc.sf.Do(normHost, func() (any, error) {
+		if entry, ok := sc.getCache(normHost); ok {
+			return entry, nil
+		}
+
+		lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+
+		addrs, err := net.DefaultResolver.LookupIPAddr(lookupCtx, normHost)
+		if err != nil {
+			entry := dnsCacheEntry{
+				err:       fmt.Errorf("DNS lookup for %q failed: %w", normHost, err),
+				expiresAt: time.Now().Add(10 * time.Second),
+			}
+			sc.setCache(normHost, entry)
+			return entry, nil
+		}
+		if len(addrs) == 0 {
+			entry := dnsCacheEntry{
+				err:       fmt.Errorf("DNS lookup for %q returned no addresses", normHost),
+				expiresAt: time.Now().Add(10 * time.Second),
+			}
+			sc.setCache(normHost, entry)
+			return entry, nil
+		}
+
+		var v4List, v6List []net.IP
+		for _, addr := range addrs {
+			parsedIP := addr.IP
+			if parsedIP == nil {
+				continue
+			}
+			if v4 := parsedIP.To4(); v4 != nil {
+				v4List = append(v4List, v4)
+			} else {
+				v6List = append(v6List, parsedIP)
+			}
+		}
+		sortedIPs := append(v4List, v6List...)
+		if len(sortedIPs) == 0 {
+			entry := dnsCacheEntry{
+				reason:    "no_valid_ip",
+				expiresAt: time.Now().Add(10 * time.Second),
+			}
+			sc.setCache(normHost, entry)
+			return entry, nil
+		}
+
+		// Security rule: if ANY returned IP is blocked, reject the whole host.
+		for _, ip := range sortedIPs {
+			if r := sc.isBlocked(ip); r != "" {
+				entry := dnsCacheEntry{
+					reason:    r,
+					expiresAt: time.Now().Add(10 * time.Second),
+				}
+				sc.setCache(normHost, entry)
+				return entry, nil
+			}
+		}
+
+		entry := dnsCacheEntry{
+			ips:       sortedIPs,
+			expiresAt: time.Now().Add(30 * time.Second),
+		}
+		sc.setCache(normHost, entry)
+		return entry, nil
+	})
+
+	if sfErr != nil {
+		return nil, "", sfErr
+	}
+	entry := val.(dnsCacheEntry)
+	if entry.err != nil {
+		return nil, "", entry.err
+	}
+	if entry.reason != "" {
+		return nil, entry.reason, nil
+	}
+	res := make([]net.IP, len(entry.ips))
+	copy(res, entry.ips)
+	return res, "", nil
+}
+
+// ResolveAndValidate resolves hostname and returns the first safe IP to dial.
+// Wrapper around ResolveAndValidateAll for backwards compatibility with tests.
 func (sc *SecurityChecker) ResolveAndValidate(hostname string) (ip net.IP, reason string, err error) {
-	addrs, err := net.LookupHost(hostname)
-	if err != nil {
-		return nil, "", fmt.Errorf("DNS lookup for %q failed: %w", hostname, err)
+	ips, reason, err := sc.ResolveAndValidateAll(context.Background(), hostname)
+	if err != nil || reason != "" || len(ips) == 0 {
+		return nil, reason, err
 	}
-	if len(addrs) == 0 {
-		return nil, "", fmt.Errorf("DNS lookup for %q returned no addresses", hostname)
-	}
-
-	// Validate every resolved IP; collect first safe IP.
-	var firstSafe net.IP
-	for _, addr := range addrs {
-		parsedIP := net.ParseIP(addr)
-		if parsedIP == nil {
-			continue
-		}
-		// Normalise to 16-byte form for consistent comparison.
-		if v4 := parsedIP.To4(); v4 != nil {
-			parsedIP = v4
-		}
-		if r := sc.isBlocked(parsedIP); r != "" {
-			// At least one resolved IP is blocked — reject the whole connection.
-			// This is intentionally strict: if ANY resolved IP is dangerous we
-			// refuse to connect to avoid attacks via split-horizon DNS.
-			return nil, r, nil
-		}
-		if firstSafe == nil {
-			firstSafe = parsedIP
-		}
-	}
-
-	if firstSafe == nil {
-		return nil, "no_valid_ip", nil
-	}
-
-	// Final check on the specific IP we will actually dial (belt-and-suspenders
-	// defence against TOCTOU if the net package re-resolves internally — it
-	// does not when we dial by IP, but we validate again just in case).
-	if r := sc.isBlocked(firstSafe); r != "" {
-		return nil, r, nil
-	}
-
-	return firstSafe, "", nil
+	return ips[0], "", nil
 }
 
 // AddrForIP formats the dial address string from an IP and port, correctly
@@ -323,4 +443,51 @@ func AddrForIP(ip net.IP, port int) string {
 		return fmt.Sprintf("[%s]:%d", a, port)
 	}
 	return fmt.Sprintf("%s:%d", a, port)
+}
+
+// DialAny attempts to dial up to 3 addresses from ips using dial, with 5s per attempt
+// and 10s total timeout.
+func DialAny(ctx context.Context, ips []net.IP, port int, dial func(ctx context.Context, network, addr string) (net.Conn, error)) (net.Conn, error) {
+	if len(ips) == 0 {
+		return nil, errors.New("no IP addresses to dial")
+	}
+	if dial == nil {
+		dial = func(dCtx context.Context, netw, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(dCtx, netw, addr)
+		}
+	}
+
+	totalCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	candidates := ips
+	if len(candidates) > 3 {
+		candidates = candidates[:3]
+	}
+
+	var lastErr error
+	for _, ip := range candidates {
+		if err := totalCtx.Err(); err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, err
+		}
+
+		attemptCtx, attemptCancel := context.WithTimeout(totalCtx, 5*time.Second)
+		addr := AddrForIP(ip, port)
+		conn, err := dial(attemptCtx, "tcp", addr)
+		attemptCancel()
+
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("dial failed for all candidate addresses")
 }
