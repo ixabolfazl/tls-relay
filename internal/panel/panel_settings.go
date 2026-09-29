@@ -12,9 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/miekg/dns"
+
 	"github.com/ixabolfazl/tls-relay/internal/access"
 	"github.com/ixabolfazl/tls-relay/internal/config"
 	"github.com/ixabolfazl/tls-relay/internal/relay"
+	"github.com/ixabolfazl/tls-relay/internal/settings"
 )
 
 type settingsResponse struct {
@@ -28,6 +31,7 @@ type settingsResponse struct {
 	RequestLogsRetention       string `json:"request_logs_retention"`
 	MaxConnectionsPerIP        int    `json:"max_connections_per_ip"`
 	DNSUnauthorizedPassthrough bool   `json:"dns_unauthorized_passthrough"`
+	DNSUpstreamAddr            string `json:"dns_upstream_addr"`
 	EgressProxyEnabled         bool   `json:"egress_proxy_enabled"`
 	EgressProxyAddr            string `json:"egress_proxy_addr"`
 	EgressProxyUser            string `json:"egress_proxy_user"`
@@ -123,6 +127,7 @@ func (s *Server) currentSettings() settingsResponse {
 	reqRetention := "24h"
 	maxConn := 200
 	dnsPassthrough := false
+	dnsUpstreamAddr := ""
 	egressEnabled := false
 	proxyAddr := ""
 	proxyUser := ""
@@ -141,6 +146,7 @@ func (s *Server) currentSettings() settingsResponse {
 	}
 	if s.dnsServer != nil {
 		dnsPassthrough = s.dnsServer.UnauthorizedPassthroughEnabled()
+		dnsUpstreamAddr = strings.Join(s.dnsServer.Upstreams(), ",")
 	}
 	if s.egressDialer != nil {
 		cfg := s.egressDialer.Config()
@@ -172,6 +178,12 @@ func (s *Server) currentSettings() settingsResponse {
 	}
 	s.mu.RUnlock()
 
+	if dnsUpstreamAddr == "" && s.sqlStore != nil {
+		if val, found, err := s.sqlStore.GetSetting(context.Background(), "dns_upstream_addr"); err == nil && found {
+			dnsUpstreamAddr = val
+		}
+	}
+
 	lookupEn, lookupReq := s.LookupPolicy()
 
 	return settingsResponse{
@@ -185,6 +197,7 @@ func (s *Server) currentSettings() settingsResponse {
 		RequestLogsRetention:       reqRetention,
 		MaxConnectionsPerIP:        maxConn,
 		DNSUnauthorizedPassthrough: dnsPassthrough,
+		DNSUpstreamAddr:            dnsUpstreamAddr,
 		EgressProxyEnabled:         egressEnabled,
 		EgressProxyAddr:            proxyAddr,
 		EgressProxyUser:            proxyUser,
@@ -216,6 +229,7 @@ type updateSettingsRequest struct {
 	RequestLogsRetention       *string `json:"request_logs_retention,omitempty"`
 	MaxConnectionsPerIP        *int    `json:"max_connections_per_ip,omitempty"`
 	DNSUnauthorizedPassthrough *bool   `json:"dns_unauthorized_passthrough_enabled,omitempty"`
+	DNSUpstreamAddr            *string `json:"dns_upstream_addr,omitempty"`
 	EgressProxyEnabled         *bool   `json:"egress_proxy_enabled,omitempty"`
 	EgressProxyAddr            *string `json:"egress_proxy_addr,omitempty"`
 	EgressProxyUser            *string `json:"egress_proxy_user,omitempty"`
@@ -424,6 +438,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		toPersist["http_front_max_global_conns"] = strconv.Itoa(*req.HttpFrontMaxGlobalConns)
 	}
 
+	var candidateDNSUpstream *string
+	var candidateDNSUpstreams []string
+	if req.DNSUpstreamAddr != nil {
+		list, canon, err := settings.ValidateUpstreamList(*req.DNSUpstreamAddr)
+		if err != nil {
+			jsonErr(w, fmt.Sprintf("invalid dns_upstream_addr: %v", err), http.StatusBadRequest)
+			return
+		}
+		candidateDNSUpstream = &canon
+		candidateDNSUpstreams = list
+		toPersist["dns_upstream_addr"] = canon
+	}
+
 	// (2) Verify egress config by building a candidate dialer without swapping
 	var candidateEgressCfg *config.EgressProxyConfig
 	if req.EgressProxyEnabled != nil || req.EgressProxyAddr != nil || req.EgressProxyUser != nil || req.EgressProxyPassword != nil {
@@ -555,6 +582,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		slog.Info("dns_unauthorized_passthrough_enabled updated via admin panel", "enabled", *req.DNSUnauthorizedPassthrough, "remote_addr", r.RemoteAddr)
 	}
 
+	if candidateDNSUpstream != nil {
+		s.mu.RLock()
+		dnsSrv := s.dnsServer
+		s.mu.RUnlock()
+		if dnsSrv != nil {
+			dnsSrv.SetUpstreams(candidateDNSUpstreams)
+		}
+		slog.Info("dns_upstream_addr updated via admin panel", "addrs", *candidateDNSUpstream, "remote_addr", r.RemoteAddr)
+	}
+
 	if req.AllowedDestPorts != nil {
 		s.mu.RLock()
 		if s.allowList != nil {
@@ -672,6 +709,105 @@ func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 		"ok":         true,
 		"latency_ms": latency.Milliseconds(),
 	})
+}
+
+type testDNSRequest struct {
+	Addr  string   `json:"addr"`
+	Addrs []string `json:"addrs"`
+}
+
+type testDNSResult struct {
+	Addr      string `json:"addr"`
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms"`
+	Rcode     int    `json:"rcode"`
+	Error     string `json:"error"`
+}
+
+func (s *Server) handleTestDNS(w http.ResponseWriter, r *http.Request) {
+	var req testDNSRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	var targets []string
+	if strings.TrimSpace(req.Addr) != "" {
+		targets = []string{strings.TrimSpace(req.Addr)}
+	} else if len(req.Addrs) > 0 {
+		for _, a := range req.Addrs {
+			if t := strings.TrimSpace(a); t != "" {
+				targets = append(targets, t)
+			}
+		}
+	} else {
+		s.mu.RLock()
+		dnsSrv := s.dnsServer
+		s.mu.RUnlock()
+		if dnsSrv != nil {
+			targets = dnsSrv.Upstreams()
+		}
+		if len(targets) == 0 && s.sqlStore != nil {
+			if raw, found, err := s.sqlStore.GetSetting(r.Context(), "dns_upstream_addr"); err == nil && found {
+				if list, _, valErr := settings.ValidateUpstreamList(raw); valErr == nil {
+					targets = list
+				}
+			}
+		}
+	}
+
+	results := make([]testDNSResult, 0, len(targets))
+	for _, target := range targets {
+		list, _, err := settings.ValidateUpstreamList(target)
+		if err != nil {
+			results = append(results, testDNSResult{
+				Addr:      target,
+				OK:        false,
+				LatencyMS: 0,
+				Rcode:     dns.RcodeServerFailure,
+				Error:     err.Error(),
+			})
+			continue
+		}
+
+		targetAddr := list[0]
+		client := &dns.Client{Timeout: 4 * time.Second}
+		msg := new(dns.Msg)
+		msg.SetQuestion("example.com.", dns.TypeA)
+		start := time.Now()
+		resp, _, qErr := client.Exchange(msg, targetAddr)
+		latency := time.Since(start).Milliseconds()
+
+		if qErr != nil {
+			results = append(results, testDNSResult{
+				Addr:      targetAddr,
+				OK:        false,
+				LatencyMS: latency,
+				Rcode:     dns.RcodeServerFailure,
+				Error:     qErr.Error(),
+			})
+		} else if resp == nil {
+			results = append(results, testDNSResult{
+				Addr:      targetAddr,
+				OK:        false,
+				LatencyMS: latency,
+				Rcode:     dns.RcodeServerFailure,
+				Error:     "nil response from upstream",
+			})
+		} else {
+			ok := (resp.Rcode == dns.RcodeSuccess)
+			errStr := ""
+			if !ok {
+				errStr = dns.RcodeToString[resp.Rcode]
+			}
+			results = append(results, testDNSResult{
+				Addr:      targetAddr,
+				OK:        ok,
+				LatencyMS: latency,
+				Rcode:     resp.Rcode,
+				Error:     errStr,
+			})
+		}
+	}
+
+	jsonOK(w, results)
 }
 
 type updateAdminCredentialsRequest struct {

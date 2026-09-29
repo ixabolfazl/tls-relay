@@ -308,6 +308,15 @@ func ApplyConfigSettings(cfg *config.Config, dbSettings map[string]string) {
 	envEgressPass := os.Getenv("EGRESS_PROXY_PASSWORD")
 	dbEgressPass, hasEgressPass := dbSettings["egress_proxy_password"]
 	cfg.EgressProxy.Password = config.ResolveSetting(envEgressPass, dbEgressPass, hasEgressPass, cfg.EgressProxy.Password)
+
+	envDNSUpstream := os.Getenv("DNS_UPSTREAM_ADDR")
+	dbDNSUpstream, hasDNSUpstream := dbSettings["dns_upstream_addr"]
+	rawDNSUpstream := config.ResolveSetting(envDNSUpstream, dbDNSUpstream, hasDNSUpstream, cfg.DNS.UpstreamAddr)
+	if _, canon, err := settings.ValidateUpstreamList(rawDNSUpstream); err == nil {
+		cfg.DNS.UpstreamAddr = canon
+	} else if strings.TrimSpace(rawDNSUpstream) != "" {
+		slog.Warn("invalid dns upstream address configured; falling back", "raw", rawDNSUpstream, "fallback", cfg.DNS.UpstreamAddr, "error", err)
+	}
 }
 
 // ReloadSettings re-reads settings from SQLite and dynamically updates running components without dropping connections.
@@ -432,6 +441,13 @@ func ReloadSettings(ctx context.Context, comp *RuntimeComponents) error {
 	if comp.PanelSrv != nil {
 		if err := comp.PanelSrv.ReloadCredentials(ctx); err != nil {
 			slog.Error("failed reloading admin credentials on SIGHUP", "error", err)
+		}
+	}
+
+	// 14. DNS Upstream Addr
+	if comp.DNSSrv != nil {
+		if upstreams, _, err := settings.ValidateUpstreamList(comp.Cfg.DNS.UpstreamAddr); err == nil {
+			comp.DNSSrv.SetUpstreams(upstreams)
 		}
 	}
 
@@ -752,6 +768,9 @@ func run(cfgPath string) error {
 	}, ruleStore, accessStore)
 	if err != nil {
 		return fmt.Errorf("building DNS resolver: %w", err)
+	}
+	if upstreams, _, err := settings.ValidateUpstreamList(cfg.DNS.UpstreamAddr); err == nil {
+		dnsSrv.SetUpstreams(upstreams)
 	}
 	dnsSrv.SetLogger(reqLogger, connTracker)
 	dnsSrv.SetStatsCollector(reqStats)

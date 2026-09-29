@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
@@ -464,5 +466,153 @@ func TestRequestLogsCursorPaginationEndpoint(t *testing.T) {
 	}
 	if res2.Total != nil {
 		t.Errorf("expected total to be omitted when before_id filter is applied, got %v", *res2.Total)
+	}
+}
+
+func TestTestDNSEndpoint(t *testing.T) {
+	t.Setenv("PANEL_ADMIN_USER", "admin")
+	t.Setenv("PANEL_ADMIN_PASSWORD", "secret123")
+
+	// Start local mock DNS server responding to example.com.
+	udpLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("mock dns listen: %v", err)
+	}
+	defer udpLn.Close()
+	mockAddr := udpLn.LocalAddr().String()
+
+	mockSrv := &dns.Server{
+		PacketConn: udpLn,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+			m := new(dns.Msg)
+			m.SetReply(r)
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   r.Question[0].Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: net.ParseIP("93.184.216.34").To4(),
+			})
+			_ = w.WriteMsg(m)
+		}),
+	}
+	go func() { _ = mockSrv.ActivateAndServe() }()
+	defer func() { _ = mockSrv.Shutdown() }()
+
+	dbPath := filepath.Join(t.TempDir(), "test-dns.db")
+	sqStore, err := sqlitestore.New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer sqStore.Close()
+
+	ruleStore := rules.NewRuleStore([]int{443}, "allow_default_port")
+	accessStore := access.NewAccessStore(access.ModeUser)
+
+	srv, err := panel.New("127.0.0.1:0", "/", ruleStore, accessStore, sqStore, nil)
+	if err != nil {
+		t.Fatalf("failed to create panel server: %v", err)
+	}
+
+	// Login
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"secret123"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	srv.ServeHTTP(loginRec, loginReq)
+
+	var sessionCookie, csrfCookie *http.Cookie
+	for _, c := range loginRec.Result().Cookies() {
+		if c.Name == "relay_session" {
+			sessionCookie = c
+		}
+		if c.Name == "relay_csrf" {
+			csrfCookie = c
+		}
+	}
+	if sessionCookie == nil || csrfCookie == nil {
+		t.Fatalf("missing session or csrf cookie")
+	}
+
+	// 1. Test valid upstream
+	testRec := httptest.NewRecorder()
+	testReq := httptest.NewRequest("POST", "/api/settings/test-dns", strings.NewReader(fmt.Sprintf(`{"addr":%q}`, mockAddr)))
+	testReq.Header.Set("Content-Type", "application/json")
+	testReq.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	testReq.AddCookie(sessionCookie)
+	srv.ServeHTTP(testRec, testReq)
+
+	if testRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from test-dns, got %d: %s", testRec.Code, testRec.Body.String())
+	}
+
+	var results []struct {
+		Addr      string `json:"addr"`
+		OK        bool   `json:"ok"`
+		LatencyMS int64  `json:"latency_ms"`
+		Rcode     int    `json:"rcode"`
+		Error     string `json:"error"`
+	}
+	if err := json.NewDecoder(testRec.Body).Decode(&results); err != nil {
+		t.Fatalf("decoding test-dns response: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].OK {
+		t.Errorf("expected ok=true for mock DNS server, got error: %s", results[0].Error)
+	}
+	if results[0].Addr != mockAddr {
+		t.Errorf("expected addr %s, got %s", mockAddr, results[0].Addr)
+	}
+
+	// 2. Test invalid / unreachable upstream
+	testFailRec := httptest.NewRecorder()
+	testFailReq := httptest.NewRequest("POST", "/api/settings/test-dns", strings.NewReader(`{"addr":"invalid:port"}`))
+	testFailReq.Header.Set("Content-Type", "application/json")
+	testFailReq.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	testFailReq.AddCookie(sessionCookie)
+	srv.ServeHTTP(testFailRec, testFailReq)
+
+	if testFailRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from test-dns even on failure, got %d", testFailRec.Code)
+	}
+	var failResults []struct {
+		Addr string `json:"addr"`
+		OK   bool   `json:"ok"`
+	}
+	if err := json.NewDecoder(testFailRec.Body).Decode(&failResults); err != nil {
+		t.Fatalf("decoding fail results: %v", err)
+	}
+	if len(failResults) != 1 || failResults[0].OK {
+		t.Errorf("expected 1 failing result, got: %v", failResults)
+	}
+
+	// 3. Test saving dns_upstream_addr via PUT /api/settings
+	updateRec := httptest.NewRecorder()
+	updateReq := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(fmt.Sprintf(`{"dns_upstream_addr":%q}`, mockAddr)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	updateReq.AddCookie(sessionCookie)
+	srv.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from PUT /api/settings, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	getRec := httptest.NewRecorder()
+	getReq := httptest.NewRequest("GET", "/api/settings", nil)
+	getReq.AddCookie(sessionCookie)
+	srv.ServeHTTP(getRec, getReq)
+
+	var settingsResp struct {
+		DNSUpstreamAddr string `json:"dns_upstream_addr"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&settingsResp); err != nil {
+		t.Fatalf("decoding settings response: %v", err)
+	}
+	if settingsResp.DNSUpstreamAddr != mockAddr {
+		t.Errorf("expected dns_upstream_addr %q, got %q", mockAddr, settingsResp.DNSUpstreamAddr)
 	}
 }

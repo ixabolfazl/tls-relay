@@ -420,3 +420,294 @@ func TestIPRateLimiter_BoundedCapacityAndClose(t *testing.T) {
 		rl.Allow(fmt.Sprintf("10.0.%d.%d", i/256, i%256))
 	}
 }
+
+func startMockDNSServer(t *testing.T, handler dns.HandlerFunc) (string, func()) {
+	t.Helper()
+	ln, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listenPacket: %v", err)
+	}
+	srv := &dns.Server{PacketConn: ln, Handler: handler}
+	go func() { _ = srv.ActivateAndServe() }()
+	return ln.LocalAddr().String(), func() {
+		_ = srv.Shutdown()
+		_ = ln.Close()
+	}
+}
+
+func startTestResolver(t *testing.T, upstreams string) (*dnsresolver.Server, string, func()) {
+	t.Helper()
+	rs := rules.NewRuleStore([]int{443}, "allow_default_port")
+	as := access.NewAccessStore(access.ModePublic)
+
+	srvLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("srv listen: %v", err)
+	}
+	srvAddr := srvLn.LocalAddr().String()
+	_ = srvLn.Close()
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:         srvAddr,
+		UpstreamAddr: upstreams,
+		TTL:          60,
+		QPS:          1000,
+		Burst:        1000,
+		EDNSBufSize:  1232,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	return srv, srvAddr, func() {
+		cancel()
+		srv.Close()
+	}
+}
+
+func TestForwardQuery_PrimaryTimesOutSecondaryAnswers(t *testing.T) {
+	primaryAddr, primaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		// Do not respond; let the request time out
+	})
+	defer primaryClose()
+
+	secondaryAddr, secondaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   r.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: net.ParseIP("192.0.2.1").To4(),
+		})
+		_ = w.WriteMsg(m)
+	})
+	defer secondaryClose()
+
+	_, srvAddr, srvClose := startTestResolver(t, primaryAddr+","+secondaryAddr)
+	defer srvClose()
+
+	c := &dns.Client{Timeout: 7 * time.Second}
+	req := new(dns.Msg)
+	req.SetQuestion("fallback-timeout.org.", dns.TypeA)
+
+	resp, _, err := c.Exchange(req, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange failed: %v", err)
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatalf("expected answer from secondary, got 0")
+	}
+	aRec, ok := resp.Answer[0].(*dns.A)
+	if !ok || aRec.A.String() != "192.0.2.1" {
+		t.Errorf("expected 192.0.2.1, got %v", resp.Answer[0])
+	}
+}
+
+func TestForwardQuery_PrimaryServfailSecondaryAnswers(t *testing.T) {
+	primaryAddr, primaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeServerFailure
+		_ = w.WriteMsg(m)
+	})
+	defer primaryClose()
+
+	secondaryAddr, secondaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   r.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: net.ParseIP("192.0.2.2").To4(),
+		})
+		_ = w.WriteMsg(m)
+	})
+	defer secondaryClose()
+
+	_, srvAddr, srvClose := startTestResolver(t, primaryAddr+","+secondaryAddr)
+	defer srvClose()
+
+	c := new(dns.Client)
+	req := new(dns.Msg)
+	req.SetQuestion("fallback-servfail.org.", dns.TypeA)
+
+	resp, _, err := c.Exchange(req, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange failed: %v", err)
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatalf("expected answer from secondary, got 0")
+	}
+	aRec, ok := resp.Answer[0].(*dns.A)
+	if !ok || aRec.A.String() != "192.0.2.2" {
+		t.Errorf("expected 192.0.2.2, got %v", resp.Answer[0])
+	}
+}
+
+func TestForwardQuery_PrimaryNXDOMAINDoesNotFallback(t *testing.T) {
+	primaryAddr, primaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeNameError
+		_ = w.WriteMsg(m)
+	})
+	defer primaryClose()
+
+	secondaryCalls := 0
+	secondaryAddr, secondaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		secondaryCalls++
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   r.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: net.ParseIP("192.0.2.3").To4(),
+		})
+		_ = w.WriteMsg(m)
+	})
+	defer secondaryClose()
+
+	_, srvAddr, srvClose := startTestResolver(t, primaryAddr+","+secondaryAddr)
+	defer srvClose()
+
+	c := new(dns.Client)
+	req := new(dns.Msg)
+	req.SetQuestion("primary-nxdomain.org.", dns.TypeA)
+
+	resp, _, err := c.Exchange(req, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange failed: %v", err)
+	}
+	if resp.Rcode != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN (RcodeNameError), got %d", resp.Rcode)
+	}
+	if len(resp.Answer) > 0 {
+		t.Errorf("expected no answers, got %d", len(resp.Answer))
+	}
+	if secondaryCalls > 0 {
+		t.Errorf("secondary upstream was unexpectedly contacted on NXDOMAIN")
+	}
+}
+
+func TestForwardQuery_AllFailReturnsServfail(t *testing.T) {
+	primaryAddr, primaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeServerFailure
+		_ = w.WriteMsg(m)
+	})
+	defer primaryClose()
+
+	secondaryAddr, secondaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeServerFailure
+		_ = w.WriteMsg(m)
+	})
+	defer secondaryClose()
+
+	_, srvAddr, srvClose := startTestResolver(t, primaryAddr+","+secondaryAddr)
+	defer srvClose()
+
+	c := new(dns.Client)
+	req := new(dns.Msg)
+	req.SetQuestion("all-fail.org.", dns.TypeA)
+
+	resp, _, err := c.Exchange(req, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange failed: %v", err)
+	}
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Errorf("expected SERVFAIL (RcodeServerFailure), got %d", resp.Rcode)
+	}
+}
+
+func TestServer_SetUpstreamsHotReload(t *testing.T) {
+	primaryAddr, primaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   r.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: net.ParseIP("192.0.2.10").To4(),
+		})
+		_ = w.WriteMsg(m)
+	})
+	defer primaryClose()
+
+	secondaryAddr, secondaryClose := startMockDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   r.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: net.ParseIP("192.0.2.20").To4(),
+		})
+		_ = w.WriteMsg(m)
+	})
+	defer secondaryClose()
+
+	srv, srvAddr, srvClose := startTestResolver(t, primaryAddr)
+	defer srvClose()
+
+	c := new(dns.Client)
+
+	// First query with initial primary
+	req1 := new(dns.Msg)
+	req1.SetQuestion("test-hotreload-1.org.", dns.TypeA)
+	resp1, _, err := c.Exchange(req1, srvAddr)
+	if err != nil {
+		t.Fatalf("first exchange failed: %v", err)
+	}
+	if len(resp1.Answer) == 0 {
+		t.Fatalf("expected answer, got 0")
+	}
+	if a, ok := resp1.Answer[0].(*dns.A); !ok || a.A.String() != "192.0.2.10" {
+		t.Fatalf("expected 192.0.2.10, got %v", resp1.Answer[0])
+	}
+
+	// Hot-reload upstreams to point to secondary
+	srv.SetUpstreams([]string{secondaryAddr})
+	upstreams := srv.Upstreams()
+	if len(upstreams) != 1 || upstreams[0] != secondaryAddr {
+		t.Fatalf("expected upstreams [%s], got %v", secondaryAddr, upstreams)
+	}
+
+	// Second query with distinct domain should hit secondary
+	req2 := new(dns.Msg)
+	req2.SetQuestion("test-hotreload-2.org.", dns.TypeA)
+	resp2, _, err := c.Exchange(req2, srvAddr)
+	if err != nil {
+		t.Fatalf("second exchange failed: %v", err)
+	}
+	if len(resp2.Answer) == 0 {
+		t.Fatalf("expected answer from secondary after hot-reload, got 0")
+	}
+	if a, ok := resp2.Answer[0].(*dns.A); !ok || a.A.String() != "192.0.2.20" {
+		t.Fatalf("expected 192.0.2.20, got %v", resp2.Answer[0])
+	}
+}

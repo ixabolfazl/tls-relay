@@ -58,12 +58,31 @@ type Server struct {
 	passthroughLimiter *IPRateLimiter
 	cache              *DNSCache
 	relayIP            net.IP
+	upstreams          atomic.Pointer[[]string]
 	upstream           *dns.Client
 	logger             *requestlog.Logger
 	userLookup         UserLookup
 	stats              *reqstats.Collector
 	usageTracker       UserDNSUsageEmitter
 	sampled            *sampledLogger
+}
+
+// SetUpstreams dynamically updates the list of upstream DNS servers.
+func (s *Server) SetUpstreams(addrs []string) {
+	cp := make([]string, len(addrs))
+	copy(cp, addrs)
+	s.upstreams.Store(&cp)
+}
+
+// Upstreams returns a copy of the active upstream DNS servers.
+func (s *Server) Upstreams() []string {
+	ptr := s.upstreams.Load()
+	if ptr == nil || len(*ptr) == 0 {
+		return nil
+	}
+	cp := make([]string, len(*ptr))
+	copy(cp, *ptr)
+	return cp
 }
 
 // Close stops background caches and sweepers.
@@ -171,6 +190,14 @@ func New(cfg Config, rs *rules.RuleStore, as *access.AccessStore) (*Server, erro
 		upstream:           &dns.Client{Timeout: 5 * time.Second},
 		sampled:            newSampledLogger(),
 	}
+	var initialUpstreams []string
+	for _, u := range strings.Split(cfg.UpstreamAddr, ",") {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			initialUpstreams = append(initialUpstreams, u)
+		}
+	}
+	srv.upstreams.Store(&initialUpstreams)
 	srv.passthroughEnabled.Store(cfg.PassthroughEnabled)
 	return srv, nil
 }
@@ -495,37 +522,95 @@ func (s *Server) forwardQuery(w dns.ResponseWriter, req *dns.Msg, q dns.Question
 		}
 	}
 
-	// Forward to upstream.
-	resp, _, err := s.upstream.Exchange(req, s.cfg.UpstreamAddr)
-	if err == nil && resp != nil && resp.Truncated {
-		// When the upstream UDP answer has TC set, retry over TCP before answering
-		tcpClient := &dns.Client{Net: "tcp", Timeout: 5 * time.Second}
-		if tcpResp, _, tcpErr := tcpClient.Exchange(req, s.cfg.UpstreamAddr); tcpErr == nil && tcpResp != nil {
-			resp = tcpResp
-		}
-	}
-
-	if err != nil {
-		slog.Warn("dns upstream query failed", "name", q.Name, "error", err)
+	upstreams := s.Upstreams()
+	if len(upstreams) == 0 {
+		slog.Warn("dns forward query failed: no upstream resolvers configured", "name", q.Name)
 		fail := serverFailureMsg(req)
 		s.writeMsg(w, req, fail)
 		return
 	}
 
-	// Cache the response (use minimum TTL from answer section).
-	if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) > 0 {
-		minTTL := resp.Answer[0].Header().Ttl
-		for _, rr := range resp.Answer {
-			if rr.Header().Ttl < minTTL {
-				minTTL = rr.Header().Ttl
+	deadline := time.Now().Add(8 * time.Second)
+	var failures []string
+
+	for _, addr := range upstreams {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			failures = append(failures, "total timeout exceeded")
+			break
+		}
+
+		attemptTimeout := 5 * time.Second
+		if remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+
+		client := &dns.Client{Net: "udp", Timeout: attemptTimeout}
+		resp, _, err := client.Exchange(req, addr)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s (UDP): %v", addr, err))
+			continue
+		}
+		if resp == nil {
+			failures = append(failures, fmt.Sprintf("%s: nil response", addr))
+			continue
+		}
+
+		// When the upstream UDP answer has TC set, retry over TCP before answering
+		if resp.Truncated {
+			remainingTCP := time.Until(deadline)
+			if remainingTCP <= 0 {
+				failures = append(failures, fmt.Sprintf("%s (TCP): total timeout exceeded", addr))
+				break
+			}
+			tcpTimeout := 5 * time.Second
+			if remainingTCP < tcpTimeout {
+				tcpTimeout = remainingTCP
+			}
+			tcpClient := &dns.Client{Net: "tcp", Timeout: tcpTimeout}
+			tcpResp, _, tcpErr := tcpClient.Exchange(req, addr)
+			if tcpErr != nil {
+				failures = append(failures, fmt.Sprintf("%s (TCP): %v", addr, tcpErr))
+				continue
+			}
+			if tcpResp == nil {
+				failures = append(failures, fmt.Sprintf("%s (TCP): nil response", addr))
+				continue
+			}
+			resp = tcpResp
+		}
+
+		// Fall back to next upstream on SERVFAIL.
+		// Stop on any other rcode (NOERROR, NXDOMAIN, NOTIMP, REFUSED, etc.).
+		if resp.Rcode == dns.RcodeServerFailure {
+			failures = append(failures, fmt.Sprintf("%s: SERVFAIL", addr))
+			continue
+		}
+
+		// Success or other valid authoritative rcode (like NXDOMAIN).
+		if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) > 0 {
+			minTTL := resp.Answer[0].Header().Ttl
+			for _, rr := range resp.Answer {
+				if rr.Header().Ttl < minTTL {
+					minTTL = rr.Header().Ttl
+				}
+			}
+			if packed, err := resp.Pack(); err == nil {
+				s.cache.Set(q.Name, q.Qtype, packed, time.Duration(minTTL)*time.Second)
 			}
 		}
-		if packed, err := resp.Pack(); err == nil {
-			s.cache.Set(q.Name, q.Qtype, packed, time.Duration(minTTL)*time.Second)
-		}
+
+		s.writeMsg(w, req, resp)
+		return
 	}
 
-	s.writeMsg(w, req, resp)
+	// All upstreams failed
+	slog.Warn("dns forward query failed on all upstreams",
+		"name", q.Name,
+		"failures", strings.Join(failures, "; "),
+	)
+	fail := serverFailureMsg(req)
+	s.writeMsg(w, req, fail)
 }
 
 func (s *Server) writeMsg(w dns.ResponseWriter, req *dns.Msg, resp *dns.Msg) {

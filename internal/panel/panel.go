@@ -932,6 +932,7 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(route("GET", "/api/settings"), s.auth(s.handleGetSettings))
 	mux.HandleFunc(route("PUT", "/api/settings"), s.auth(s.handleUpdateSettings))
 	mux.HandleFunc(route("POST", "/api/settings/test-proxy"), s.auth(s.handleTestProxy))
+	mux.HandleFunc(route("POST", "/api/settings/test-dns"), s.auth(s.handleTestDNS))
 	mux.HandleFunc(route("PUT", "/api/admin/credentials"), s.auth(s.handleUpdateAdminCredentials))
 	mux.HandleFunc(route("POST", "/api/service/restart"), s.auth(s.handleServiceRestart))
 	mux.HandleFunc(route("GET", "/api/request-stats/daily"), s.auth(s.handleGetRequestStatsDaily))

@@ -232,6 +232,9 @@ func ValidateSetting(key, val string) (string, error) {
 	case "allowed_dest_ports", "listen_ports", "listen_http_ports":
 		_, canonJSON, err := ValidatePortsList(val)
 		return canonJSON, err
+	case "dns_upstream_addr":
+		_, canon, err := ValidateUpstreamList(val)
+		return canon, err
 	case "lookup_enabled", "lookup_require_registered":
 		canon, _, err := ValidateBool(val)
 		return canon, err
@@ -253,4 +256,168 @@ func ValidateSetting(key, val string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown setting key %q", key)
 	}
+}
+
+// ValidateUpstreamList parses a comma-separated list of host:port or a JSON array of strings,
+// defaults bare IPs/hostnames to port 53, deduplicates entries preserving order,
+// validates that each entry has a valid host and port between 1 and 65535,
+// and enforces between 1 and 5 upstream servers.
+// Returns the slice of upstream addresses and the canonical comma-separated string.
+func ValidateUpstreamList(raw string) ([]string, string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, "", fmt.Errorf("upstream list cannot be empty")
+	}
+
+	var rawEntries []string
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		var jsonList []string
+		if err := json.Unmarshal([]byte(raw), &jsonList); err == nil {
+			rawEntries = jsonList
+		} else {
+			rawEntries = []string{raw}
+		}
+	} else {
+		parts := strings.Split(raw, ",")
+		for _, p := range parts {
+			rawEntries = append(rawEntries, p)
+		}
+	}
+
+	var list []string
+	seen := make(map[string]bool)
+
+	for _, entry := range rawEntries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		canon, err := normalizeUpstreamEntry(entry)
+		if err != nil {
+			return nil, "", err
+		}
+
+		if !seen[canon] {
+			seen[canon] = true
+			list = append(list, canon)
+		}
+	}
+
+	if len(list) == 0 {
+		return nil, "", fmt.Errorf("upstream list cannot be empty")
+	}
+	if len(list) > 5 {
+		return nil, "", fmt.Errorf("too many upstream servers: maximum 5, got %d", len(list))
+	}
+
+	return list, strings.Join(list, ","), nil
+}
+
+func isAllDigitsAndDots(s string) bool {
+	if s == "" {
+		return false
+	}
+	hasDot := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '.' {
+			hasDot = true
+		} else if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return hasDot
+}
+
+func isValidHostnameLabel(label string) bool {
+	n := len(label)
+	if n == 0 || n > 63 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := label[i]
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		isHyphen := c == '-'
+		if !isAlphaNum && !isHyphen {
+			return false
+		}
+		if isHyphen && (i == 0 || i == n-1) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidHostname(h string) bool {
+	h = strings.TrimSuffix(h, ".")
+	if len(h) == 0 || len(h) > 253 {
+		return false
+	}
+	labels := strings.Split(h, ".")
+	for _, label := range labels {
+		if !isValidHostnameLabel(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeUpstreamEntry(entry string) (string, error) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "", fmt.Errorf("upstream entry cannot be empty")
+	}
+
+	host, portStr, err := net.SplitHostPort(entry)
+	if err == nil {
+		port, pErr := strconv.Atoi(portStr)
+		if pErr != nil || port < 1 || port > 65535 {
+			return "", fmt.Errorf("invalid port in upstream address %q: must be between 1 and 65535", entry)
+		}
+		if isAllDigitsAndDots(host) {
+			ip := net.ParseIP(host)
+			if ip == nil || ip.To4() == nil {
+				return "", fmt.Errorf("invalid IPv4 address %q in upstream address %q", host, entry)
+			}
+			return fmt.Sprintf("%s:%d", ip.String(), port), nil
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.To4() == nil {
+				return fmt.Sprintf("[%s]:%d", ip.String(), port), nil
+			}
+			return fmt.Sprintf("%s:%d", ip.String(), port), nil
+		}
+		if isValidHostname(host) {
+			return fmt.Sprintf("%s:%d", strings.ToLower(host), port), nil
+		}
+		return "", fmt.Errorf("invalid host %q in upstream address %q", host, entry)
+	}
+
+	// SplitHostPort failed. Check if port was omitted.
+	unbracketed := entry
+	if strings.HasPrefix(unbracketed, "[") && strings.HasSuffix(unbracketed, "]") {
+		unbracketed = unbracketed[1 : len(unbracketed)-1]
+	}
+
+	if isAllDigitsAndDots(unbracketed) {
+		ip := net.ParseIP(unbracketed)
+		if ip == nil || ip.To4() == nil {
+			return "", fmt.Errorf("invalid IPv4 address %q in upstream address %q", entry, entry)
+		}
+		return fmt.Sprintf("%s:53", ip.String()), nil
+	}
+
+	if ip := net.ParseIP(unbracketed); ip != nil {
+		if ip.To4() == nil {
+			return fmt.Sprintf("[%s]:53", ip.String()), nil
+		}
+		return fmt.Sprintf("%s:53", ip.String()), nil
+	}
+
+	if isValidHostname(entry) {
+		return fmt.Sprintf("%s:53", strings.ToLower(entry)), nil
+	}
+
+	return "", fmt.Errorf("invalid upstream address %q: %w", entry, err)
 }
