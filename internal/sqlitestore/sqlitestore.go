@@ -259,6 +259,14 @@ func (s *Store) migrate() error {
 			UNIQUE(user_id, usage_date)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_dns_usage_daily_user_date ON user_dns_usage_daily(user_id, usage_date)`,
+		`CREATE TABLE IF NOT EXISTS domain_dns_usage_daily (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain      TEXT    NOT NULL,
+			usage_date  TEXT    NOT NULL,
+			query_count INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(domain, usage_date)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_domain_dns_usage_daily_domain_date ON domain_dns_usage_daily(domain, usage_date)`,
 	}
 	for _, ddl := range tables {
 		if _, err := s.writer.Exec(ddl); err != nil {

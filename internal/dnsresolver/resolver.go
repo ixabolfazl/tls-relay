@@ -29,9 +29,10 @@ type UserLookup interface {
 	LookupUser(ip string) (userID int64, username string, ok bool)
 }
 
-// UserDNSUsageEmitter is an interface to emit per-user DNS query events.
+// UserDNSUsageEmitter is an interface to emit per-user and per-domain DNS query events.
 type UserDNSUsageEmitter interface {
 	EmitDNSQuery(userID int64)
+	EmitDomainDNSQuery(domain string)
 }
 
 // Config holds the DNS resolver configuration.
@@ -337,6 +338,13 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 			s.stats.Emit("DNS", "authorized")
 		}
 		if isDomainConfigured {
+			if s.usageTracker != nil {
+				domainKey := matchedRule.Domain
+				if domainKey == "" {
+					domainKey = qname
+				}
+				s.usageTracker.EmitDomainDNSQuery(domainKey)
+			}
 			// Domain IS configured -> authoritative relay response
 			if s.relayIP == nil {
 				slog.Error("dns query matched domain rule but RELAY_IP is not configured in env/config",

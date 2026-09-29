@@ -16,6 +16,7 @@ type UsageStore interface {
 	IncrementDomainUsage(ctx context.Context, domain string, bytesSent, bytesReceived int64, date time.Time) error
 	IncrementUserDomainUsage(ctx context.Context, userID int64, domain string, bytesSent, bytesReceived int64, date time.Time) error
 	IncrementUserDNSUsage(ctx context.Context, userID int64, date time.Time, count int64) error
+	IncrementDomainDNSUsage(ctx context.Context, domain string, date time.Time, count int64) error
 	IncrementProtocolUsage(ctx context.Context, protocol string, bytesSent, bytesReceived int64, date time.Time) error
 }
 
@@ -130,6 +131,24 @@ func (ut *UsageTracker) EmitDNSQuery(userID int64) {
 	}
 }
 
+// EmitDomainDNSQuery enqueues a DNS query event for the domain rule identified by domain.
+func (ut *UsageTracker) EmitDomainDNSQuery(domain string) {
+	if domain == "" {
+		return
+	}
+	ev := usageEvent{
+		protocol: "DNS",
+		domain:   domain,
+		isDNS:    true,
+		at:       time.Now(),
+	}
+	select {
+	case ut.ch <- ev:
+	default:
+		ut.droppedCount.Add(1)
+	}
+}
+
 // DroppedCount returns the total number of events dropped due to a full channel.
 func (ut *UsageTracker) DroppedCount() int64 {
 	return ut.droppedCount.Load()
@@ -192,6 +211,12 @@ func (ut *UsageTracker) runWriter(ctx context.Context, store UsageStore) {
 				if err := store.IncrementUserDNSUsage(fCtx, key.userID, b.at, b.dnsCount); err != nil {
 					slog.Error("usage tracker: failed to flush user dns usage to store",
 						"user_id", key.userID, "error", err)
+				}
+			}
+			if b.dnsCount > 0 && key.domain != "" {
+				if err := store.IncrementDomainDNSUsage(fCtx, key.domain, b.at, b.dnsCount); err != nil {
+					slog.Error("usage tracker: failed to flush domain dns usage to store",
+						"domain", key.domain, "error", err)
 				}
 			}
 		}

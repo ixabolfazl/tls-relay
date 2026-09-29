@@ -19,6 +19,7 @@ type mockUsageStore struct {
 	domainCalls     []mockDomainCall
 	userDomainCalls []mockUserDomainCall
 	dnsCalls        []mockDNSCall
+	domainDNSCalls  []mockDomainDNSCall
 	errFn           func() error
 }
 
@@ -101,6 +102,26 @@ func (m *mockUsageStore) IncrementUserDNSUsage(_ context.Context, userID int64, 
 	defer m.mu.Unlock()
 	m.dnsCalls = append(m.dnsCalls, mockDNSCall{
 		userID: userID,
+		count:  count,
+		date:   date,
+	})
+	if m.errFn != nil {
+		return m.errFn()
+	}
+	return nil
+}
+
+type mockDomainDNSCall struct {
+	domain string
+	count  int64
+	date   time.Time
+}
+
+func (m *mockUsageStore) IncrementDomainDNSUsage(_ context.Context, domain string, date time.Time, count int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.domainDNSCalls = append(m.domainDNSCalls, mockDomainDNSCall{
+		domain: domain,
 		count:  count,
 		date:   date,
 	})
@@ -435,5 +456,39 @@ func TestUsageTracker_FlushesDNSQueryEventsWithoutTLSBytes(t *testing.T) {
 	}
 	if store.dnsCalls[0].count != 3 {
 		t.Errorf("expected DNS count 3, got %d", store.dnsCalls[0].count)
+	}
+}
+
+func TestUsageTracker_FlushesDomainDNSQueryEvents(t *testing.T) {
+	store := &mockUsageStore{}
+	ut := relay.NewUsageTracker()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ut.StartWriter(ctx, store)
+
+	ut.EmitDomainDNSQuery("example.com")
+	ut.EmitDomainDNSQuery("example.com")
+	ut.EmitDomainDNSQuery("example.com")
+	ut.EmitDomainDNSQuery("test.org")
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	if len(store.domainDNSCalls) != 2 {
+		t.Fatalf("expected 2 batched domain DNS calls, got %d", len(store.domainDNSCalls))
+	}
+	counts := make(map[string]int64)
+	for _, c := range store.domainDNSCalls {
+		counts[c.domain] = c.count
+	}
+	if counts["example.com"] != 3 {
+		t.Errorf("expected 3 queries for example.com, got %d", counts["example.com"])
+	}
+	if counts["test.org"] != 1 {
+		t.Errorf("expected 1 query for test.org, got %d", counts["test.org"])
 	}
 }

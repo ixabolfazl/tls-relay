@@ -48,6 +48,7 @@ func TestDomainUsageAPI_EndpointsAndNoFK(t *testing.T) {
 	_ = sqStore.IncrementDomainUsage(ctx, "app.example.com", 1000, 2000, d1)
 	_ = sqStore.IncrementUserDomainUsage(ctx, u1.ID, "app.example.com", 1000, 2000, d1)
 	_ = sqStore.IncrementDomainUsage(ctx, "app.example.com", 3000, 4000, d2)
+	_ = sqStore.IncrementDomainDNSUsage(ctx, "app.example.com", d1, 45)
 
 	ruleStore := rules.NewRuleStore([]int{443}, "allow_default_port")
 	accessStore := access.NewAccessStore(access.ModeUser)
@@ -73,7 +74,7 @@ func TestDomainUsageAPI_EndpointsAndNoFK(t *testing.T) {
 		t.Fatal("session cookie not found")
 	}
 
-	// 1. GET /api/domains -> total_bytes_sent & total_bytes_received present
+	// 1. GET /api/domains -> total_bytes_sent & total_bytes_received & total_dns_queries present
 	domRec := httptest.NewRecorder()
 	domReq := httptest.NewRequest("GET", "/api/domains", nil)
 	domReq.AddCookie(sessionCookie)
@@ -88,6 +89,7 @@ func TestDomainUsageAPI_EndpointsAndNoFK(t *testing.T) {
 			Domain             string `json:"domain"`
 			TotalBytesSent     int64  `json:"total_bytes_sent"`
 			TotalBytesReceived int64  `json:"total_bytes_received"`
+			TotalDNSQueries    int64  `json:"total_dns_queries"`
 		} `json:"domains"`
 	}
 	if err := json.Unmarshal(domRec.Body.Bytes(), &domResp); err != nil {
@@ -98,6 +100,9 @@ func TestDomainUsageAPI_EndpointsAndNoFK(t *testing.T) {
 	}
 	if domResp.Domains[0].TotalBytesSent != 4000 || domResp.Domains[0].TotalBytesReceived != 6000 {
 		t.Errorf("domain total bytes got %d/%d, want 4000/6000", domResp.Domains[0].TotalBytesSent, domResp.Domains[0].TotalBytesReceived)
+	}
+	if domResp.Domains[0].TotalDNSQueries != 45 {
+		t.Errorf("domain total DNS queries got %d, want 45", domResp.Domains[0].TotalDNSQueries)
 	}
 
 	// 2. GET /api/domains/app.example.com/usage?days=365
@@ -114,13 +119,25 @@ func TestDomainUsageAPI_EndpointsAndNoFK(t *testing.T) {
 			Date          string `json:"date"`
 			BytesSent     int64  `json:"bytes_sent"`
 			BytesReceived int64  `json:"bytes_received"`
+			DNSQueries    int64  `json:"dns_queries"`
 		} `json:"days"`
+		DNSDays []struct {
+			Date       string `json:"date"`
+			QueryCount int64  `json:"query_count"`
+		} `json:"dns_days"`
+		TotalDNSQueries int64 `json:"total_dns_queries"`
 	}
 	if err := json.Unmarshal(dailyRec.Body.Bytes(), &dailyResp); err != nil {
 		t.Fatalf("unmarshal daily usage: %v", err)
 	}
 	if len(dailyResp.Days) != 2 {
 		t.Fatalf("expected 2 daily usage rows, got %d", len(dailyResp.Days))
+	}
+	if dailyResp.TotalDNSQueries != 45 {
+		t.Errorf("expected 45 total DNS queries in usage response, got %d", dailyResp.TotalDNSQueries)
+	}
+	if len(dailyResp.DNSDays) != 1 || dailyResp.DNSDays[0].QueryCount != 45 {
+		t.Errorf("expected 1 dns_days row with count 45, got %+v", dailyResp.DNSDays)
 	}
 
 	// 3. GET /api/domains/app.example.com/usage/monthly?months=12

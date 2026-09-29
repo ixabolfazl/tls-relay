@@ -53,6 +53,7 @@ func (ps PortsSpec) MarshalJSON() ([]byte, error) {
 
 // DomainRule is the stored configuration for a single domain (or wildcard pattern).
 type DomainRule struct {
+	Domain         string    `json:"domain,omitempty"`
 	GroupName      string    `json:"group_name,omitempty"`
 	Ports          PortsSpec `json:"ports"`
 	UseEgressProxy string    `json:"use_egress_proxy,omitempty"` // "default", "true", "false"
@@ -161,6 +162,8 @@ func buildSnapshot(rawRules map[string]string) (*domainSnapshot, error) {
 		if rule.Mode == "" {
 			rule.Mode = "proxy"
 		}
+
+		rule.Domain = key
 
 		if strings.HasPrefix(key, "*.") {
 			suffix := key[2:] // strip "*."

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ type domainEntry struct {
 	Mode               string      `json:"mode"`
 	TotalBytesSent     int64       `json:"total_bytes_sent"`
 	TotalBytesReceived int64       `json:"total_bytes_received"`
+	TotalDNSQueries    int64       `json:"total_dns_queries"`
 	CreatedAt          string      `json:"created_at"`
 	UpdatedAt          string      `json:"updated_at"`
 }
@@ -51,6 +53,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 	sinceDate := parseUsageRange(r)
 	if s.sqlStore != nil {
 		usageMap, _ := s.sqlStore.ListDomainsTotalUsage(r.Context(), sinceDate)
+		dnsMap, _ := s.sqlStore.ListDomainsDNSTotals(r.Context(), sinceDate)
 		rules, err := s.sqlStore.ListDomainRules(r.Context())
 		if err == nil {
 			entries := make([]domainEntry, 0, len(rules))
@@ -84,6 +87,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 					Mode:               modeVal,
 					TotalBytesSent:     u.BytesSent,
 					TotalBytesReceived: u.BytesReceived,
+					TotalDNSQueries:    dnsMap[rRow.Domain],
 					CreatedAt:          formatISO8601(rRow.CreatedAt),
 					UpdatedAt:          formatISO8601(rRow.UpdatedAt),
 				})
@@ -94,8 +98,10 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var usageMap map[string]sqlitestore.DomainUsageTotal
+	var dnsMap map[string]int64
 	if s.sqlStore != nil {
 		usageMap, _ = s.sqlStore.ListDomainsTotalUsage(r.Context(), sinceDate)
+		dnsMap, _ = s.sqlStore.ListDomainsDNSTotals(r.Context(), sinceDate)
 	}
 	all := s.ruleStore.AllRules()
 	entries := make([]domainEntry, 0, len(all))
@@ -104,6 +110,9 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 		if u, ok := usageMap[domain]; ok {
 			e.TotalBytesSent = u.BytesSent
 			e.TotalBytesReceived = u.BytesReceived
+		}
+		if dnsMap != nil {
+			e.TotalDNSQueries = dnsMap[domain]
 		}
 		entries = append(entries, e)
 	}
@@ -121,7 +130,11 @@ func parseDomainParam(r *http.Request) string {
 
 func (s *Server) handleGetDomainUsage(w http.ResponseWriter, r *http.Request) {
 	if s.sqlStore == nil {
-		jsonOK(w, map[string]interface{}{"days": []sqlitestore.DomainUsageDayRow{}})
+		jsonOK(w, map[string]interface{}{
+			"days":              []sqlitestore.DomainUsageDayRow{},
+			"dns_days":          []sqlitestore.DomainDNSUsageDayRow{},
+			"total_dns_queries": 0,
+		})
 		return
 	}
 	domain := parseDomainParam(r)
@@ -144,7 +157,45 @@ func (s *Server) handleGetDomainUsage(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []sqlitestore.DomainUsageDayRow{}
 	}
-	jsonOK(w, map[string]interface{}{"days": rows})
+
+	dnsRows, err := s.sqlStore.GetDomainDNSUsageDaily(r.Context(), domain, sinceDate)
+	if err != nil {
+		slog.Error("get domain dns usage daily error", "domain", domain, "error", err)
+		jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if dnsRows == nil {
+		dnsRows = []sqlitestore.DomainDNSUsageDayRow{}
+	}
+
+	var totalDNS int64
+	for _, dr := range dnsRows {
+		totalDNS += dr.QueryCount
+	}
+
+	dayMap := make(map[string]int, len(rows))
+	for i, r := range rows {
+		dayMap[r.Date] = i
+	}
+	for _, dr := range dnsRows {
+		if idx, ok := dayMap[dr.Date]; ok {
+			rows[idx].DNSQueries = dr.QueryCount
+		} else {
+			rows = append(rows, sqlitestore.DomainUsageDayRow{
+				Date:       dr.Date,
+				DNSQueries: dr.QueryCount,
+			})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].Date < rows[j].Date
+	})
+
+	jsonOK(w, map[string]interface{}{
+		"days":              rows,
+		"dns_days":          dnsRows,
+		"total_dns_queries": totalDNS,
+	})
 }
 
 func (s *Server) handleGetDomainUsageMonthly(w http.ResponseWriter, r *http.Request) {

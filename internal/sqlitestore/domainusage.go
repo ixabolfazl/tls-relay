@@ -16,6 +16,7 @@ type DomainUsageDayRow struct {
 	Date          string `json:"date"` // "YYYY-MM-DD" UTC
 	BytesSent     int64  `json:"bytes_sent"`
 	BytesReceived int64  `json:"bytes_received"`
+	DNSQueries    int64  `json:"dns_queries"`
 }
 
 // DomainUsageMonthRow represents a single month's usage for a domain.

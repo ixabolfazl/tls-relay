@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -709,5 +710,91 @@ func TestServer_SetUpstreamsHotReload(t *testing.T) {
 	}
 	if a, ok := resp2.Answer[0].(*dns.A); !ok || a.A.String() != "192.0.2.20" {
 		t.Fatalf("expected 192.0.2.20, got %v", resp2.Answer[0])
+	}
+}
+
+type mockDNSUsageEmitter struct {
+	mu            sync.Mutex
+	userQueries   []int64
+	domainQueries []string
+}
+
+func (m *mockDNSUsageEmitter) EmitDNSQuery(userID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.userQueries = append(m.userQueries, userID)
+}
+
+func (m *mockDNSUsageEmitter) EmitDomainDNSQuery(domain string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.domainQueries = append(m.domainQueries, domain)
+}
+
+func TestHandleQuery_EmitsDomainDNSQuery(t *testing.T) {
+	rs := rules.NewRuleStore([]int{443}, "reject")
+	_ = rs.Swap(map[string]string{
+		"myconfigured.com": `{"ports":[443],"mode":"proxy"}`,
+		"*.wildcard.org":   `{"ports":[443],"mode":"proxy"}`,
+	})
+	as := access.NewAccessStore(access.ModePublic)
+
+	srvLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("srv listen: %v", err)
+	}
+	srvAddr := srvLn.LocalAddr().String()
+	_ = srvLn.Close()
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:        srvAddr,
+		RelayIP:     "192.0.2.1",
+		TTL:         60,
+		QPS:         1000,
+		Burst:       1000,
+		EDNSBufSize: 1232,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	emitter := &mockDNSUsageEmitter{}
+	srv.SetUsageTracker(emitter)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	defer func() {
+		cancel()
+		srv.Close()
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	c := new(dns.Client)
+
+	// Query exact match domain
+	req1 := new(dns.Msg)
+	req1.SetQuestion("myconfigured.com.", dns.TypeA)
+	_, _, err = c.Exchange(req1, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange 1: %v", err)
+	}
+
+	// Query wildcard domain
+	req2 := new(dns.Msg)
+	req2.SetQuestion("sub.wildcard.org.", dns.TypeA)
+	_, _, err = c.Exchange(req2, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange 2: %v", err)
+	}
+
+	emitter.mu.Lock()
+	defer emitter.mu.Unlock()
+	if len(emitter.domainQueries) != 2 {
+		t.Fatalf("expected 2 domain DNS queries, got %d", len(emitter.domainQueries))
+	}
+	if emitter.domainQueries[0] != "myconfigured.com" {
+		t.Errorf("query 0 domain got %q, want myconfigured.com", emitter.domainQueries[0])
+	}
+	if emitter.domainQueries[1] != "*.wildcard.org" {
+		t.Errorf("query 1 domain got %q, want *.wildcard.org", emitter.domainQueries[1])
 	}
 }
