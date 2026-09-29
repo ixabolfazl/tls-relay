@@ -129,8 +129,8 @@ export const api = {
     }),
   bulkAssignMode: (domains, mode) =>
     apiFetch('api/domains/bulk-assign-mode', { method: 'POST', body: JSON.stringify({ domains, mode }) }),
-  getDomainUsage: (domain, days = 30) =>
-    apiFetch(`api/domains/${encodeURIComponent(domain)}/usage?days=${encodeURIComponent(days)}`),
+  getDomainUsage: (domain, range = '30d') =>
+    apiFetch(`api/domains/${encodeURIComponent(domain)}/usage?range=${encodeURIComponent(range)}&days=${encodeURIComponent(range)}`),
   getDomainUsageMonthly: (domain, months = 12) =>
     apiFetch(`api/domains/${encodeURIComponent(domain)}/usage/monthly?months=${encodeURIComponent(months)}`),
   getDomainUsageUsers: (domain, range = 'today') =>

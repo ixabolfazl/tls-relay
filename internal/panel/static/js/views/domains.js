@@ -13,7 +13,7 @@ import { showMenu } from '../ui/menu.js';
 import { createCombobox } from '../ui/combobox.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { createDomainRuleForm } from './domain-rule-form.js';
-import { renderGroupedBarChart } from '../ui/chart.js';
+import { openUsageReportDialog } from './usage-report.js';
 import { renderPagination } from '../ui/pagination.js';
 import {
   parseDomainTokens,
@@ -29,6 +29,7 @@ export function mount(container) {
   let activeMode = 'proxy'; // proxy | direct | block
   let viewMode = localStorage.getItem('relay_domains_view') || 'flat'; // flat | grouped
   let expandedGroups = new Set(); // Default: all groups collapsed
+  let activeRange = 'today';
   let searchQuery = '';
 
   const tableState = new TableState({
@@ -84,6 +85,9 @@ export function mount(container) {
 
               <!-- Grouped / Flat View Toggle -->
               <div id="dom-view-segmented"></div>
+
+              <!-- Time Range Selector -->
+              <div id="dom-range-segmented"></div>
             </div>
 
             <div class="flex items-center gap-3">
@@ -140,10 +144,28 @@ export function mount(container) {
                   </th>
                   <th class="table-th">Ports</th>
                   <th class="table-th">Egress</th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="sent">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>Sent</span>
+                      <span id="sort-icon-sent" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="received">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>Received</span>
+                      <span id="sort-icon-received" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
                   <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
                     <div class="flex items-center justify-end gap-1.5">
-                      <span>Usage (Total)</span>
+                      <span>Total</span>
                       <span id="sort-icon-usage" class="text-txt-subtle text-xs">↕</span>
+                    </div>
+                  </th>
+                  <th class="table-th cursor-pointer select-none text-right" data-sort="queries">
+                    <div class="flex items-center justify-end gap-1.5">
+                      <span>DNS Queries</span>
+                      <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
                   <th class="table-th cursor-pointer select-none" data-sort="created_at">
@@ -157,7 +179,7 @@ export function mount(container) {
               </thead>
               <tbody id="dom-table-body">
                 <tr>
-                  <td colspan="8" class="table-td text-center py-12 text-txt-subtle">
+                  <td colspan="11" class="table-td text-center py-12 text-txt-subtle">
                     <div class="flex flex-col items-center justify-center gap-2">
                       <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                       <span>Loading domain rules...</span>
@@ -304,7 +326,7 @@ export function mount(container) {
   // Fetch Domains
   async function fetchDomains() {
     try {
-      const res = await api.getDomains();
+      const res = await api.getDomains(activeRange);
       allDomains = res.domains || [];
 
       // Extract unique groups
@@ -318,11 +340,12 @@ export function mount(container) {
       if (addFormObj) addFormObj.setGroups(groups);
 
       initModeSegmented();
+      initRangeSegmented();
       renderTable();
     } catch (err) {
       $('#dom-table-body', container).innerHTML = `
         <tr>
-          <td colspan="8" class="table-td text-center py-8 text-danger">
+          <td colspan="11" class="table-td text-center py-8 text-danger">
             Failed to load domain rules: ${escapeHtml(err.message)}
           </td>
         </tr>
@@ -360,6 +383,9 @@ export function mount(container) {
         const usageB = (b.total_bytes_sent || 0) + (b.total_bytes_received || 0);
         return usageA - usageB;
       },
+      sent: (a, b) => (a.total_bytes_sent || 0) - (b.total_bytes_sent || 0),
+      received: (a, b) => (a.total_bytes_received || 0) - (b.total_bytes_received || 0),
+      queries: (a, b) => (a.total_dns_queries || 0) - (b.total_dns_queries || 0),
     };
 
     const sortedDomains = tableState.getSortedItems(filteredDomains, customComparators);
@@ -368,7 +394,7 @@ export function mount(container) {
     if (sortedDomains.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="8" class="table-td text-center py-12 text-txt-subtle italic">
+          <td colspan="11" class="table-td text-center py-12 text-txt-subtle italic">
             ${searchQuery ? 'No domains matching your search' : 'No domain rules in this mode'}
           </td>
         </tr>
@@ -444,7 +470,7 @@ export function mount(container) {
         <td class="table-td w-10 text-center">
           <input type="checkbox" class="checkbox group-checkbox mx-auto" ${isAllGroupSelected ? 'checked' : ''} />
         </td>
-        <td colspan="7" class="table-td cursor-pointer">
+        <td colspan="10" class="table-td cursor-pointer">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2 text-txt">
               <svg class="w-4 h-4 text-txt-subtle transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -529,8 +555,17 @@ export function mount(container) {
       <td class="table-td text-xs">
         ${isEgress ? `<span class="badge badge-success">Enabled</span>` : `<span class="text-txt-subtle">—</span>`}
       </td>
-      <td class="table-td text-right font-mono text-xs tabular-nums text-txt">
+      <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
+        ${(d.total_bytes_sent || 0) > 0 ? formatBytes(d.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}
+      </td>
+      <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
+        ${(d.total_bytes_received || 0) > 0 ? formatBytes(d.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}
+      </td>
+      <td class="table-td text-right font-mono text-xs tabular-nums font-semibold text-txt">
         ${totalBytes > 0 ? formatBytes(totalBytes) : '<span class="text-txt-subtle">0 B</span>'}
+      </td>
+      <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
+        ${(d.total_dns_queries || 0) > 0 ? formatCount(d.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
       </td>
       <td class="table-td text-xs text-txt-muted">
         ${formatDate(d.created_at)}
@@ -557,7 +592,7 @@ export function mount(container) {
         {
           text: 'Usage Analytics',
           icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
-          onClick: () => openDomainUsageDialog(d),
+          onClick: () => openUsageReportDialog({ kind: 'domain', name: d.domain }),
         },
         {
           text: 'Edit Rule',
@@ -1175,123 +1210,26 @@ export function mount(container) {
     }
   }
 
-  // Domain Usage Analytics Modal
-  async function openDomainUsageDialog(d) {
-    const content = document.createElement('div');
-    content.className = 'space-y-4';
-    content.innerHTML = `
-      <div class="flex items-center justify-between">
-        <div id="dom-usage-segmented"></div>
-        <span class="text-xs text-txt-muted font-mono">${escapeHtml(d.domain)}</span>
-      </div>
-      <div id="dom-usage-chart-box" class="min-h-[200px]"></div>
-      <div class="pt-2 border-t border-border">
-        <h4 class="text-xs font-semibold uppercase text-txt-muted mb-2">Top Users</h4>
-        <div id="dom-usage-users-box" class="max-h-48 overflow-y-auto">
-          <div class="text-xs text-txt-subtle italic py-2">Loading users...</div>
-        </div>
-      </div>
-    `;
-
-    let usageRange = '30d';
-    let chartObj = null;
-
-    async function loadUsageData() {
-      try {
-        let chartData = [];
-        if (usageRange === 'monthly') {
-          const res = await api.getDomainUsageMonthly(d.domain, 12);
-          chartData = (res.months || []).map((m) => ({
-            label: m.month,
-            sent: m.bytes_sent || 0,
-            recv: m.bytes_received || 0,
-          }));
-        } else {
-          const res = await api.getDomainUsage(d.domain, 30);
-          chartData = (res.days || []).map((item) => ({
-            label: formatDate(item.date),
-            sent: item.bytes_sent || 0,
-            recv: item.bytes_received || 0,
-          }));
-        }
-
-        if (chartObj) chartObj.destroy();
-        chartObj = renderGroupedBarChart(content.querySelector('#dom-usage-chart-box'), {
-          data: chartData,
-          series: [
-            { key: 'sent', label: 'Bytes Sent', color: '#3b82f6' },
-            { key: 'recv', label: 'Bytes Received', color: '#10b981' },
-          ],
-          formatValue: (v) => formatBytes(v),
-        });
-
-        // Top users
-        const usersRes = await api.getDomainUsageUsers(d.domain, usageRange === 'monthly' ? 'monthly' : 'today');
-        const usersBox = content.querySelector('#dom-usage-users-box');
-        const userList = usersRes.users || [];
-
-        if (userList.length === 0) {
-          usersBox.innerHTML = `<div class="text-xs text-txt-subtle italic py-2">No user traffic recorded</div>`;
-        } else {
-          usersBox.innerHTML = `
-            <table class="table text-xs">
-              <thead>
-                <tr>
-                  <th class="table-th py-1.5">User</th>
-                  <th class="table-th py-1.5 text-right">Sent</th>
-                  <th class="table-th py-1.5 text-right">Received</th>
-                  <th class="table-th py-1.5 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${userList
-                  .map(
-                    (u) => `
-                  <tr>
-                    <td class="table-td py-1.5 font-medium">${escapeHtml(u.username)}</td>
-                    <td class="table-td py-1.5 text-right font-mono tabular-nums">${formatBytes(u.bytes_sent)}</td>
-                    <td class="table-td py-1.5 text-right font-mono tabular-nums">${formatBytes(u.bytes_received)}</td>
-                    <td class="table-td py-1.5 text-right font-mono tabular-nums font-semibold">${formatBytes(
-                      (u.bytes_sent || 0) + (u.bytes_received || 0)
-                    )}</td>
-                  </tr>
-                `
-                  )
-                  .join('')}
-              </tbody>
-            </table>
-          `;
-        }
-      } catch (err) {
-        console.warn('Domain usage error:', err);
-      }
-    }
-
-    const seg = createSegmentedControl({
+  // Range Segmented Control
+  let rangeSegObj = null;
+  function initRangeSegmented() {
+    const el = $('#dom-range-segmented', container);
+    if (!el || rangeSegObj) return;
+    rangeSegObj = createSegmentedControl(el, {
       options: [
-        { value: '30d', label: 'Daily (30d)' },
-        { value: 'monthly', label: 'Monthly (12m)' },
+        { value: 'today', label: 'Today' },
+        { value: '7d', label: '7d' },
+        { value: '30d', label: '30d' },
+        { value: 'monthly', label: 'Monthly' },
+        { value: 'all', label: 'All' },
       ],
-      value: usageRange,
+      value: activeRange,
       size: 'sm',
       onChange: (val) => {
-        usageRange = val;
-        loadUsageData();
+        activeRange = val;
+        fetchDomains();
       },
     });
-    content.querySelector('#dom-usage-segmented').appendChild(seg.el);
-
-    dialog.open({
-      title: `Usage Analytics: ${d.domain}`,
-      content,
-      size: 'lg',
-      actions: [{ text: 'Close', className: 'btn btn-secondary', value: true }],
-      onClose: () => {
-        if (chartObj) chartObj.destroy();
-      },
-    });
-
-    loadUsageData();
   }
 
   // Sorting header click listeners
@@ -1304,7 +1242,7 @@ export function mount(container) {
   });
 
   function updateSortIcons() {
-    ['domain', 'group_name', 'usage', 'created_at'].forEach((k) => {
+    ['domain', 'group_name', 'sent', 'received', 'usage', 'queries', 'created_at'].forEach((k) => {
       const icon = $(`#sort-icon-${k}`, container);
       if (!icon) return;
       if (tableState.sortKey === k) {

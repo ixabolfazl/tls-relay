@@ -13,13 +13,14 @@ import { toast } from '../ui/toast.js';
 import { showMenu } from '../ui/menu.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { store } from '../core/store.js';
-import { navigate } from '../core/router.js';
+import { openUsageReportDialog } from './usage-report.js';
 import { copyText } from '../core/clipboard.js';
 import { renderPagination } from '../ui/pagination.js';
 
 export function mount(container) {
   let isMounted = true;
   let activeTab = 'accounts'; // accounts | presence
+  let activeRange = 'today';
   let allUsers = [];
   let presenceData = { users: [], total_online: 0, total_users: 0, active_connections: 0 };
   let searchQuery = '';
@@ -94,10 +95,13 @@ export function mount(container) {
 
           <!-- Accounts Table Card -->
           <div class="card">
-            <div class="p-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div class="flex items-center gap-2">
-                <h2 class="text-base font-semibold text-txt">Accounts</h2>
-                <span id="users-count-badge" class="badge badge-neutral tabular-nums">0 users</span>
+            <div class="p-4 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div class="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0">
+                <div class="flex items-center gap-2">
+                  <h2 class="text-base font-semibold text-txt">Accounts</h2>
+                  <span id="users-count-badge" class="badge badge-neutral tabular-nums">0 users</span>
+                </div>
+                <div id="users-range-segmented"></div>
               </div>
               <div class="relative w-full sm:w-64">
                 <input
@@ -130,10 +134,28 @@ export function mount(container) {
                         <span id="sort-icon-last_seen_at" class="text-txt-subtle text-xs">↕</span>
                       </div>
                     </th>
-                    <th class="table-th cursor-pointer select-none" data-sort="usage">
-                      <div class="flex items-center gap-1.5">
-                        <span>Total Bandwidth</span>
+                    <th class="table-th cursor-pointer select-none text-right" data-sort="sent">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <span>Sent</span>
+                        <span id="sort-icon-sent" class="text-txt-subtle text-xs">↕</span>
+                      </div>
+                    </th>
+                    <th class="table-th cursor-pointer select-none text-right" data-sort="received">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <span>Received</span>
+                        <span id="sort-icon-received" class="text-txt-subtle text-xs">↕</span>
+                      </div>
+                    </th>
+                    <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <span>Total</span>
                         <span id="sort-icon-usage" class="text-txt-subtle text-xs">↕</span>
+                      </div>
+                    </th>
+                    <th class="table-th cursor-pointer select-none text-right" data-sort="queries">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <span>DNS Queries</span>
+                        <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
                       </div>
                     </th>
                     <th class="table-th">Token</th>
@@ -142,7 +164,7 @@ export function mount(container) {
                 </thead>
                 <tbody id="users-table-body">
                   <tr>
-                    <td colspan="7" class="table-td text-center py-12 text-txt-subtle">
+                    <td colspan="10" class="table-td text-center py-12 text-txt-subtle">
                       <div class="flex flex-col items-center justify-center gap-2">
                         <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                         <span>Loading user accounts...</span>
@@ -294,19 +316,20 @@ export function mount(container) {
   async function fetchUsers() {
     if (!isMounted) return;
     try {
-      const [usersRes, presRes] = await Promise.all([api.getUsers(), api.getPresence()]);
+      const [usersRes, presRes] = await Promise.all([api.getUsers(activeRange), api.getPresence()]);
       if (!isMounted) return;
       allUsers = usersRes.users || [];
       presenceData = presRes || { users: [], total_online: 0, total_users: 0, active_connections: 0 };
 
       $('#users-count-badge', container).textContent = `${allUsers.length} users`;
+      initUsersRangeSegmented();
       renderAccountsTable();
       renderPresenceView();
     } catch (err) {
       if (!isMounted) return;
       $('#users-table-body', container).innerHTML = `
         <tr>
-          <td colspan="7" class="table-td text-center py-8 text-danger">
+          <td colspan="10" class="table-td text-center py-8 text-danger">
             Failed to load users: ${escapeHtml(err.message)}
           </td>
         </tr>
@@ -353,6 +376,9 @@ export function mount(container) {
         const uB = (b.total_bytes_sent || 0) + (b.total_bytes_received || 0);
         return uA - uB;
       },
+      sent: (a, b) => (a.total_bytes_sent || 0) - (b.total_bytes_sent || 0),
+      received: (a, b) => (a.total_bytes_received || 0) - (b.total_bytes_received || 0),
+      queries: (a, b) => (a.total_dns_queries || 0) - (b.total_dns_queries || 0),
       last_seen_at: (a, b) => {
         const tA = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0;
         const tB = b.last_seen_at ? new Date(b.last_seen_at).getTime() : 0;
@@ -366,7 +392,7 @@ export function mount(container) {
     if (sorted.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="7" class="table-td text-center py-12 text-txt-subtle italic">
+          <td colspan="10" class="table-td text-center py-12 text-txt-subtle italic">
             ${searchQuery ? 'No users matching your search' : 'No user accounts created yet'}
           </td>
         </tr>
@@ -418,11 +444,20 @@ export function mount(container) {
         <td class="table-td text-xs text-txt-muted tabular-nums">
           ${formatRelativeTime(u.last_seen_at)}
         </td>
-        <td class="table-td text-xs font-mono tabular-nums text-txt">
-          <div class="flex flex-col">
-            <span class="font-semibold">${formatBytes(totalBandwidth)}</span>
+        <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
+          ${(u.total_bytes_sent || 0) > 0 ? formatBytes(u.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}
+        </td>
+        <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
+          ${(u.total_bytes_received || 0) > 0 ? formatBytes(u.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}
+        </td>
+        <td class="table-td text-right text-xs font-mono tabular-nums text-txt">
+          <div class="flex flex-col items-end">
+            <span class="font-semibold">${totalBandwidth > 0 ? formatBytes(totalBandwidth) : '<span class="text-txt-subtle">0 B</span>'}</span>
             <span class="text-[10px] text-txt-subtle">${maxIps === 0 ? 'Unlimited IPs' : `Max ${maxIps} IP${maxIps === 1 ? '' : 's'}`}</span>
           </div>
+        </td>
+        <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
+          ${(u.total_dns_queries || 0) > 0 ? formatCount(u.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
         </td>
         <td class="table-td font-mono text-xs text-txt-muted">
           <div class="flex items-center gap-1.5">
@@ -481,7 +516,7 @@ export function mount(container) {
           {
             text: 'Usage Analytics',
             icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
-            onClick: () => navigate('usage'),
+            onClick: () => openUsageReportDialog({ kind: 'user', id: u.id, name: u.username, onReset: fetchUsers }),
           },
           {
             text: 'Copy Magic Link',
@@ -912,8 +947,29 @@ export function mount(container) {
     });
   });
 
+  let usersRangeSegObj = null;
+  function initUsersRangeSegmented() {
+    const el = $('#users-range-segmented', container);
+    if (!el || usersRangeSegObj) return;
+    usersRangeSegObj = createSegmentedControl(el, {
+      options: [
+        { value: 'today', label: 'Today' },
+        { value: '7d', label: '7d' },
+        { value: '30d', label: '30d' },
+        { value: 'monthly', label: 'Monthly' },
+        { value: 'all', label: 'All' },
+      ],
+      value: activeRange,
+      size: 'sm',
+      onChange: (val) => {
+        activeRange = val;
+        fetchUsers();
+      },
+    });
+  }
+
   function updateSortIcons() {
-    ['username', 'last_seen_at', 'usage'].forEach((k) => {
+    ['username', 'last_seen_at', 'sent', 'received', 'usage', 'queries'].forEach((k) => {
       const icon = $(`#sort-icon-${k}`, container);
       if (!icon) return;
       if (tableState.sortKey === k) {

@@ -56,7 +56,6 @@ func TestStaticPagePartialsServed(t *testing.T) {
 		"/static/pages/users.html",
 		"/static/pages/blacklist.html",
 		"/static/pages/request-logs.html",
-		"/static/pages/usage.html",
 		"/static/pages/settings.html",
 		"/static/css/app.css",
 		"/static/js/theme-init.js",

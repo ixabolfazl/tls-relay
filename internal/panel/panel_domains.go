@@ -138,16 +138,10 @@ func (s *Server) handleGetDomainUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	domain := parseDomainParam(r)
-	days := 30
-	if daysStr := r.URL.Query().Get("days"); daysStr != "" {
-		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
-			days = d
-		}
+	sinceDate := parseUsageRange(r)
+	if r.URL.Query().Get("range") == "" && r.URL.Query().Get("days") == "" {
+		sinceDate = time.Now().UTC().AddDate(0, 0, -30)
 	}
-	if days > 365 {
-		days = 365
-	}
-	sinceDate := time.Now().UTC().AddDate(0, 0, -days)
 	rows, err := s.sqlStore.GetDomainUsageDaily(r.Context(), domain, sinceDate)
 	if err != nil {
 		slog.Error("get domain usage daily error", "domain", domain, "error", err)

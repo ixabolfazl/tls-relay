@@ -391,7 +391,9 @@ func parseUsageRange(r *http.Request) time.Time {
 		return now.AddDate(0, 0, -7)
 	case "30d", "30":
 		return now.AddDate(0, 0, -30)
-	case "monthly", "90d", "90", "365":
+	case "90d", "90":
+		return now.AddDate(0, 0, -90)
+	case "monthly", "365d", "365":
 		return now.AddDate(0, 0, -365)
 	case "all":
 		return time.Time{}

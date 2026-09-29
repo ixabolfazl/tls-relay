@@ -12,7 +12,6 @@ const ROUTES = {
   blacklist: () => import('../views/blacklist.js'),
   'request-logs': () => import('../views/logs.js'),
   logs: () => import('../views/logs.js'),
-  usage: () => import('../views/usage.js'),
   settings: () => import('../views/settings.js'),
 };
 
