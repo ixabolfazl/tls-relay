@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 )
 
@@ -74,6 +75,7 @@ func (pal *PortAllowList) Ports() []int {
 
 // SecurityChecker holds the configuration for IP-level validation.
 type SecurityChecker struct {
+	mu           sync.RWMutex
 	blockPrivate bool
 	blockOwn     bool
 	extraCIDRs   []*net.IPNet
@@ -82,6 +84,25 @@ type SecurityChecker struct {
 	// CGNAT: 100.64.0.0/10
 	cgnat *net.IPNet
 }
+
+var blockedPrivateCIDRs = func() []*net.IPNet {
+	cidrs := []string{
+		"0.0.0.0/8",
+		"192.0.0.0/24",
+		"198.18.0.0/15",
+		"240.0.0.0/4",
+		"255.255.255.255/32",
+	}
+	var res []*net.IPNet
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic(err)
+		}
+		res = append(res, n)
+	}
+	return res
+}()
 
 // NewSecurityChecker builds a SecurityChecker.
 //
@@ -116,12 +137,36 @@ func NewSecurityChecker(blockPrivate, blockOwn bool, extraCIDRs []string) (*Secu
 	return sc, nil
 }
 
+// AddOwnIPs adds explicit IP addresses to the ownIPs blocklist.
+func (sc *SecurityChecker) AddOwnIPs(ips ...string) {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, s := range ips {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		ip := net.ParseIP(s)
+		if ip != nil {
+			if v4 := ip.To4(); v4 != nil {
+				ip = v4
+			}
+			sc.ownIPs[ip.String()] = struct{}{}
+		}
+	}
+}
+
 // loadOwnIPs enumerates all local interface addresses and stores them.
 func (sc *SecurityChecker) loadOwnIPs() error {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return err
 	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
 	for _, iface := range ifaces {
 		addrs, err := iface.Addrs()
 		if err != nil {
@@ -173,6 +218,32 @@ func (sc *SecurityChecker) isBlocked(ip net.IP) string {
 		if sc.cgnat != nil && sc.cgnat.Contains(ip) {
 			return "cgnat"
 		}
+		for _, cidr := range blockedPrivateCIDRs {
+			if cidr.Contains(ip) {
+				return "private"
+			}
+		}
+
+		// Check 6to4 and NAT64 embedded IPv4 addresses.
+		if ip.To4() == nil && len(ip) == net.IPv6len {
+			// 6to4: 2002::/16 - bytes 2..5 contain embedded IPv4.
+			if ip[0] == 0x20 && ip[1] == 0x02 {
+				embedded := net.IPv4(ip[2], ip[3], ip[4], ip[5])
+				if r := sc.isBlocked(embedded); r != "" {
+					return "6to4_blocked"
+				}
+			}
+
+			// NAT64 Well-Known Prefix: 64:ff9b::/96 - bytes 12..15 contain embedded IPv4.
+			if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+				ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
+				ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
+				embedded := net.IPv4(ip[12], ip[13], ip[14], ip[15])
+				if r := sc.isBlocked(embedded); r != "" {
+					return "nat64_blocked"
+				}
+			}
+		}
 	}
 
 	for _, cidr := range sc.extraCIDRs {
@@ -182,7 +253,10 @@ func (sc *SecurityChecker) isBlocked(ip net.IP) string {
 	}
 
 	if sc.blockOwn {
-		if _, owned := sc.ownIPs[ip.String()]; owned {
+		sc.mu.RLock()
+		_, owned := sc.ownIPs[ip.String()]
+		sc.mu.RUnlock()
+		if owned {
 			return "own_ip"
 		}
 	}

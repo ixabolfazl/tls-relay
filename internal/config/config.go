@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -249,6 +250,64 @@ func NormalizePanelPath(p string) string {
 		p = "/" + p
 	}
 	return strings.TrimRight(p, "/")
+}
+
+var panelPathRegex = regexp.MustCompile(`^/[A-Za-z0-9_-]{1,64}$`)
+
+var reservedPanelPaths = map[string]struct{}{
+	"api":        {},
+	"connect":    {},
+	"setup":      {},
+	"static":     {},
+	"css":        {},
+	"js":         {},
+	"pages":      {},
+	"index.html": {},
+}
+
+// ValidatePanelPath validates and normalizes a panel URL path prefix.
+// After NormalizePanelPath, it must match ^/[A-Za-z0-9_-]{1,64}$ or be "/".
+// Reserved prefixes (case-insensitive): api, connect, setup, static, css, js, pages, index.html.
+func ValidatePanelPath(p string) (string, error) {
+	norm := NormalizePanelPath(p)
+	if norm == "/" {
+		return "/", nil
+	}
+	if !panelPathRegex.MatchString(norm) {
+		return "", fmt.Errorf("panel_path %q is invalid: must match ^/[A-Za-z0-9_-]{1,64}$ or be '/'", p)
+	}
+	seg := strings.ToLower(strings.TrimPrefix(norm, "/"))
+	if _, reserved := reservedPanelPaths[seg]; reserved {
+		return "", fmt.Errorf("panel_path %q is reserved", p)
+	}
+	return norm, nil
+}
+
+// ValidateAccessMode validates and normalizes the access mode ("public" or "user").
+// On invalid value, it returns "user" and an error.
+func ValidateAccessMode(val string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(val))
+	switch norm {
+	case "public", "user":
+		return norm, nil
+	default:
+		return "user", fmt.Errorf("invalid access_mode %q: must be 'public' or 'user'", val)
+	}
+}
+
+// ValidateUnknownDomainPolicy validates and normalizes the unknown domain policy ("reject" or "allow_default_port").
+// On invalid value, it returns the provided fallback and an error.
+func ValidateUnknownDomainPolicy(val string, fallback string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(val))
+	switch norm {
+	case "reject", "allow_default_port":
+		return norm, nil
+	default:
+		if fallback == "" {
+			fallback = "reject"
+		}
+		return fallback, fmt.Errorf("invalid unknown_domain_policy %q: must be 'reject' or 'allow_default_port'", val)
+	}
 }
 
 // Load reads and parses the YAML file at path, then merges in defaults

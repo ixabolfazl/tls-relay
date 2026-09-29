@@ -1001,3 +1001,97 @@ func TestAllDomainRulesRaw_AllPortsAndFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeGroupName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "control characters stripped",
+			input:    "grp\x01\a\x7fname",
+			expected: "grpname",
+		},
+		{
+			name:     "unicode preserved and trimmed",
+			input:    "   گروه ۱   ",
+			expected: "گروه ۱",
+		},
+		{
+			name:     "max 64 runes enforced on long unicode string",
+			input:    strings.Repeat("گ", 100),
+			expected: strings.Repeat("گ", 64),
+		},
+		{
+			name:     "empty string",
+			input:    "   \x01\x7f   ",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sqlitestore.SanitizeGroupName(tt.input)
+			if got != tt.expected {
+				t.Errorf("SanitizeGroupName(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSanitizeGroupName_WritePaths(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// 1. AddDomainRule
+	if err := store.AddDomainRule(ctx, "d1.com", "grp\x01\a\x7f", "[443]", "default", "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.GetDomainRule(ctx, "d1.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.GroupName != "grp" {
+		t.Errorf("AddDomainRule: expected group_name 'grp', got %q", r.GroupName)
+	}
+
+	// 2. UpdateDomainRule
+	if err := store.UpdateDomainRule(ctx, "d1.com", "updated\x02grp", "[443]", "default", "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	r, err = store.GetDomainRule(ctx, "d1.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.GroupName != "updatedgrp" {
+		t.Errorf("UpdateDomainRule: expected group_name 'updatedgrp', got %q", r.GroupName)
+	}
+
+	// 3. BulkAssignDomainGroup
+	if _, _, err := store.BulkAssignDomainGroup(ctx, []string{"d1.com"}, "bulk\a\x7fgrp"); err != nil {
+		t.Fatal(err)
+	}
+	r, err = store.GetDomainRule(ctx, "d1.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.GroupName != "bulkgrp" {
+		t.Errorf("BulkAssignDomainGroup: expected group_name 'bulkgrp', got %q", r.GroupName)
+	}
+
+	// 4. ImportData
+	importRules := []sqlitestore.DomainRuleRow{
+		{Domain: "imported.com", GroupName: "imp\x01\a\x7fgrp", Ports: "[443]", UseEgressProxy: "default", Mode: "proxy"},
+	}
+	if _, err := store.ImportData(ctx, importRules, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	r, err = store.GetDomainRule(ctx, "imported.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.GroupName != "impgrp" {
+		t.Errorf("ImportData: expected group_name 'impgrp', got %q", r.GroupName)
+	}
+}

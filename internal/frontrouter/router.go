@@ -206,6 +206,8 @@ func (r *Router) dispatchConn(ctx context.Context, conn net.Conn, pln *panelList
 			status = "rejected_no_host"
 		} else if errors.Is(err, httphost.ErrHeaderTooLarge) {
 			status = "rejected_header_too_large"
+		} else if errors.Is(err, httphost.ErrAmbiguousHost) {
+			status = "rejected_ambiguous_host"
 		}
 		r.logRejection(clientIP, "", r.listenPort, status, start)
 		_ = conn.Close()

@@ -269,6 +269,9 @@ func (s *Server) handleConn(
 			} else if errors.Is(err, httphost.ErrHeaderTooLarge) {
 				fields.Status = "rejected_header_too_large"
 				slog.Warn("http connection rejected: header too large", "client_ip", clientIP, "error", err)
+			} else if errors.Is(err, httphost.ErrAmbiguousHost) {
+				fields.Status = "rejected_ambiguous_host"
+				slog.Warn("http connection rejected: ambiguous host", "client_ip", clientIP, "error", err)
 			} else {
 				fields.Status = "rejected_parse_error"
 				slog.Warn("http connection rejected: parse error", "client_ip", clientIP, "error", err)

@@ -87,7 +87,7 @@ func (s *Store) ImportData(ctx context.Context, domainRules []DomainRuleRow, bla
 	// 1. Process Domain Rules
 	for _, r := range domainRules {
 		domain := strings.TrimSpace(r.Domain)
-		groupName := strings.TrimSpace(r.GroupName)
+		groupName := SanitizeGroupName(r.GroupName)
 		ports := strings.TrimSpace(r.Ports)
 		if ports == "" {
 			ports = "[443]"

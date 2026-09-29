@@ -107,14 +107,28 @@ func run(cfgPath string) error {
 
 	envAccessMode := os.Getenv("ACCESS_MODE")
 	dbAccessMode, hasAccessMode := dbSettings["access_mode"]
-	cfg.AccessMode = config.ResolveSetting(envAccessMode, dbAccessMode, hasAccessMode, cfg.AccessMode)
+	rawAccessMode := config.ResolveSetting(envAccessMode, dbAccessMode, hasAccessMode, cfg.AccessMode)
+	validAccessMode, err := config.ValidateAccessMode(rawAccessMode)
+	if err != nil {
+		slog.Warn("invalid access mode configured; falling back to user", "access_mode", rawAccessMode, "error", err)
+	}
+	cfg.AccessMode = validAccessMode
 
 	envPanelPath := os.Getenv("PANEL_PATH")
 	if envPanelPath == "" {
 		envPanelPath = os.Getenv("PANEL_ADMIN_PATH")
 	}
 	dbPanelPath, hasPanelPath := dbSettings["panel_path"]
-	cfg.Panel.Path = config.NormalizePanelPath(config.ResolveSetting(envPanelPath, dbPanelPath, hasPanelPath, cfg.Panel.Path))
+	rawPanelPath := config.ResolveSetting(envPanelPath, dbPanelPath, hasPanelPath, cfg.Panel.Path)
+	validPanelPath, err := config.ValidatePanelPath(rawPanelPath)
+	if err != nil {
+		slog.Error("invalid panel path configured; falling back to config value or /admin", "path", rawPanelPath, "error", err)
+		validPanelPath, err = config.ValidatePanelPath(cfg.Panel.Path)
+		if err != nil {
+			validPanelPath = "/admin"
+		}
+	}
+	cfg.Panel.Path = validPanelPath
 
 	envTimezone := os.Getenv("TIMEZONE")
 	dbTimezone, hasTimezone := dbSettings["timezone"]
@@ -126,7 +140,12 @@ func run(cfgPath string) error {
 
 	envPolicy := os.Getenv("UNKNOWN_DOMAIN_POLICY")
 	dbPolicy, hasPolicy := dbSettings["unknown_domain_policy"]
-	cfg.UnknownDomainPolicy = config.ResolveSetting(envPolicy, dbPolicy, hasPolicy, cfg.UnknownDomainPolicy)
+	rawPolicy := config.ResolveSetting(envPolicy, dbPolicy, hasPolicy, cfg.UnknownDomainPolicy)
+	validPolicy, err := config.ValidateUnknownDomainPolicy(rawPolicy, cfg.UnknownDomainPolicy)
+	if err != nil {
+		slog.Warn("invalid unknown domain policy configured; falling back", "policy", rawPolicy, "fallback", validPolicy, "error", err)
+	}
+	cfg.UnknownDomainPolicy = validPolicy
 
 	// Resolve allowed destination ports from SQLite if configured
 	if dbPorts, hasPorts := dbSettings["allowed_dest_ports"]; hasPorts && strings.TrimSpace(dbPorts) != "" {
@@ -214,6 +233,9 @@ func run(cfgPath string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("building security checker: %w", err)
+	}
+	if cfg.Security.BlockOwnIPs && cfg.DNS.RelayIP != "" {
+		checker.AddOwnIPs(cfg.DNS.RelayIP)
 	}
 
 	envMaxConn := os.Getenv("MAX_CONNECTIONS_PER_IP")

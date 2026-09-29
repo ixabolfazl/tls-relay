@@ -56,7 +56,7 @@ func (s *Syncer) RefreshDomains(ctx context.Context) error {
 		return err
 	}
 	if err := s.ruleStore.Swap(rawRules); err != nil {
-		return err
+		slog.Error("errors encountered during domain rules swap, skipped bad rules", "error", err)
 	}
 	slog.Info("domain rules loaded from SQLite", "count", len(rawRules))
 	return nil

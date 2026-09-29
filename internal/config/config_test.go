@@ -203,3 +203,91 @@ func TestLoad_EgressProxyEnv(t *testing.T) {
 		t.Errorf("expected egress proxy addr '127.0.0.1:1080', got %q", cfg.EgressProxy.Addr)
 	}
 }
+
+func TestValidatePanelPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "root slash", input: "/", want: "/", wantErr: false},
+		{name: "empty string normalizes to root", input: "", want: "/", wantErr: false},
+		{name: "valid admin", input: "/admin", want: "/admin", wantErr: false},
+		{name: "valid admin trailing slash", input: "/admin/", want: "/admin", wantErr: false},
+		{name: "valid custom with hyphen and underscore", input: "/my_secret-panel_123", want: "/my_secret-panel_123", wantErr: false},
+		{name: "reserved setup", input: "/setup", wantErr: true},
+		{name: "reserved connect", input: "/connect", wantErr: true},
+		{name: "reserved api", input: "/api", wantErr: true},
+		{name: "reserved static", input: "/static", wantErr: true},
+		{name: "reserved css", input: "/css", wantErr: true},
+		{name: "reserved js", input: "/js", wantErr: true},
+		{name: "reserved pages", input: "/pages", wantErr: true},
+		{name: "reserved index.html", input: "/index.html", wantErr: true},
+		{name: "invalid curly braces", input: "/{x}", wantErr: true},
+		{name: "invalid space", input: "/a b", wantErr: true},
+		{name: "too long path", input: "/" + strings.Repeat("a", 65), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := config.ValidatePanelPath(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidatePanelPath(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("ValidatePanelPath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateAccessMode(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "public", want: "public", wantErr: false},
+		{input: "user", want: "user", wantErr: false},
+		{input: "  PUBLIC  ", want: "public", wantErr: false},
+		{input: "  User\n", want: "user", wantErr: false},
+		{input: "invalid", want: "user", wantErr: true},
+		{input: "", want: "user", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := config.ValidateAccessMode(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ValidateAccessMode(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+		}
+		if got != tt.want {
+			t.Errorf("ValidateAccessMode(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestValidateUnknownDomainPolicy(t *testing.T) {
+	tests := []struct {
+		input    string
+		fallback string
+		want     string
+		wantErr  bool
+	}{
+		{input: "reject", fallback: "allow_default_port", want: "reject", wantErr: false},
+		{input: "allow_default_port", fallback: "reject", want: "allow_default_port", wantErr: false},
+		{input: "  ALLOW_DEFAULT_PORT  ", fallback: "reject", want: "allow_default_port", wantErr: false},
+		{input: "unknown", fallback: "allow_default_port", want: "allow_default_port", wantErr: true},
+		{input: "bad", fallback: "reject", want: "reject", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := config.ValidateUnknownDomainPolicy(tt.input, tt.fallback)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ValidateUnknownDomainPolicy(%q, %q) error = %v, wantErr %v", tt.input, tt.fallback, err, tt.wantErr)
+		}
+		if got != tt.want {
+			t.Errorf("ValidateUnknownDomainPolicy(%q, %q) = %q, want %q", tt.input, tt.fallback, got, tt.want)
+		}
+	}
+}

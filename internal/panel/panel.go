@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
+	"github.com/ixabolfazl/tls-relay/internal/config"
 	"github.com/ixabolfazl/tls-relay/internal/dnsresolver"
 	"github.com/ixabolfazl/tls-relay/internal/relay"
 	"github.com/ixabolfazl/tls-relay/internal/requestlog"
@@ -591,7 +592,13 @@ func (s *Server) Timezone() string {
 
 // applyPathPrefixInternal rebuilds the mux for the given (already normalized) prefix.
 // Must NOT be called while holding s.mu — registerRoutesWithPrefix acquires it via RLock.
-func (s *Server) applyPathPrefixInternal(norm string) error {
+func (s *Server) applyPathPrefixInternal(norm string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panicked while applying path prefix %q: %v", norm, r)
+			slog.Error("recovered panic applying path prefix", "prefix", norm, "panic", r)
+		}
+	}()
 	mux := http.NewServeMux()
 	s.registerRoutesWithPrefix(mux, norm)
 	s.activeMux.Store(mux)
@@ -604,9 +611,32 @@ func (s *Server) applyPathPrefixInternal(norm string) error {
 	return nil
 }
 
+// DryRunPathPrefix validates the prefix and tests route registration on a throwaway mux
+// without modifying server state.
+func (s *Server) DryRunPathPrefix(newPrefix string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panicked during route registration for %q: %v", newPrefix, r)
+		}
+	}()
+	valid, err := config.ValidatePanelPath(newPrefix)
+	if err != nil {
+		return err
+	}
+	norm := normalizePanelPathPrefix(valid)
+	testMux := http.NewServeMux()
+	s.registerRoutesWithPrefix(testMux, norm)
+	return nil
+}
+
 // ApplyPathPrefix rebuilds the http.ServeMux with newPrefix and atomically swaps it in.
+// It guards route registration with recover() and only swaps the mux on success.
 func (s *Server) ApplyPathPrefix(newPrefix string) error {
-	norm := normalizePanelPathPrefix(newPrefix)
+	valid, err := config.ValidatePanelPath(newPrefix)
+	if err != nil {
+		return err
+	}
+	norm := normalizePanelPathPrefix(valid)
 	return s.applyPathPrefixInternal(norm)
 }
 

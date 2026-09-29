@@ -103,7 +103,12 @@ func (s *Server) ListenAndServe(ctx context.Context, wg *sync.WaitGroup) error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
-	slog.Info("relay listening", "addr", addr)
+	return s.Serve(ctx, ln, wg)
+}
+
+// Serve accepts connections on ln until ctx is cancelled.
+func (s *Server) Serve(ctx context.Context, ln net.Listener, wg *sync.WaitGroup) error {
+	slog.Info("relay listening", "addr", ln.Addr().String())
 
 	// Close the listener when ctx is cancelled to unblock Accept.
 	go func() {
@@ -126,9 +131,13 @@ func (s *Server) ListenAndServe(ctx context.Context, wg *sync.WaitGroup) error {
 		// faster than the idle timeout, preventing ghost-online presence entries.
 		SetTCPKeepalive(conn, s.cfg.Timeouts.TCPKeepalive.Duration)
 
-		wg.Add(1)
+		if wg != nil {
+			wg.Add(1)
+		}
 		go func() {
-			defer wg.Done()
+			if wg != nil {
+				defer wg.Done()
+			}
 			s.handleConn(ctx, conn)
 		}()
 	}
@@ -249,6 +258,14 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 			fields.Status = "rejected_parse_error"
 			slog.Warn("connection rejected: parse error", "client_ip", clientIP, "error", err)
 		}
+		return
+	}
+
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	if isInvalidSNI(hostname) {
+		fields.SNI = hostname
+		fields.Status = "rejected_bad_sni"
+		slog.Warn("connection rejected: bad SNI", "client_ip", clientIP, "sni", hostname)
 		return
 	}
 	fields.SNI = hostname
@@ -590,4 +607,17 @@ func SetTCPKeepalive(conn net.Conn, period time.Duration) {
 	}
 	_ = tc.SetKeepAlive(true)
 	_ = tc.SetKeepAlivePeriod(period)
+}
+
+func isInvalidSNI(s string) bool {
+	if s == "" || len(s) > 253 {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7f || c == ' ' || c == '/' || c == '\\' {
+			return true
+		}
+	}
+	return false
 }

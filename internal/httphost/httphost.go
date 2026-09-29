@@ -21,6 +21,7 @@ var (
 	ErrNotHTTP        = errors.New("not a valid HTTP request")
 	ErrNoHost         = errors.New("missing Host header")
 	ErrHeaderTooLarge = errors.New("HTTP headers exceed maximum allowed size")
+	ErrAmbiguousHost  = errors.New("ambiguous Host header or request target")
 )
 
 // ReadHostAndRequestLine reads up to maxHeaderSize bytes from r, returning all
@@ -98,14 +99,44 @@ func ReadHostAndRequestLine(r io.Reader) (peeked []byte, host string, err error)
 		return buf, "", ErrNotHTTP
 	}
 
-	hostHeader := headers.Get("Host")
-	if hostHeader == "" {
+	hostHeaders := headers["Host"]
+	if len(hostHeaders) == 0 {
 		return buf, "", ErrNoHost
+	}
+	if len(hostHeaders) > 1 {
+		return buf, "", ErrAmbiguousHost
+	}
+
+	hostHeader := hostHeaders[0]
+	if strings.Contains(hostHeader, ",") {
+		return buf, "", ErrAmbiguousHost
 	}
 
 	normalizedHost := normalizeHost(hostHeader)
 	if normalizedHost == "" {
 		return buf, "", ErrNoHost
+	}
+
+	// Reject absolute-form request targets whose authority differs from the Host header.
+	target := parts[1]
+	targetLower := strings.ToLower(target)
+	if strings.HasPrefix(targetLower, "http://") || strings.HasPrefix(targetLower, "https://") {
+		rest := target[strings.Index(target, "://")+3:]
+		end := len(rest)
+		for i, c := range rest {
+			if c == '/' || c == '?' || c == '#' {
+				end = i
+				break
+			}
+		}
+		authority := rest[:end]
+		if atIdx := strings.LastIndex(authority, "@"); atIdx != -1 {
+			authority = authority[atIdx+1:]
+		}
+		targetHost := normalizeHost(authority)
+		if targetHost != normalizedHost {
+			return buf, "", ErrAmbiguousHost
+		}
 	}
 
 	return buf, normalizedHost, nil

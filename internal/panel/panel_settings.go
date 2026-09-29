@@ -332,14 +332,24 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	if req.PanelPath != nil {
 		path := strings.TrimSpace(*req.PanelPath)
+		validPath, err := config.ValidatePanelPath(path)
+		if err != nil {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.DryRunPathPrefix(validPath); err != nil {
+			slog.Error("failed to dry-run new panel path prefix", "path", validPath, "error", err)
+			jsonErr(w, "invalid panel path", http.StatusBadRequest)
+			return
+		}
 		if s.sqlStore != nil {
-			if err := s.sqlStore.SetSetting(r.Context(), "panel_path", path); err != nil {
+			if err := s.sqlStore.SetSetting(r.Context(), "panel_path", validPath); err != nil {
 				slog.Error("failed to persist panel_path setting", "error", err)
 				jsonErr(w, "failed to save setting", http.StatusInternalServerError)
 				return
 			}
 		}
-		if err := s.ApplyPathPrefix(path); err != nil {
+		if err := s.ApplyPathPrefix(validPath); err != nil {
 			slog.Error("failed to apply new panel path prefix", "error", err)
 			jsonErr(w, "failed to apply panel path", http.StatusInternalServerError)
 			return

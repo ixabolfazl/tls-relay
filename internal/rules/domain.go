@@ -5,6 +5,7 @@ package rules
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -130,24 +131,27 @@ func (rs *RuleStore) GlobalPorts() []int {
 
 // Swap replaces the full rule table atomically. rawRules maps each key (exact
 // domain or "*.example.com" pattern) to its JSON-encoded DomainRule.
+// Any invalid rules are skipped, but a joined error is returned if any occurred.
 func (rs *RuleStore) Swap(rawRules map[string]string) error {
 	snap, err := buildSnapshot(rawRules)
-	if err != nil {
-		return err
+	if snap != nil {
+		rs.snapshot.Store(snap)
 	}
-	rs.snapshot.Store(snap)
-	return nil
+	return err
 }
 
 // buildSnapshot parses rawRules into an immutable domainSnapshot.
+// Invalid individual rules are skipped and their errors collected into a joined error.
 func buildSnapshot(rawRules map[string]string) (*domainSnapshot, error) {
 	snap := &domainSnapshot{
 		exact: make(map[string]DomainRule, len(rawRules)),
 	}
+	var errs []error
 	for key, val := range rawRules {
 		var rule DomainRule
 		if err := json.Unmarshal([]byte(val), &rule); err != nil {
-			return nil, fmt.Errorf("parsing rule for key %q: %w", key, err)
+			errs = append(errs, fmt.Errorf("parsing rule for key %q: %w", key, err))
+			continue
 		}
 		// Default ports to [443] when the field is missing (both All=false and Ports=nil).
 		if !rule.Ports.All && len(rule.Ports.Ports) == 0 {
@@ -167,6 +171,9 @@ func buildSnapshot(rawRules map[string]string) (*domainSnapshot, error) {
 	}
 	// Sort wildcards by suffix length descending (most specific first).
 	sortWildcards(snap.wildcards)
+	if len(errs) > 0 {
+		return snap, errors.Join(errs...)
+	}
 	return snap, nil
 }
 

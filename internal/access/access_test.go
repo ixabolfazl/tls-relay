@@ -295,3 +295,15 @@ func TestConcurrentSetModeAndCheckAccess(t *testing.T) {
 
 	<-done
 }
+
+func TestCheckAccess_InvalidMode_Denies(t *testing.T) {
+	store := access.NewAccessStore("invalid_mode")
+	ip := net.ParseIP("1.2.3.4")
+	allowed, reason := store.CheckAccess(ip)
+	if allowed {
+		t.Fatal("expected access to be denied for invalid mode")
+	}
+	if reason != "invalid_mode" {
+		t.Fatalf("expected reason 'invalid_mode', got %q", reason)
+	}
+}

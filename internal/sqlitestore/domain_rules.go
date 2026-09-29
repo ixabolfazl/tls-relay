@@ -2,9 +2,29 @@ package sqlitestore
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
+	"log/slog"
 	"strings"
 )
+
+// SanitizeGroupName strips control characters (<0x20, 0x7f), trims whitespace,
+// and limits the group name to at most 64 runes.
+func SanitizeGroupName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	cleaned := strings.TrimSpace(b.String())
+	runes := []rune(cleaned)
+	if len(runes) > 64 {
+		runes = runes[:64]
+	}
+	return string(runes)
+}
 
 // DomainRuleRow represents a row in the domain_rules table.
 type DomainRuleRow struct {
@@ -57,7 +77,7 @@ func (s *Store) GetDomainRule(ctx context.Context, domain string) (*DomainRuleRo
 
 // AddDomainRule inserts or replaces a domain rule.
 func (s *Store) AddDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) error {
-	groupName = strings.TrimSpace(groupName)
+	groupName = SanitizeGroupName(groupName)
 	if mode == "" {
 		mode = "proxy"
 	}
@@ -72,7 +92,7 @@ func (s *Store) AddDomainRule(ctx context.Context, domain, groupName, ports, use
 
 // UpdateDomainRule updates an existing domain rule.
 func (s *Store) UpdateDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) error {
-	groupName = strings.TrimSpace(groupName)
+	groupName = SanitizeGroupName(groupName)
 	if mode == "" {
 		mode = "proxy"
 	}
@@ -87,6 +107,13 @@ func (s *Store) UpdateDomainRule(ctx context.Context, domain, groupName, ports, 
 func (s *Store) DeleteDomainRule(ctx context.Context, domain string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`, domain)
 	return err
+}
+
+type domainRuleRawPayload struct {
+	GroupName      string          `json:"group_name,omitempty"`
+	Ports          json.RawMessage `json:"ports"`
+	UseEgressProxy string          `json:"use_egress_proxy,omitempty"`
+	Mode           string          `json:"mode,omitempty"`
 }
 
 // AllDomainRulesRaw returns all enabled domain rules in the same
@@ -118,11 +145,24 @@ func (s *Store) AllDomainRulesRaw(ctx context.Context) (map[string]string, error
 				ports = "[" + ports + "]"
 			}
 		}
-		if groupName != "" {
-			result[domain] = fmt.Sprintf(`{"group_name":%q,"ports":%s,"use_egress_proxy":%q,"mode":%q}`, groupName, ports, useProxy, mode)
-		} else {
-			result[domain] = fmt.Sprintf(`{"ports":%s,"use_egress_proxy":%q,"mode":%q}`, ports, useProxy, mode)
+		if !json.Valid([]byte(ports)) {
+			slog.Error("skipping domain rule with invalid ports JSON", "domain", domain, "ports", ports)
+			continue
 		}
+
+		payload := domainRuleRawPayload{
+			GroupName:      groupName,
+			Ports:          json.RawMessage(ports),
+			UseEgressProxy: useProxy,
+			Mode:           mode,
+		}
+
+		data, err := json.Marshal(payload)
+		if err != nil {
+			slog.Error("failed to marshal domain rule, skipping", "domain", domain, "error", err)
+			continue
+		}
+		result[domain] = string(data)
 	}
 	return result, rows.Err()
 }
@@ -153,7 +193,7 @@ func (s *Store) BulkDeleteDomainRules(ctx context.Context, domains []string) (in
 
 // BulkAssignDomainGroup updates the group_name for multiple existing domain rules.
 func (s *Store) BulkAssignDomainGroup(ctx context.Context, domains []string, groupName string) (int, int, error) {
-	groupName = strings.TrimSpace(groupName)
+	groupName = SanitizeGroupName(groupName)
 	updated := 0
 	skipped := 0
 	for _, d := range domains {

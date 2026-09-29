@@ -42,6 +42,26 @@ func TestSecurityChecker_IsBlocked(t *testing.T) {
 		{"::ffff:10.0.0.1", true, "private"},
 		{"::ffff:192.168.1.1", true, "private"},
 		{"::ffff:1.1.1.1", false, ""},
+		// Additional blocked ranges (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, 240.0.0.0/4, 255.255.255.255)
+		{"0.0.0.1", true, "private"},
+		{"192.0.0.1", true, "private"},
+		{"198.18.0.1", true, "private"},
+		{"240.0.0.1", true, "private"},
+		{"255.255.255.255", true, "private"},
+		// Additional IPv4-mapped forms
+		{"::ffff:0.0.0.1", true, "private"},
+		{"::ffff:192.0.0.1", true, "private"},
+		{"::ffff:198.18.0.1", true, "private"},
+		{"::ffff:240.0.0.1", true, "private"},
+		{"::ffff:255.255.255.255", true, "private"},
+		// NAT64 (64:ff9b::/96)
+		{"64:ff9b::127.0.0.1", true, "nat64_blocked"},
+		{"64:ff9b::192.168.1.1", true, "nat64_blocked"},
+		{"64:ff9b::8.8.8.8", false, ""},
+		// 6to4 (2002::/16)
+		{"2002:7f00:0001::", true, "6to4_blocked"},
+		{"2002:c0a8:0101::", true, "6to4_blocked"},
+		{"2002:0808:0808::", false, ""},
 		// Public (should not be blocked)
 		{"1.1.1.1", false, ""},
 		{"8.8.8.8", false, ""},
@@ -123,5 +143,26 @@ func TestSecurityChecker_BlockOwn(t *testing.T) {
 	otherIP := net.ParseIP("198.51.100.6")
 	if sc.isBlocked(otherIP) != "" {
 		t.Errorf("expected %s not to be blocked", otherIP)
+	}
+}
+
+func TestSecurityChecker_AddOwnIPs(t *testing.T) {
+	sc, err := NewSecurityChecker(false, true, nil)
+	if err != nil {
+		t.Fatalf("failed to create security checker: %v", err)
+	}
+
+	testIP := "198.51.100.50"
+	if sc.isBlocked(net.ParseIP(testIP)) != "" {
+		t.Fatalf("%s should not be blocked initially", testIP)
+	}
+
+	sc.AddOwnIPs(testIP)
+
+	if reason := sc.isBlocked(net.ParseIP(testIP)); reason != "own_ip" {
+		t.Fatalf("expected own_ip for %s, got %q", testIP, reason)
+	}
+	if reason := sc.isBlocked(net.ParseIP("::ffff:" + testIP)); reason != "own_ip" {
+		t.Fatalf("expected own_ip for mapped %s, got %q", testIP, reason)
 	}
 }

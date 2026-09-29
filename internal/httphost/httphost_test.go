@@ -47,6 +47,16 @@ func TestReadHostAndRequestLine_Valid(t *testing.T) {
 			rawInput:     "GET / HTTP/1.0\nHost: unix.example.com\n\n",
 			expectedHost: "unix.example.com",
 		},
+		{
+			name:         "Absolute-form request target with matching host",
+			rawInput:     "GET http://example.com/foo HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectedHost: "example.com",
+		},
+		{
+			name:         "Absolute-form request target with port and matching host",
+			rawInput:     "GET http://example.com:8080/foo HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectedHost: "example.com",
+		},
 	}
 
 	for _, tt := range tests {
@@ -90,6 +100,21 @@ func TestReadHostAndRequestLine_Errors(t *testing.T) {
 			name:        "Empty input",
 			rawInput:    "",
 			expectedErr: httphost.ErrNotHTTP,
+		},
+		{
+			name:        "Multiple Host headers",
+			rawInput:    "GET / HTTP/1.1\r\nHost: example.com\r\nHost: evil.com\r\n\r\n",
+			expectedErr: httphost.ErrAmbiguousHost,
+		},
+		{
+			name:        "Host header with comma",
+			rawInput:    "GET / HTTP/1.1\r\nHost: example.com, evil.com\r\n\r\n",
+			expectedErr: httphost.ErrAmbiguousHost,
+		},
+		{
+			name:        "Absolute-form request target with conflicting host",
+			rawInput:    "GET http://evil.com/path HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectedErr: httphost.ErrAmbiguousHost,
 		},
 	}
 

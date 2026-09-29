@@ -49,6 +49,8 @@ const STATUS_DEFINITIONS = {
   rejected_no_host: { label: 'No Host', tone: 'danger' },
   rejected_header_too_large: { label: 'Header Too Large', tone: 'danger' },
   rejected_ip_invalid: { label: 'Invalid IP', tone: 'danger' },
+  rejected_bad_sni: { label: 'Bad SNI', tone: 'danger' },
+  rejected_ambiguous_host: { label: 'Ambiguous Host', tone: 'danger' },
 };
 
 export function getStatusMeta(status) {

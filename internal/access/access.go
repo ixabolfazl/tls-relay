@@ -144,7 +144,7 @@ func (s *AccessStore) CheckAccess(ip net.IP) (allowed bool, reason string) {
 		}
 		return false, "not_registered"
 	default:
-		return true, ""
+		return false, "invalid_mode"
 	}
 }
 
