@@ -18,6 +18,11 @@ export class TableState {
     this.selectAllMatching = false;
   }
 
+  setPage(page) {
+    const p = parseInt(page, 10);
+    this.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
+  }
+
   setSort(key) {
     if (this.sortKey === key) {
       this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
