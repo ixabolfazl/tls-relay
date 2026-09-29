@@ -24,7 +24,7 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 		if bl, err := s.sqlStore.ListBlacklist(ctx); err == nil {
 			totalBlacklist = len(bl)
 		}
-		if count, err := s.sqlStore.CountRequestLogs(ctx); err == nil {
+		if count, err := s.sqlStore.CountRequestLogsCached(ctx); err == nil {
 			totalRequestLogs = count
 		}
 	} else if s.ruleStore != nil {
@@ -68,18 +68,8 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	// If protocol_usage_daily has no records yet (e.g. legacy data before protocol tracking),
 	// fallback proportionally based on request counts or attribute to TLS.
 	if tlsBytes == 0 && httpBytes == 0 && totalGlobalBytes > 0 {
-		tlsCount := tlsTotals["total"]
-		httpCount := httpTotals["total"]
-		if tlsCount > 0 && httpCount > 0 {
-			tlsBytes = int64(float64(totalGlobalBytes) * float64(tlsCount) / float64(tlsCount+httpCount))
-			httpBytes = totalGlobalBytes - tlsBytes
-		} else if httpCount > 0 {
-			httpBytes = totalGlobalBytes
-			tlsBytes = 0
-		} else {
-			tlsBytes = totalGlobalBytes
-			httpBytes = 0
-		}
+		tlsBytes = totalGlobalBytes
+		httpBytes = 0
 	}
 
 	jsonOK(w, map[string]interface{}{

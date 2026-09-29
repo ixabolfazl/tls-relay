@@ -54,7 +54,7 @@ func (s *Store) IncrementDomainUsage(ctx context.Context, domain string, bytesSe
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func (s *Store) IncrementUserDomainUsage(ctx context.Context, userID int64, doma
 	}
 
 	dayStr := utcDayString(date)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT INTO user_domain_usage_daily (user_id, domain, usage_date, bytes_sent, bytes_received)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, domain, usage_date) DO UPDATE
@@ -109,7 +109,7 @@ func (s *Store) IncrementUserDomainUsage(ctx context.Context, userID int64, doma
 // GetDomainUsageDaily returns daily usage rows for a domain starting from sinceDate (UTC day).
 func (s *Store) GetDomainUsageDaily(ctx context.Context, domain string, sinceDate time.Time) ([]DomainUsageDayRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT usage_date, bytes_sent, bytes_received
 		   FROM domain_usage_daily
 		  WHERE domain = ? AND usage_date >= ?
@@ -135,7 +135,7 @@ func (s *Store) GetDomainUsageDaily(ctx context.Context, domain string, sinceDat
 // GetDomainUsageMonthly returns monthly usage rows for a domain starting from sinceDate (UTC day).
 func (s *Store) GetDomainUsageMonthly(ctx context.Context, domain string, sinceDate time.Time) ([]DomainUsageMonthRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT substr(usage_date, 1, 7) AS month, SUM(bytes_sent), SUM(bytes_received)
 		   FROM domain_usage_daily
 		  WHERE domain = ? AND usage_date >= ?
@@ -163,7 +163,7 @@ func (s *Store) GetDomainUsageMonthly(ctx context.Context, domain string, sinceD
 // If sinceDate is not zero, usage is aggregated from domain_usage_daily for dates >= sinceDate.
 func (s *Store) ListDomainsTotalUsage(ctx context.Context, sinceDate time.Time) (map[string]DomainUsageTotal, error) {
 	if sinceDate.IsZero() {
-		rows, err := s.db.QueryContext(ctx,
+		rows, err := s.reader.QueryContext(ctx,
 			`SELECT domain, total_bytes_sent, total_bytes_received FROM domain_rules`,
 		)
 		if err != nil {
@@ -187,7 +187,7 @@ func (s *Store) ListDomainsTotalUsage(ctx context.Context, sinceDate time.Time) 
 	}
 
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT domain, COALESCE(SUM(bytes_sent), 0), COALESCE(SUM(bytes_received), 0)
 		   FROM domain_usage_daily
 		  WHERE usage_date >= ?
@@ -217,7 +217,7 @@ func (s *Store) ListDomainsTotalUsage(ctx context.Context, sinceDate time.Time) 
 // GetUserDomainUsageDaily returns daily usage rows for a (user_id, domain) pair starting from sinceDate.
 func (s *Store) GetUserDomainUsageDaily(ctx context.Context, userID int64, domain string, sinceDate time.Time) ([]UserDomainUsageDayRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT usage_date, bytes_sent, bytes_received
 		   FROM user_domain_usage_daily
 		  WHERE user_id = ? AND domain = ? AND usage_date >= ?
@@ -242,7 +242,7 @@ func (s *Store) GetUserDomainUsageDaily(ctx context.Context, userID int64, domai
 
 // GetUserDomainUsageTotal returns total bytes sent and received for a (user_id, domain) pair.
 func (s *Store) GetUserDomainUsageTotal(ctx context.Context, userID int64, domain string) (bytesSent, bytesReceived int64, err error) {
-	err = s.db.QueryRowContext(ctx,
+	err = s.reader.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(bytes_sent), 0), COALESCE(SUM(bytes_received), 0)
 		   FROM user_domain_usage_daily
 		  WHERE user_id = ? AND domain = ?`,
@@ -273,7 +273,7 @@ func (s *Store) ListUserUsageByDomain(ctx context.Context, userID int64, sinceDa
 		args = []interface{}{userID}
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func (s *Store) ListDomainUsageByUser(ctx context.Context, domain string, sinceD
 		args = []interface{}{domain}
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

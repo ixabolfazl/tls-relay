@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -37,6 +38,15 @@ func Setup(cfg *config.LogConfig) (closer func(), err error) {
 		w = os.Stdout
 		closeFunc = func() {}
 	} else {
+		dir := filepath.Dir(cfg.Path)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, err
+		}
+		if f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640); err == nil {
+			_ = f.Chmod(0o640)
+			_ = f.Close()
+		}
+
 		lj := &lumberjack.Logger{
 			Filename:   cfg.Path,
 			MaxSize:    cfg.Rotation.MaxSizeMB, // megabytes

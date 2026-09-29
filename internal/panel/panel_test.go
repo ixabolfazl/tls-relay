@@ -1,14 +1,21 @@
 package panel_test
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
 	"github.com/ixabolfazl/tls-relay/internal/panel"
+	"github.com/ixabolfazl/tls-relay/internal/requestlog"
 	"github.com/ixabolfazl/tls-relay/internal/rules"
 	"github.com/ixabolfazl/tls-relay/internal/sqlitestore"
 )
@@ -349,5 +356,113 @@ func TestBackupEndpoint(t *testing.T) {
 	}
 	if backupRec.Body.Len() == 0 {
 		t.Errorf("expected non-empty backup database body")
+	}
+}
+
+func TestRequestLogsCursorPaginationEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	sqStore, err := sqlitestore.New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqStore.Close()
+
+	ctx := context.Background()
+	_ = sqStore.SetSetting(ctx, "panel_admin_user", "admin")
+	hash, _ := bcrypt.GenerateFromPassword([]byte("secret123"), bcrypt.MinCost)
+	_ = sqStore.SetSetting(ctx, "panel_admin_password_hash", string(hash))
+
+	// Insert 5 test events
+	var events []requestlog.Event
+	now := time.Now().UTC()
+	for i := 1; i <= 5; i++ {
+		events = append(events, requestlog.Event{
+			ClientIP:    "1.2.3.4",
+			RequestType: requestlog.TypeTLS,
+			Domain:      fmt.Sprintf("test%d.com", i),
+			Port:        443,
+			Status:      "allowed",
+			Timestamp:   now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	if err := sqStore.InsertRequestLogs(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+
+	ruleStore := rules.NewRuleStore([]int{443}, "allow_default_port")
+	accessStore := access.NewAccessStore(access.ModeUser)
+
+	srv, err := panel.New("127.0.0.1:0", "/", ruleStore, accessStore, sqStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Login
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"secret123"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	srv.ServeHTTP(loginRec, loginReq)
+
+	var sessionCookie *http.Cookie
+	for _, c := range loginRec.Result().Cookies() {
+		if c.Name == "relay_session" {
+			sessionCookie = c
+		}
+	}
+
+	// Request page 1 with limit 2 (no filters -> total should be present)
+	req1 := httptest.NewRequest("GET", "/api/request-logs?limit=2", nil)
+	req1.AddCookie(sessionCookie)
+	rec1 := httptest.NewRecorder()
+	srv.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+
+	var res1 struct {
+		Logs         []map[string]interface{} `json:"logs"`
+		NextBeforeID int64                    `json:"next_before_id"`
+		HasMore      bool                     `json:"has_more"`
+		Total        *int64                   `json:"total"`
+	}
+	if err := json.NewDecoder(rec1.Body).Decode(&res1); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res1.Logs) != 2 {
+		t.Errorf("expected 2 logs, got %d", len(res1.Logs))
+	}
+	if !res1.HasMore {
+		t.Errorf("expected has_more to be true")
+	}
+	if res1.Total == nil || *res1.Total != 5 {
+		t.Errorf("expected total 5, got %v", res1.Total)
+	}
+	if res1.NextBeforeID == 0 {
+		t.Errorf("expected valid next_before_id")
+	}
+
+	// Request page 2 using before_id (filter present -> total should be omitted)
+	req2 := httptest.NewRequest("GET", fmt.Sprintf("/api/request-logs?limit=2&before_id=%d", res1.NextBeforeID), nil)
+	req2.AddCookie(sessionCookie)
+	rec2 := httptest.NewRecorder()
+	srv.ServeHTTP(rec2, req2)
+
+	var res2 struct {
+		Logs         []map[string]interface{} `json:"logs"`
+		NextBeforeID int64                    `json:"next_before_id"`
+		HasMore      bool                     `json:"has_more"`
+		Total        *int64                   `json:"total"`
+	}
+	if err := json.NewDecoder(rec2.Body).Decode(&res2); err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Logs) != 2 {
+		t.Errorf("expected 2 logs on page 2, got %d", len(res2.Logs))
+	}
+	if res2.Total != nil {
+		t.Errorf("expected total to be omitted when before_id filter is applied, got %v", *res2.Total)
 	}
 }

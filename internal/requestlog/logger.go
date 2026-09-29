@@ -17,6 +17,7 @@ const (
 
 // Event represents a single logged DNS, TLS, or HTTP request metadata.
 type Event struct {
+	ID          int64       `json:"id"`
 	UserID      int64       `json:"user_id"`
 	Username    string      `json:"username"`
 	ClientIP    string      `json:"client_ip"`

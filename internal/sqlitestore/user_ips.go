@@ -16,7 +16,7 @@ type UserIP struct {
 
 // ListUserIPs returns all IPs for a given user.
 func (s *Store) ListUserIPs(ctx context.Context, userID int64) ([]UserIP, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT id, user_id, ip_address, created_at, last_used_at FROM user_ips WHERE user_id = ? ORDER BY created_at`, userID)
 	if err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func (s *Store) ListUserIPs(ctx context.Context, userID int64) ([]UserIP, error)
 // RegisterIPResult registers a client IP for the user, enforcing max_ips (<= 0 means unlimited).
 // Returns isNew=true if the IP was newly inserted, isNew=false if it already existed for this user.
 func (s *Store) RegisterIPResult(ctx context.Context, userID int64, ip string, maxIPs int) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
@@ -104,14 +104,14 @@ func (s *Store) RegisterIP(ctx context.Context, userID int64, ip string, maxIPs 
 
 // DeleteUserIP removes a specific IP from a user.
 func (s *Store) DeleteUserIP(ctx context.Context, userID int64, ip string) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`DELETE FROM user_ips WHERE user_id = ? AND ip_address = ?`, userID, ip)
 	return err
 }
 
 // DeleteAllUserIPs removes all registered IPs for a user and returns the count removed.
 func (s *Store) DeleteAllUserIPs(ctx context.Context, userID int64) (int, error) {
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.writer.ExecContext(ctx,
 		`DELETE FROM user_ips WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, err
@@ -126,14 +126,14 @@ func (s *Store) DeleteAllUserIPs(ctx context.Context, userID int64) (int, error)
 // CountUserIPs returns the number of IPs registered for a user.
 func (s *Store) CountUserIPs(ctx context.Context, userID int64) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM user_ips WHERE user_id = ?`, userID).Scan(&count)
 	return count, err
 }
 
 // AllEnabledUserIPs returns all IPs belonging to enabled users (for in-memory snapshot).
 func (s *Store) AllEnabledUserIPs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT ui.ip_address FROM user_ips ui
 		 JOIN users u ON u.id = ui.user_id
 		 WHERE u.enabled = 1`)

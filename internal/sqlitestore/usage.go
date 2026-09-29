@@ -24,11 +24,25 @@ func utcDayString(t time.Time) string {
 	return t.UTC().Format("2006-01-02")
 }
 
-// GetGlobalUsageTotals returns sum of (bytes_sent, bytes_received) from user_usage_daily starting from sinceDate.
+// GetGlobalUsageTotals returns sum of (bytes_sent, bytes_received) from protocol_usage_daily starting from sinceDate,
+// falling back to user_usage_daily only when the protocol table has no rows.
 func (s *Store) GetGlobalUsageTotals(ctx context.Context, sinceDate time.Time) (int64, int64, error) {
 	dayStr := utcDayString(sinceDate)
+	var protoCount int
+	err := s.reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM protocol_usage_daily`).Scan(&protoCount)
+	if err == nil && protoCount > 0 {
+		var sent, recv int64
+		err := s.reader.QueryRowContext(ctx,
+			`SELECT COALESCE(SUM(bytes_sent), 0), COALESCE(SUM(bytes_received), 0)
+			   FROM protocol_usage_daily
+			  WHERE usage_date >= ?`,
+			dayStr,
+		).Scan(&sent, &recv)
+		return sent, recv, err
+	}
+
 	var sent, recv int64
-	err := s.db.QueryRowContext(ctx,
+	err = s.reader.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(bytes_sent), 0), COALESCE(SUM(bytes_received), 0)
 		   FROM user_usage_daily
 		  WHERE usage_date >= ?`,
@@ -46,7 +60,7 @@ func (s *Store) IncrementUserUsage(ctx context.Context, userID int64, bytesSent,
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -84,7 +98,7 @@ func (s *Store) IncrementUserUsage(ctx context.Context, userID int64, bytesSent,
 // ResetUserUsage zeros the cumulative usage totals for a user and deletes all
 // daily breakdown rows — a full history wipe.
 func (s *Store) ResetUserUsage(ctx context.Context, userID int64) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -129,7 +143,7 @@ func (s *Store) ResetUserUsage(ctx context.Context, userID int64) error {
 // usage_date ASC, starting from the UTC calendar day of sinceDate.
 func (s *Store) GetUserUsageDaily(ctx context.Context, userID int64, sinceDate time.Time) ([]UserUsageDayRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT usage_date, bytes_sent, bytes_received
 		   FROM user_usage_daily
 		  WHERE user_id = ? AND usage_date >= ?
@@ -156,7 +170,7 @@ func (s *Store) GetUserUsageDaily(ctx context.Context, userID int64, sinceDate t
 // ordered by usage_date ASC, starting from the UTC calendar day of sinceDate.
 func (s *Store) GetGlobalUsageDaily(ctx context.Context, sinceDate time.Time) ([]GlobalUsageDayRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT usage_date, SUM(bytes_sent), SUM(bytes_received)
 		   FROM user_usage_daily
 		  WHERE usage_date >= ?
@@ -187,7 +201,7 @@ func (s *Store) GetUsersTotalUsage(ctx context.Context, sinceDate time.Time) (ma
 	Received int64
 }, error) {
 	if sinceDate.IsZero() {
-		rows, err := s.db.QueryContext(ctx,
+		rows, err := s.reader.QueryContext(ctx,
 			`SELECT id, total_bytes_sent, total_bytes_received FROM users`,
 		)
 		if err != nil {
@@ -213,7 +227,7 @@ func (s *Store) GetUsersTotalUsage(ctx context.Context, sinceDate time.Time) (ma
 	}
 
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT user_id, COALESCE(SUM(bytes_sent), 0), COALESCE(SUM(bytes_received), 0)
 		   FROM user_usage_daily
 		  WHERE usage_date >= ?
@@ -248,7 +262,7 @@ func (s *Store) IncrementProtocolUsage(ctx context.Context, protocol string, byt
 		return nil
 	}
 	dayStr := utcDayString(date)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT INTO protocol_usage_daily (protocol, usage_date, bytes_sent, bytes_received)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(protocol, usage_date) DO UPDATE
@@ -276,14 +290,14 @@ func (s *Store) GetProtocolUsageTotals(ctx context.Context, protocol string, sin
 		args = []interface{}{protocol}
 	}
 	var sent, recv int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&sent, &recv)
+	err := s.reader.QueryRowContext(ctx, query, args...).Scan(&sent, &recv)
 	return sent, recv, err
 }
 
 // GetProtocolUsageDaily returns daily usage rows for a protocol starting from sinceDate.
 func (s *Store) GetProtocolUsageDaily(ctx context.Context, protocol string, sinceDate time.Time) ([]GlobalUsageDayRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT usage_date, bytes_sent, bytes_received
 		   FROM protocol_usage_daily
 		  WHERE protocol = ? AND usage_date >= ?

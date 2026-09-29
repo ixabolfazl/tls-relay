@@ -41,7 +41,7 @@ type DomainRuleRow struct {
 
 // ListDomainRules returns all domain rule rows.
 func (s *Store) ListDomainRules(ctx context.Context) ([]DomainRuleRow, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT id, domain, group_name, ports, use_egress_proxy, mode, enabled, created_at, updated_at FROM domain_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func (s *Store) ListDomainRules(ctx context.Context) ([]DomainRuleRow, error) {
 func (s *Store) GetDomainRule(ctx context.Context, domain string) (*DomainRuleRow, error) {
 	r := &DomainRuleRow{}
 	var enabled int
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT id, domain, group_name, ports, use_egress_proxy, mode, enabled, created_at, updated_at FROM domain_rules WHERE domain = ?`, domain,
 	).Scan(&r.ID, &r.Domain, &r.GroupName, &r.Ports, &r.UseEgressProxy, &r.Mode, &enabled, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
@@ -81,7 +81,7 @@ func (s *Store) AddDomainRule(ctx context.Context, domain, groupName, ports, use
 	if mode == "" {
 		mode = "proxy"
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT INTO domain_rules (domain, group_name, ports, use_egress_proxy, mode)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(domain) DO UPDATE SET group_name = excluded.group_name, ports = excluded.ports, use_egress_proxy = excluded.use_egress_proxy, mode = excluded.mode, updated_at = datetime('now')`,
@@ -96,7 +96,7 @@ func (s *Store) UpdateDomainRule(ctx context.Context, domain, groupName, ports, 
 	if mode == "" {
 		mode = "proxy"
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE domain_rules SET group_name = ?, ports = ?, use_egress_proxy = ?, mode = ?, updated_at = datetime('now') WHERE domain = ?`,
 		groupName, ports, useEgressProxy, mode, domain,
 	)
@@ -105,7 +105,7 @@ func (s *Store) UpdateDomainRule(ctx context.Context, domain, groupName, ports, 
 
 // DeleteDomainRule deletes a domain rule by domain name.
 func (s *Store) DeleteDomainRule(ctx context.Context, domain string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`, domain)
+	_, err := s.writer.ExecContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`, domain)
 	return err
 }
 
@@ -119,7 +119,7 @@ type domainRuleRawPayload struct {
 // AllDomainRulesRaw returns all enabled domain rules in the same
 // map[domain]json format used by RuleStore.Swap().
 func (s *Store) AllDomainRulesRaw(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT domain, group_name, ports, use_egress_proxy, mode FROM domain_rules WHERE enabled = 1`)
 	if err != nil {
 		return nil, err
@@ -177,7 +177,7 @@ func (s *Store) BulkDeleteDomainRules(ctx context.Context, domains []string) (in
 			skipped++
 			continue
 		}
-		res, err := s.db.ExecContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`, d)
+		res, err := s.writer.ExecContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`, d)
 		if err != nil {
 			return deleted, skipped, err
 		}
@@ -202,7 +202,7 @@ func (s *Store) BulkAssignDomainGroup(ctx context.Context, domains []string, gro
 			skipped++
 			continue
 		}
-		res, err := s.db.ExecContext(ctx, `UPDATE domain_rules SET group_name = ?, updated_at = datetime('now') WHERE domain = ?`, groupName, d)
+		res, err := s.writer.ExecContext(ctx, `UPDATE domain_rules SET group_name = ?, updated_at = datetime('now') WHERE domain = ?`, groupName, d)
 		if err != nil {
 			return updated, skipped, err
 		}
@@ -226,7 +226,7 @@ func (s *Store) BulkAssignDomainEgress(ctx context.Context, domains []string, us
 		useEgress = "default"
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -270,7 +270,7 @@ func (s *Store) BulkAssignDomainMode(ctx context.Context, domains []string, mode
 		mode = "proxy"
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err
 	}

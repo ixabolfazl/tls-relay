@@ -13,7 +13,7 @@ type BlacklistEntry struct {
 
 // ListBlacklist returns all blacklist entries.
 func (s *Store) ListBlacklist(ctx context.Context) ([]BlacklistEntry, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT id, entry, created_at FROM global_blacklist ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -33,20 +33,20 @@ func (s *Store) ListBlacklist(ctx context.Context) ([]BlacklistEntry, error) {
 
 // AddBlacklistEntry adds an IP or CIDR to the global blacklist.
 func (s *Store) AddBlacklistEntry(ctx context.Context, entry string) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT OR IGNORE INTO global_blacklist (entry) VALUES (?)`, entry)
 	return err
 }
 
 // DeleteBlacklistEntry removes a blacklist entry by ID.
 func (s *Store) DeleteBlacklistEntry(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM global_blacklist WHERE id = ?`, id)
+	_, err := s.writer.ExecContext(ctx, `DELETE FROM global_blacklist WHERE id = ?`, id)
 	return err
 }
 
 // AllBlacklistEntries returns all blacklist entries as strings (for in-memory snapshot).
 func (s *Store) AllBlacklistEntries(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT entry FROM global_blacklist`)
+	rows, err := s.reader.QueryContext(ctx, `SELECT entry FROM global_blacklist`)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (s *Store) BulkDeleteBlacklist(ctx context.Context, ids []int64) (int, int,
 	deleted := 0
 	skipped := 0
 	for _, id := range ids {
-		res, err := s.db.ExecContext(ctx, `DELETE FROM global_blacklist WHERE id = ?`, id)
+		res, err := s.writer.ExecContext(ctx, `DELETE FROM global_blacklist WHERE id = ?`, id)
 		if err != nil {
 			return deleted, skipped, err
 		}

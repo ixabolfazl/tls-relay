@@ -36,7 +36,7 @@ func (s *Store) CreateUserWithLink(ctx context.Context, username string, maxIPs 
 		}
 	}
 
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.writer.ExecContext(ctx,
 		`INSERT INTO users (username, max_ips, magic_link) VALUES (?, ?, ?)`,
 		username, maxIPs, link,
 	)
@@ -53,7 +53,7 @@ func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
 	u := &User{}
 	var enabled int
 	var lastSeen sql.NullString
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT u.id, u.username, u.enabled, u.magic_link, u.max_ips, u.created_at, u.updated_at,
 		        COALESCE(u.last_seen_at, (SELECT MAX(last_used_at) FROM user_ips WHERE user_id = u.id)) AS last_seen_at
 		 FROM users u WHERE u.id = ?`, id,
@@ -70,7 +70,7 @@ func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
 
 // ListUsers returns all users with their last_seen_at timestamp.
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT u.id, u.username, u.enabled, u.magic_link, u.max_ips, u.created_at, u.updated_at,
 		        COALESCE(u.last_seen_at, MAX(i.last_used_at)) AS last_seen_at
 		 FROM users u
@@ -102,7 +102,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 // UpdateUserLastSeen updates a user's last_seen_at timestamp.
 func (s *Store) UpdateUserLastSeen(ctx context.Context, userID int64, lastSeen time.Time) error {
 	ts := FormatTime(lastSeen)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE users SET last_seen_at = ? WHERE id = ?`,
 		ts, userID,
 	)
@@ -112,7 +112,7 @@ func (s *Store) UpdateUserLastSeen(ctx context.Context, userID int64, lastSeen t
 // IsIPRegistered checks if an IP address is registered to any enabled user.
 func (s *Store) IsIPRegistered(ctx context.Context, ip string) (bool, error) {
 	var exists bool
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT EXISTS(
 			SELECT 1 FROM user_ips ui
 			JOIN users u ON u.id = ui.user_id
@@ -138,7 +138,7 @@ type UserWithAllIPs struct {
 
 // ListAllUserWithIPs returns all users and their registered IPs in a single query.
 func (s *Store) ListAllUserWithIPs(ctx context.Context) ([]UserWithAllIPs, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.reader.QueryContext(ctx, `
 		SELECT u.id, u.username,
 		       COALESCE(u.last_seen_at, (SELECT MAX(last_used_at) FROM user_ips WHERE user_id = u.id), ''),
 		       COALESCE(ui.ip_address, '')
@@ -181,7 +181,7 @@ func (s *Store) ListAllUserWithIPs(ctx context.Context) ([]UserWithAllIPs, error
 
 // GetAllUserIPMappings returns all registered IP mappings for users.
 func (s *Store) GetAllUserIPMappings(ctx context.Context) ([]UserIPMapping, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT ui.user_id, u.username, ui.ip_address
 		 FROM user_ips ui
 		 JOIN users u ON u.id = ui.user_id`)
@@ -225,7 +225,7 @@ func (s *Store) UpdateUserFull(ctx context.Context, id int64, username string, e
 		mLink = current.MagicLink
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	_, err = s.writer.ExecContext(ctx,
 		`UPDATE users SET username = ?, enabled = ?, max_ips = ?, magic_link = ?, updated_at = datetime('now') WHERE id = ?`,
 		uName, e, maxIPs, mLink, id,
 	)
@@ -234,7 +234,7 @@ func (s *Store) UpdateUserFull(ctx context.Context, id int64, username string, e
 
 // DeleteUser deletes a user by ID. Cascade deletes user_ips.
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	_, err := s.writer.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
 	return err
 }
 
@@ -243,7 +243,7 @@ func (s *Store) GetUserByMagicLink(ctx context.Context, link string) (*User, err
 	u := &User{}
 	var enabled int
 	var lastSeen sql.NullString
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT u.id, u.username, u.enabled, u.magic_link, u.max_ips, u.created_at, u.updated_at,
 		        COALESCE(u.last_seen_at, (SELECT MAX(last_used_at) FROM user_ips WHERE user_id = u.id)) AS last_seen_at
 		 FROM users u WHERE u.magic_link = ?`, link,
@@ -264,7 +264,7 @@ func (s *Store) ResetMagicLink(ctx context.Context, userID int64) (string, error
 	if err != nil {
 		return "", fmt.Errorf("generating magic link: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = s.writer.ExecContext(ctx,
 		`UPDATE users SET magic_link = ?, updated_at = datetime('now') WHERE id = ?`,
 		link, userID,
 	)

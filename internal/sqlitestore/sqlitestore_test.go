@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ixabolfazl/tls-relay/internal/requestlog"
 	"github.com/ixabolfazl/tls-relay/internal/sqlitestore"
 )
 
@@ -1285,5 +1287,197 @@ func TestSetSettings_Atomic(t *testing.T) {
 	v2, found, err := store.GetSetting(ctx, "test_k2")
 	if err != nil || !found || v2 != "val2" {
 		t.Errorf("expected val2, got %v (%v, %v)", v2, found, err)
+	}
+}
+
+func TestReaderWriterVisibility(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// 1. Write through store (which writes via s.writer)
+	err := store.AddDomainRule(ctx, "example.com", "group1", "[443]", "false", "proxy")
+	if err != nil {
+		t.Fatalf("AddDomainRule failed: %v", err)
+	}
+
+	// 2. Read through store (which reads via s.reader)
+	rule, err := store.GetDomainRule(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("GetDomainRule failed: %v", err)
+	}
+	if rule.Domain != "example.com" || rule.GroupName != "group1" {
+		t.Errorf("expected domain example.com and group group1, got %+v", rule)
+	}
+
+	// 3. Test VACUUM INTO using reader connection
+	backupPath := filepath.Join(t.TempDir(), "backup.db")
+	if err := store.Backup(ctx, backupPath); err != nil {
+		t.Fatalf("Backup via reader failed: %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("backup file does not exist: %v", err)
+	}
+}
+
+func TestStoreFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping POSIX file permission test on Windows")
+	}
+
+	tempDir := t.TempDir()
+	dbDir := filepath.Join(tempDir, "sub", "dir")
+	dbPath := filepath.Join(dbDir, "store.db")
+
+	store, err := sqlitestore.New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Check directory permissions (0700)
+	dirInfo, err := os.Stat(dbDir)
+	if err != nil {
+		t.Fatalf("failed to stat dbDir: %v", err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0700 {
+		t.Errorf("expected db directory permissions 0700, got %04o", perm)
+	}
+
+	// Check database file permissions (0600)
+	fileInfo, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("failed to stat db file: %v", err)
+	}
+	if perm := fileInfo.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected db file permissions 0600, got %04o", perm)
+	}
+}
+
+func TestRequestLogsCursorPaginationBoundaries(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Insert 10 logs
+	var events []requestlog.Event
+	now := time.Now().UTC()
+	for i := 1; i <= 10; i++ {
+		events = append(events, requestlog.Event{
+			ClientIP:    "1.2.3.4",
+			RequestType: requestlog.TypeTLS,
+			Domain:      "domain" + string(rune('a'+i)) + ".com",
+			Port:        443,
+			Status:      "allowed",
+			Timestamp:   now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	if err := store.InsertRequestLogs(ctx, events); err != nil {
+		t.Fatalf("insert request logs failed: %v", err)
+	}
+
+	// First page of 3 items (ORDER BY id DESC)
+	page1, _, err := store.ListRequestLogs(ctx, sqlitestore.RequestLogFilter{
+		Limit: 3,
+	})
+	if err != nil {
+		t.Fatalf("page 1 failed: %v", err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("expected 3 logs on page 1, got %d", len(page1))
+	}
+	if page1[0].ID <= page1[1].ID || page1[1].ID <= page1[2].ID {
+		t.Errorf("expected descending IDs on page 1")
+	}
+
+	// Second page starting before the last ID of page 1
+	cursor1 := page1[2].ID
+	page2, _, err := store.ListRequestLogs(ctx, sqlitestore.RequestLogFilter{
+		BeforeID: &cursor1,
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatalf("page 2 failed: %v", err)
+	}
+	if len(page2) != 3 {
+		t.Fatalf("expected 3 logs on page 2, got %d", len(page2))
+	}
+	if page2[0].ID >= cursor1 {
+		t.Errorf("expected page 2 first item ID %d to be less than cursor %d", page2[0].ID, cursor1)
+	}
+
+	// Boundary: query before lowest ID (page 4 should be empty)
+	lowestID := int64(1)
+	pageEmpty, _, err := store.ListRequestLogs(ctx, sqlitestore.RequestLogFilter{
+		BeforeID: &lowestID,
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatalf("empty page query failed: %v", err)
+	}
+	if len(pageEmpty) != 0 {
+		t.Errorf("expected 0 logs before ID 1, got %d", len(pageEmpty))
+	}
+
+	// Cached total count
+	count, err := store.CountRequestLogsCached(ctx)
+	if err != nil {
+		t.Fatalf("CountRequestLogsCached failed: %v", err)
+	}
+	if count != 10 {
+		t.Errorf("expected cached count 10, got %d", count)
+	}
+}
+
+func TestDeleteExpiredRequestLogs_Batching(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Insert >10,000 expired logs (e.g. 11,500)
+	totalRows := 11500
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+
+	batch := make([]requestlog.Event, 0, 500)
+	for i := 1; i <= totalRows; i++ {
+		batch = append(batch, requestlog.Event{
+			ClientIP:    "10.0.0.1",
+			RequestType: requestlog.TypeDNS,
+			Domain:      "old.example.com",
+			Port:        53,
+			Status:      "resolved",
+			Timestamp:   oldTime,
+		})
+		if len(batch) == 500 {
+			if err := store.InsertRequestLogs(ctx, batch); err != nil {
+				t.Fatalf("batch insert failed at %d: %v", i, err)
+			}
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		if err := store.InsertRequestLogs(ctx, batch); err != nil {
+			t.Fatalf("final batch insert failed: %v", err)
+		}
+	}
+
+	// Verify count is 11,500
+	initialCount, err := store.CountRequestLogs(ctx)
+	if err != nil || initialCount != int64(totalRows) {
+		t.Fatalf("expected initial count %d, got %d (%v)", totalRows, initialCount, err)
+	}
+
+	// Delete expired before 24 hours ago (should delete all 11,500 rows in batches)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	deleted, err := store.DeleteExpiredRequestLogs(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("DeleteExpiredRequestLogs failed: %v", err)
+	}
+	if deleted != int64(totalRows) {
+		t.Errorf("expected %d deleted rows, got %d", totalRows, deleted)
+	}
+
+	// Verify table is empty
+	remaining, err := store.CountRequestLogs(ctx)
+	if err != nil || remaining != 0 {
+		t.Errorf("expected 0 remaining rows, got %d (%v)", remaining, err)
 	}
 }

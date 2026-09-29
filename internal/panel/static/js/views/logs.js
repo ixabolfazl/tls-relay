@@ -16,11 +16,13 @@ import { store } from '../core/store.js';
 
 export function mount(container) {
   let logs = [];
-  let totalLogs = 0;
+  let totalLogs = null;
   let domainRules = [];
   let currentPage = 1;
   let pageSize = 50;
   let autoRefresh = true;
+  let cursorStack = [null];
+  let hasMore = false;
 
   const filters = {
     domain: '',
@@ -253,6 +255,12 @@ export function mount(container) {
     toast.info('Logs refreshed');
   });
 
+  function resetPagination() {
+    currentPage = 1;
+    cursorStack = [null];
+    hasMore = false;
+  }
+
   // Filters debounce
   let filterDebounceTimer = null;
   function onFilterChange() {
@@ -262,7 +270,7 @@ export function mount(container) {
       filters.client_ip = $('#filter-ip', container).value.trim();
       filters.username = $('#filter-username', container).value.trim();
       filters.request_type = $('#filter-type', container).value;
-      currentPage = 1;
+      resetPagination();
       fetchLogs();
     }, 300);
   }
@@ -272,13 +280,13 @@ export function mount(container) {
   $('#filter-username', container).addEventListener('input', onFilterChange);
   $('#filter-type', container).addEventListener('change', () => {
     filters.request_type = $('#filter-type', container).value;
-    currentPage = 1;
+    resetPagination();
     fetchLogs();
   });
 
   $('#logs-page-size-select', container).addEventListener('change', (e) => {
     pageSize = parseInt(e.target.value, 10) || 50;
-    currentPage = 1;
+    resetPagination();
     fetchLogs();
   });
 
@@ -294,17 +302,23 @@ export function mount(container) {
 
   // Fetch Logs
   async function fetchLogs() {
-    const offset = (currentPage - 1) * pageSize;
     const params = {
       limit: pageSize,
-      offset,
       ...filters,
     };
+    const beforeId = cursorStack[currentPage - 1];
+    if (beforeId) {
+      params.before_id = beforeId;
+    }
 
     try {
       const res = await api.getRequestLogs(params);
       logs = res.logs || [];
-      totalLogs = res.total || 0;
+      totalLogs = res.total !== undefined ? res.total : null;
+      hasMore = Boolean(res.has_more);
+      if (hasMore && res.next_before_id) {
+        cursorStack[currentPage] = res.next_before_id;
+      }
       renderTable();
     } catch (err) {
       $('#logs-table-body', container).innerHTML = `
@@ -329,7 +343,7 @@ export function mount(container) {
           </td>
         </tr>
       `;
-      updatePagination(0, 0, 0, 1, 1);
+      updatePagination();
       return;
     }
 
@@ -406,11 +420,7 @@ export function mount(container) {
       tbody.appendChild(row);
     }
 
-    const startIdx = totalLogs > 0 ? (currentPage - 1) * pageSize + 1 : 0;
-    const endIdx = Math.min(currentPage * pageSize, totalLogs);
-    const totalPages = Math.max(1, Math.ceil(totalLogs / pageSize));
-
-    updatePagination(startIdx, endIdx, totalLogs, currentPage, totalPages);
+    updatePagination();
   }
 
   function openQuickAddDialog(domainName) {
@@ -444,6 +454,7 @@ export function mount(container) {
               toast.success(`Domain rule for ${domainName} added`);
               close();
               await fetchRules();
+              resetPagination();
               await fetchLogs();
             } catch (err) {
               toast.error(err.message || 'Failed to add rule');
@@ -454,13 +465,17 @@ export function mount(container) {
     });
   }
 
-  function updatePagination(start, end, total, page, totalPages) {
-    $('#logs-page-info', container).textContent =
-      total > 0 ? `Showing ${start}–${end} of ${total}` : 'Showing 0 of 0';
-    $('#logs-page-num', container).textContent = `Page ${page} of ${totalPages}`;
+  function updatePagination() {
+    const pageInfo = $('#logs-page-info', container);
+    if (totalLogs !== null && totalLogs !== undefined) {
+      pageInfo.textContent = `Showing ${logs.length} of ${formatCount(totalLogs)}`;
+    } else {
+      pageInfo.textContent = `Showing ${logs.length}`;
+    }
+    $('#logs-page-num', container).textContent = `Page ${currentPage}`;
 
-    $('#logs-prev-page-btn', container).disabled = page <= 1;
-    $('#logs-next-page-btn', container).disabled = page >= totalPages;
+    $('#logs-prev-page-btn', container).disabled = currentPage <= 1;
+    $('#logs-next-page-btn', container).disabled = !hasMore;
   }
 
   $('#logs-prev-page-btn', container).addEventListener('click', () => {
@@ -471,8 +486,10 @@ export function mount(container) {
   });
 
   $('#logs-next-page-btn', container).addEventListener('click', () => {
-    currentPage++;
-    fetchLogs();
+    if (hasMore) {
+      currentPage++;
+      fetchLogs();
+    }
   });
 
   // Poller: runs every 10s only if on page 1, tab is visible, and no filter input is focused (fixes F13)

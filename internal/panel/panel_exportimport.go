@@ -13,6 +13,9 @@ import (
 )
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	data, err := s.sqlStore.ExportAll(r.Context())
 	if err != nil {
 		slog.Error("admin panel export error", "error", err)
@@ -185,6 +188,9 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "SQLite store unavailable", http.StatusInternalServerError)
 		return
 	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 
 	filename := fmt.Sprintf("tls-relay-backup-%s.db", time.Now().Format("20060102-150405"))
 	w.Header().Set("Content-Type", "application/x-sqlite3")

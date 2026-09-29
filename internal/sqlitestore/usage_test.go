@@ -272,3 +272,58 @@ func TestGetUsersTotalUsage_MultipleUsers(t *testing.T) {
 		t.Errorf("uid2 totals: got sent=%d received=%d, want 333/444", totals[uid2].Sent, totals[uid2].Received)
 	}
 }
+
+func TestGlobalUsageTotals_AfterUserReset(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	uid := newUsageTestUser(t, s, "user_reset_test")
+	day := time.Now().UTC()
+
+	// Record protocol usage (e.g. 500 sent, 600 received for TLS)
+	if err := s.IncrementProtocolUsage(ctx, "TLS", 500, 600, day); err != nil {
+		t.Fatalf("IncrementProtocolUsage failed: %v", err)
+	}
+
+	// Record user usage (300 sent, 400 received)
+	if err := s.IncrementUserUsage(ctx, uid, 300, 400, day); err != nil {
+		t.Fatalf("IncrementUserUsage failed: %v", err)
+	}
+
+	// Check global totals - should reflect protocol usage
+	sent, recv, err := s.GetGlobalUsageTotals(ctx, day.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GetGlobalUsageTotals failed: %v", err)
+	}
+	if sent != 500 || recv != 600 {
+		t.Fatalf("expected 500 sent, 600 recv from protocol usage; got %d, %d", sent, recv)
+	}
+
+	// Reset user usage
+	if err := s.ResetUserUsage(ctx, uid); err != nil {
+		t.Fatalf("ResetUserUsage failed: %v", err)
+	}
+
+	// Global totals must NOT change after user reset
+	sentAfter, recvAfter, err := s.GetGlobalUsageTotals(ctx, day.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GetGlobalUsageTotals after reset failed: %v", err)
+	}
+	if sentAfter != 500 || recvAfter != 600 {
+		t.Fatalf("expected global totals to remain 500/600 after user reset; got %d/%d", sentAfter, recvAfter)
+	}
+
+	// Delete user
+	if err := s.DeleteUser(ctx, uid); err != nil {
+		t.Fatalf("DeleteUser failed: %v", err)
+	}
+
+	// Global totals must still NOT change after user deletion
+	sentAfterDelete, recvAfterDelete, err := s.GetGlobalUsageTotals(ctx, day.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GetGlobalUsageTotals after delete failed: %v", err)
+	}
+	if sentAfterDelete != 500 || recvAfterDelete != 600 {
+		t.Fatalf("expected global totals to remain 500/600 after user delete; got %d/%d", sentAfterDelete, recvAfterDelete)
+	}
+}

@@ -12,7 +12,7 @@ import (
 // using SQLite's VACUUM INTO command.
 func (s *Store) Backup(ctx context.Context, destPath string) error {
 	destDir := filepath.Dir(destPath)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("creating backup directory %q: %w", destDir, err)
 	}
 
@@ -20,9 +20,10 @@ func (s *Store) Backup(ctx context.Context, destPath string) error {
 	_ = os.Remove(destPath)
 
 	query := fmt.Sprintf("VACUUM INTO %s", quoteSQLiteLiteral(destPath))
-	if _, err := s.db.ExecContext(ctx, query); err != nil {
+	if _, err := s.reader.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("executing sqlite backup (VACUUM INTO): %w", err)
 	}
+	_ = os.Chmod(destPath, 0o600)
 	return nil
 }
 

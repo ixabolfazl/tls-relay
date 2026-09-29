@@ -17,7 +17,7 @@ func (s *Store) IncrementUserDNSUsage(ctx context.Context, userID int64, date ti
 		return nil
 	}
 	dayStr := utcDayString(date)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT INTO user_dns_usage_daily (user_id, usage_date, query_count)
 		 VALUES (?, ?, ?)
 		 ON CONFLICT(user_id, usage_date) DO UPDATE
@@ -46,7 +46,7 @@ func (s *Store) GetUserDNSUsageDaily(ctx context.Context, userID int64, sinceDat
 		args = []interface{}{userID}
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func (s *Store) GetUserDNSUsageTotal(ctx context.Context, userID int64, sinceDat
 	}
 
 	var total int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	err := s.reader.QueryRowContext(ctx, query, args...).Scan(&total)
 	return total, err
 }
 
@@ -102,7 +102,7 @@ func (s *Store) GetAllUsersDNSTotals(ctx context.Context, sinceDate time.Time) (
 		  GROUP BY user_id`
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +135,6 @@ func (s *Store) GetGlobalDNSQueriesTotal(ctx context.Context, sinceDate time.Tim
 	}
 
 	var total int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	err := s.reader.QueryRowContext(ctx, query, args...).Scan(&total)
 	return total, err
 }

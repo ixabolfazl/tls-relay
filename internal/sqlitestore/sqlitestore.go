@@ -12,14 +12,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 )
 
-// Store wraps a *sql.DB connected to a SQLite database.
+// Store wraps a writer *sql.DB and a reader *sql.DB connected to a SQLite database.
 type Store struct {
-	db *sql.DB
+	writer *sql.DB
+	reader *sql.DB
+
+	reqLogsCountCache    atomic.Int64
+	reqLogsCountCachedAt atomic.Int64 // unix nano
 }
 
 // New opens (or creates) a SQLite database at the given path. It creates
@@ -27,7 +32,7 @@ type Store struct {
 // schema migration.
 func New(path string) (*Store, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating sqlite directory %q: %w", dir, err)
 	}
 
@@ -36,15 +41,15 @@ func New(path string) (*Store, error) {
 		dsn = path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
 	}
 
-	db, err := sql.Open("sqlite", dsn)
+	writer, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite database %q: %w", path, err)
 	}
 
 	// modernc pure-Go SQLite works best with serialized writes to prevent SQLITE_BUSY.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
+	writer.SetMaxOpenConns(1)
+	writer.SetMaxIdleConns(1)
+	writer.SetConnMaxLifetime(0)
 
 	// Apply PRAGMAs explicitly as well.
 	pragmas := []string{
@@ -54,30 +59,87 @@ func New(path string) (*Store, error) {
 		"PRAGMA synchronous=NORMAL",
 	}
 	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
+		if _, err := writer.Exec(p); err != nil {
+			_ = writer.Close()
 			return nil, fmt.Errorf("executing %q: %w", p, err)
 		}
 	}
 
-	s := &Store{db: db}
+	s := &Store{writer: writer}
 	if err := s.migrate(); err != nil {
-		_ = db.Close()
+		_ = writer.Close()
 		return nil, fmt.Errorf("migrating schema: %w", err)
 	}
+
+	// 0600 on the DB file after opening
+	if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		_ = os.Chmod(path, 0o600)
+	}
+
+	// Open reader connection pool (MaxOpenConns(4), mode=ro, same pragmas, WAL)
+	var reader *sql.DB
+	if path == ":memory:" || strings.HasPrefix(path, "file::memory:") {
+		reader = writer
+	} else {
+		readerDSN := path
+		if !strings.Contains(path, "?") {
+			readerDSN = path + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
+		} else {
+			readerDSN = path + "&mode=ro"
+		}
+
+		rdb, err := sql.Open("sqlite", readerDSN)
+		if err != nil {
+			_ = writer.Close()
+			return nil, fmt.Errorf("opening sqlite reader database %q: %w", path, err)
+		}
+		rdb.SetMaxOpenConns(4)
+		rdb.SetMaxIdleConns(4)
+		rdb.SetConnMaxLifetime(0)
+
+		for _, p := range pragmas {
+			if _, err := rdb.Exec(p); err != nil {
+				_ = rdb.Close()
+				_ = writer.Close()
+				return nil, fmt.Errorf("executing reader %q: %w", p, err)
+			}
+		}
+		reader = rdb
+	}
+
+	s.reader = reader
 
 	slog.Info("sqlite store initialized", "path", path)
 	return s, nil
 }
 
-// Close closes the database connection.
+// Close closes the database connections.
 func (s *Store) Close() error {
-	return s.db.Close()
+	var errs []string
+	if s.reader != nil && s.reader != s.writer {
+		if err := s.reader.Close(); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if s.writer != nil {
+		if err := s.writer.Close(); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("closing sqlite connections: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
-// DB returns the underlying *sql.DB for advanced usage (e.g. transactions in tests).
+// DB returns the underlying writer *sql.DB for advanced usage (e.g. transactions in tests).
 func (s *Store) DB() *sql.DB {
-	return s.db
+	return s.writer
+}
+
+// ReaderDB returns the underlying reader *sql.DB.
+func (s *Store) ReaderDB() *sql.DB {
+	return s.reader
 }
 
 func (s *Store) migrate() error {
@@ -140,6 +202,8 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_domain ON request_logs(domain)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_client_ip ON request_logs(client_ip)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_type_id ON request_logs(request_type, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_user_id ON request_logs(user_id, id)`,
 		`CREATE TABLE IF NOT EXISTS user_usage_daily (
 			id             INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -197,13 +261,13 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_user_dns_usage_daily_user_date ON user_dns_usage_daily(user_id, usage_date)`,
 	}
 	for _, ddl := range tables {
-		if _, err := s.db.Exec(ddl); err != nil {
+		if _, err := s.writer.Exec(ddl); err != nil {
 			return fmt.Errorf("executing DDL: %w\n%s", err, ddl)
 		}
 	}
 
 	// Migration: Add group_name, total_bytes_sent, total_bytes_received columns to domain_rules if missing.
-	rows, err := s.db.Query(`PRAGMA table_info(domain_rules)`)
+	rows, err := s.writer.Query(`PRAGMA table_info(domain_rules)`)
 	if err != nil {
 		return fmt.Errorf("inspecting domain_rules table info: %w", err)
 	}
@@ -238,28 +302,28 @@ func (s *Store) migrate() error {
 	}
 
 	if !hasGroupName {
-		if _, err := s.db.Exec(`ALTER TABLE domain_rules ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("adding group_name column to domain_rules: %w", err)
 		}
 	}
 	if !hasDomainBytesSent {
-		if _, err := s.db.Exec(`ALTER TABLE domain_rules ADD COLUMN total_bytes_sent INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN total_bytes_sent INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("adding total_bytes_sent column to domain_rules: %w", err)
 		}
 	}
 	if !hasDomainBytesReceived {
-		if _, err := s.db.Exec(`ALTER TABLE domain_rules ADD COLUMN total_bytes_received INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN total_bytes_received INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("adding total_bytes_received column to domain_rules: %w", err)
 		}
 	}
 	if !hasMode {
-		if _, err := s.db.Exec(`ALTER TABLE domain_rules ADD COLUMN mode TEXT NOT NULL DEFAULT 'proxy'`); err != nil {
+		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN mode TEXT NOT NULL DEFAULT 'proxy'`); err != nil {
 			return fmt.Errorf("adding mode column to domain_rules: %w", err)
 		}
 	}
 
 	// Migration: Add last_seen_at, total_bytes_sent, total_bytes_received columns to users if missing.
-	userRows, err := s.db.Query(`PRAGMA table_info(users)`)
+	userRows, err := s.writer.Query(`PRAGMA table_info(users)`)
 	if err == nil {
 		hasLastSeen := false
 		hasBytesSent := false
@@ -283,24 +347,24 @@ func (s *Store) migrate() error {
 		}
 		_ = userRows.Close()
 		if !hasLastSeen {
-			if _, err := s.db.Exec(`ALTER TABLE users ADD COLUMN last_seen_at DATETIME`); err != nil {
+			if _, err := s.writer.Exec(`ALTER TABLE users ADD COLUMN last_seen_at DATETIME`); err != nil {
 				return fmt.Errorf("adding last_seen_at column to users: %w", err)
 			}
 		}
 		if !hasBytesSent {
-			if _, err := s.db.Exec(`ALTER TABLE users ADD COLUMN total_bytes_sent INTEGER NOT NULL DEFAULT 0`); err != nil {
+			if _, err := s.writer.Exec(`ALTER TABLE users ADD COLUMN total_bytes_sent INTEGER NOT NULL DEFAULT 0`); err != nil {
 				return fmt.Errorf("adding total_bytes_sent column to users: %w", err)
 			}
 		}
 		if !hasBytesReceived {
-			if _, err := s.db.Exec(`ALTER TABLE users ADD COLUMN total_bytes_received INTEGER NOT NULL DEFAULT 0`); err != nil {
+			if _, err := s.writer.Exec(`ALTER TABLE users ADD COLUMN total_bytes_received INTEGER NOT NULL DEFAULT 0`); err != nil {
 				return fmt.Errorf("adding total_bytes_received column to users: %w", err)
 			}
 		}
 	}
 
 	// Migration: Add protocol column to request_logs if missing.
-	reqLogRows, err := s.db.Query(`PRAGMA table_info(request_logs)`)
+	reqLogRows, err := s.writer.Query(`PRAGMA table_info(request_logs)`)
 	if err == nil {
 		hasProtocol := false
 		for reqLogRows.Next() {
@@ -317,7 +381,7 @@ func (s *Store) migrate() error {
 		}
 		_ = reqLogRows.Close()
 		if !hasProtocol {
-			_, _ = s.db.Exec(`ALTER TABLE request_logs ADD COLUMN protocol TEXT NOT NULL DEFAULT 'TLS'`)
+			_, _ = s.writer.Exec(`ALTER TABLE request_logs ADD COLUMN protocol TEXT NOT NULL DEFAULT 'TLS'`)
 		}
 	}
 

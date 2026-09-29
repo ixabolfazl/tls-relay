@@ -77,7 +77,7 @@ func (s *Store) ExportAll(ctx context.Context) (*ExportData, error) {
 
 // ImportData applies domain rules, blacklist entries, and users inside a SINGLE transaction.
 func (s *Store) ImportData(ctx context.Context, domainRules []DomainRuleRow, blacklist []BlacklistEntry, users []UserWithIPs) (*ImportResult, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning import transaction: %w", err)
 	}

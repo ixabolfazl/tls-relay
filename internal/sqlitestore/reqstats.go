@@ -18,7 +18,7 @@ func (s *Store) IncrementRequestStat(ctx context.Context, date time.Time, reques
 		return nil
 	}
 	dayStr := utcDayString(date)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT INTO request_stats_daily (stat_date, request_type, category, count)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(stat_date, request_type, category) DO UPDATE
@@ -31,7 +31,7 @@ func (s *Store) IncrementRequestStat(ctx context.Context, date time.Time, reques
 // GetRequestStatsDaily returns daily rows for a requestType ("DNS" or "TLS") starting from sinceDate.
 func (s *Store) GetRequestStatsDaily(ctx context.Context, requestType string, sinceDate time.Time) ([]RequestStatDayRow, error) {
 	dayStr := utcDayString(sinceDate)
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT stat_date, category, count
 		   FROM request_stats_daily
 		  WHERE request_type = ? AND stat_date >= ? AND category != 'total'
@@ -74,7 +74,7 @@ func (s *Store) GetRequestStatsTotals(ctx context.Context, requestType string, s
 		args = []interface{}{requestType}
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
