@@ -320,17 +320,7 @@ const landingHTMLRaw = `<!DOCTYPE html>
     <!-- Domain Lookup -->
     {{.LookupCard}}
 
-    <!-- Magic Link Registration -->
-    <div class="card">
-      <div class="card-title">Register via Magic Link</div>
-      <p class="hint-top">Paste your magic link URL or token to register this IP address.</p>
-      <div class="form-row">
-        <input type="text" id="magic-input" placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000" autocomplete="off" spellcheck="false" />
-        <button id="magic-btn" onclick="doMagicLink()">Register</button>
-      </div>
-      <div id="magic-result" class="result"></div>
-    </div>
-
+{{.MagicLinkCard}}
     <!-- Setup Guide Link -->
     <div class="card">
       <div class="card-title">Setup Instructions</div>
@@ -343,11 +333,7 @@ const landingHTMLRaw = `<!DOCTYPE html>
         <div class="step">
           <span class="step-num">2</span>
           <span class="step-body">Change DNS server to <strong class="mono">{{.PrimaryDNS}}</strong>.</span>
-        </div>
-        <div class="step">
-          <span class="step-num">3</span>
-          <span class="step-body">Ensure your IP is registered (via Magic Link above).</span>
-        </div>
+        </div>{{.SetupStepRegister}}
       </div>
     </div>
 
@@ -427,45 +413,13 @@ const landingHTMLRaw = `<!DOCTYPE html>
     }
   }
 
-  async function doMagicLink() {
-    const input = document.getElementById('magic-input');
-    const res = document.getElementById('magic-result');
-    const raw = (input.value || '').trim();
-    if (!raw) return;
-
-    res.className = 'result visible res-warn';
-    res.textContent = 'Registering IP...';
-
-    let token = raw;
-    if (raw.includes('/connect/') || raw.includes('/setup/')) {
-      const parts = raw.split('/');
-      token = parts[parts.length - 1] || parts[parts.length - 2];
-    }
-
-    try {
-      const r = await fetch('/connect/' + encodeURIComponent(token), {
-        headers: { 'Accept': 'text/plain' }
-      });
-      const text = await r.text();
-      if (r.ok) {
-        res.className = 'result visible res-ok';
-        res.textContent = '✓ IP successfully registered (' + text.trim() + '). Refreshing...';
-        setTimeout(() => location.reload(), 1500);
-      } else {
-        res.className = 'result visible res-bad';
-        res.textContent = '✕ ' + (text.trim() || 'Registration failed (' + r.status + ')');
-      }
-    } catch (e) {
-      res.className = 'result visible res-bad';
-      res.textContent = 'Network error. Please try again.';
-    }
-  }
+{{.MagicLinkScript}}
 
   document.addEventListener('DOMContentLoaded', () => {
     const li = document.getElementById('lookup-input');
     if (li) li.addEventListener('keydown', e => { if (e.key === 'Enter') doLookup(); });
     const mi = document.getElementById('magic-input');
-    if (mi) mi.addEventListener('keydown', e => { if (e.key === 'Enter') doMagicLink(); });
+    if (mi && typeof doMagicLink === 'function') mi.addEventListener('keydown', e => { if (e.key === 'Enter') doMagicLink(); });
   });
   </script>
 </body>
@@ -492,7 +446,7 @@ const setupHTMLRaw = `<!DOCTYPE html>
     <div class="card">
       <div class="label">Your IP Address</div>
       <div class="value mono">{{.ClientIP}}</div>
-      <span class="badge badge-ok">✓ Registered</span>
+      {{.IPStatusBadge}}
     </div>
 
     <!-- DNS Addresses -->
@@ -637,6 +591,62 @@ const setupLookupCardHTML = `
       </div>
       <div id="result" class="result"></div>
     </div>`
+
+const landingMagicLinkCardHTML = `
+    <!-- Magic Link Registration -->
+    <div class="card">
+      <div class="card-title">Register via Magic Link</div>
+      <p class="hint-top">Paste your magic link URL or token to register this IP address.</p>
+      <div class="form-row">
+        <input type="text" id="magic-input" placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000" autocomplete="off" spellcheck="false" />
+        <button id="magic-btn" onclick="doMagicLink()">Register</button>
+      </div>
+      <div id="magic-result" class="result"></div>
+    </div>
+`
+
+const landingStepRegisterHTML = `
+        <div class="step">
+          <span class="step-num">3</span>
+          <span class="step-body">Ensure your IP is registered (via Magic Link above).</span>
+        </div>`
+
+const landingMagicLinkScript = `
+  async function doMagicLink() {
+    const input = document.getElementById('magic-input');
+    const res = document.getElementById('magic-result');
+    if (!input || !res) return;
+    const raw = (input.value || '').trim();
+    if (!raw) return;
+
+    res.className = 'result visible res-warn';
+    res.textContent = 'Registering IP...';
+
+    let token = raw;
+    if (raw.includes('/connect/') || raw.includes('/setup/')) {
+      const parts = raw.split('/');
+      token = parts[parts.length - 1] || parts[parts.length - 2];
+    }
+
+    try {
+      const r = await fetch('/connect/' + encodeURIComponent(token), {
+        headers: { 'Accept': 'text/plain' }
+      });
+      const text = await r.text();
+      if (r.ok) {
+        res.className = 'result visible res-ok';
+        res.textContent = '✓ IP successfully registered (' + text.trim() + '). Refreshing...';
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        res.className = 'result visible res-bad';
+        res.textContent = '✕ ' + (text.trim() || 'Registration failed (' + r.status + ')');
+      }
+    } catch (e) {
+      res.className = 'result visible res-bad';
+      res.textContent = 'Network error. Please try again.';
+    }
+  }
+`
 
 func isBotUserAgent(ua string) bool {
 	uaLower := strings.ToLower(ua)
@@ -910,15 +920,28 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	clientIP := extractIP(r.RemoteAddr)
 	dnsIP := s.getServerIP(r)
 
-	var isReg bool
-	if s.store != nil {
-		isReg, _ = s.store.IsIPRegistered(r.Context(), clientIP)
-	}
+	isPublic := s.accessStore != nil && s.accessStore.Mode() == access.ModePublic
+
 	var badgeHTML string
-	if isReg {
-		badgeHTML = `<span class="badge badge-ok">✓ Registered</span>`
-	} else {
-		badgeHTML = `<span class="badge badge-warn">Not Registered</span>`
+	if !isPublic {
+		var isReg bool
+		if s.store != nil {
+			isReg, _ = s.store.IsIPRegistered(r.Context(), clientIP)
+		}
+		if isReg {
+			badgeHTML = `<span class="badge badge-ok">✓ Registered</span>`
+		} else {
+			badgeHTML = `<span class="badge badge-warn">Not Registered</span>`
+		}
+	}
+
+	magicLinkCard := ""
+	setupStepRegister := ""
+	magicLinkScript := ""
+	if !isPublic {
+		magicLinkCard = landingMagicLinkCardHTML
+		setupStepRegister = landingStepRegisterHTML
+		magicLinkScript = landingMagicLinkScript
 	}
 
 	out := landingHTMLRaw
@@ -931,6 +954,9 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 		lookupCard = landingLookupCardHTML
 	}
 	out = strings.ReplaceAll(out, "{{.LookupCard}}", lookupCard)
+	out = strings.ReplaceAll(out, "{{.MagicLinkCard}}", magicLinkCard)
+	out = strings.ReplaceAll(out, "{{.SetupStepRegister}}", setupStepRegister)
+	out = strings.ReplaceAll(out, "{{.MagicLinkScript}}", magicLinkScript)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -1052,6 +1078,12 @@ func (s *Server) replyConnect(w http.ResponseWriter, r *http.Request, code int, 
 	dnsIP := s.getServerIP(r)
 	out := setupHTMLRaw
 	out = strings.ReplaceAll(out, "{{.ClientIP}}", htmlEscape(clientIP))
+	isPublic := s.accessStore != nil && s.accessStore.Mode() == access.ModePublic
+	var badgeHTML string
+	if !isPublic {
+		badgeHTML = `<span class="badge badge-ok">✓ Registered</span>`
+	}
+	out = strings.ReplaceAll(out, "{{.IPStatusBadge}}", badgeHTML)
 	out = strings.ReplaceAll(out, "{{.PrimaryDNS}}", htmlEscape(dnsIP))
 	out = strings.ReplaceAll(out, "{{.SecondaryDNS}}", htmlEscape(dnsIP))
 	lookupCard := ""

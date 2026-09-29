@@ -418,3 +418,179 @@ func TestLandingAndSetup_LookupCardHiddenWhenDisabled(t *testing.T) {
 		t.Errorf("landing page SHOULD contain Domain Support Check when lookup is enabled")
 	}
 }
+
+func TestLandingPage_PublicModeOmitsRegistrationUI(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModePublic)
+
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	srv.SetServerIP("203.0.113.10")
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+
+	// Must NOT contain registration UI
+	forbiddenSubstrings := []string{
+		"Register via Magic Link",
+		"Registered",
+		"Not Registered",
+	}
+	for _, sub := range forbiddenSubstrings {
+		if strings.Contains(body, sub) {
+			t.Errorf("landing page in public mode should not contain %q", sub)
+		}
+	}
+
+	// Must still contain IP card and basic setup steps (without step 3)
+	if !strings.Contains(body, "192.0.2.10") {
+		t.Errorf("expected body to contain client IP")
+	}
+	if !strings.Contains(body, "Setup Instructions") {
+		t.Errorf("expected body to contain Setup Instructions")
+	}
+	if !strings.Contains(body, "Open your device") {
+		t.Errorf("expected body to contain device settings step")
+	}
+	if !strings.Contains(body, "Change DNS server to") {
+		t.Errorf("expected body to contain change DNS server step")
+	}
+	if strings.Contains(body, "Ensure your IP is registered") {
+		t.Errorf("setup instructions should omit registration step in public mode")
+	}
+}
+
+func TestLandingPage_UserModeShowsRegistrationUI(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModeUser)
+	ctx := context.Background()
+
+	srv := portal.New(":0", store, as, &mockRefresher{})
+	srv.SetServerIP("203.0.113.10")
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	// 1. Unregistered IP
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.0.2.20:12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Not Registered") {
+		t.Errorf("expected unregistered IP to show 'Not Registered' badge")
+	}
+	if !strings.Contains(body, "Register via Magic Link") {
+		t.Errorf("expected body to contain 'Register via Magic Link' card")
+	}
+	if !strings.Contains(body, "Ensure your IP is registered (via Magic Link above).") {
+		t.Errorf("expected setup instructions to contain registration step")
+	}
+
+	// 2. Registered IP
+	user, err := store.CreateUser(ctx, "testuser", 2)
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	if err := store.RegisterIP(ctx, user.ID, "192.0.2.20", 2); err != nil {
+		t.Fatalf("failed to register IP: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body = w.Body.String()
+	if !strings.Contains(body, "✓ Registered") {
+		t.Errorf("expected registered IP to show '✓ Registered' badge")
+	}
+}
+
+func TestLandingPage_NilAccessStoreHandlesGracefully(t *testing.T) {
+	srv := portal.New(":0", nil, nil, nil)
+	srv.SetServerIP("203.0.113.10")
+	mux := http.NewServeMux()
+	srv.RegisterHandlersWithLandingAt(mux)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.0.2.30:12345"
+	w := httptest.NewRecorder()
+
+	// Must not panic
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "192.0.2.30") {
+		t.Errorf("expected body to contain client IP")
+	}
+}
+
+func TestSetupSuccessPage_PublicModeOmitsRegisteredBadge(t *testing.T) {
+	store := newTestStore(t)
+	as := access.NewAccessStore(access.ModePublic)
+	ctx := context.Background()
+
+	user, err := store.CreateUser(ctx, "scriptuser", 3)
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	_, handler := createHandler(t, store, as)
+
+	// Browser request to /setup
+	req := httptest.NewRequest("GET", "/setup", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.RemoteAddr = "192.0.2.40:12345"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "Registered") {
+		t.Errorf("setup page in public mode should not contain 'Registered'")
+	}
+
+	// Browser request to /connect/{token}
+	req = httptest.NewRequest("GET", "/connect/"+user.MagicLink, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.RemoteAddr = "192.0.2.40:12345"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "Registered") {
+		t.Errorf("connect success page in public mode should not contain 'Registered'")
+	}
+
+	// CLI request (curl) still succeeds and returns plain IP
+	req = httptest.NewRequest("GET", "/connect/"+user.MagicLink, nil)
+	req.Header.Set("User-Agent", "curl/7.88.1")
+	req.RemoteAddr = "192.0.2.41:12345"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := strings.TrimSpace(w.Body.String()); body != "192.0.2.41" {
+		t.Errorf("expected '192.0.2.41', got %q", body)
+	}
+}
