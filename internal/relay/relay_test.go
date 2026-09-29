@@ -246,8 +246,12 @@ func TestPipe_IdleOneDirectionStreamsOther(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	pipeDone := make(chan struct{})
 	// 100ms idle timeout
-	go relay.Pipe(ctx, client1, dest1, 100*time.Millisecond, 0, &sent, &recv)
+	go func() {
+		defer close(pipeDone)
+		relay.Pipe(ctx, client1, dest1, 100*time.Millisecond, 0, &sent, &recv)
+	}()
 
 	// Stream from dest to client for 250ms (longer than the 100ms idle timeout)
 	// while client sends 0 bytes. Pipe must remain open.
@@ -277,6 +281,7 @@ func TestPipe_IdleOneDirectionStreamsOther(t *testing.T) {
 
 	_ = client2.Close()
 	_ = dest2.Close()
+	<-pipeDone
 }
 
 func TestPipe_ResetClosesBoth(t *testing.T) {
@@ -356,8 +361,8 @@ func TestPipe_MaxDurationClosesActive(t *testing.T) {
 
 func TestPipe_HalfCloseTimeout(t *testing.T) {
 	oldTimeout := relay.HalfCloseTimeout
-	relay.HalfCloseTimeout = 50 * time.Millisecond
-	defer func() { relay.HalfCloseTimeout = oldTimeout }()
+	relay.SetHalfCloseTimeout(50 * time.Millisecond)
+	defer func() { relay.SetHalfCloseTimeout(oldTimeout) }()
 
 	client1, client2 := net.Pipe()
 	dest1, dest2 := net.Pipe()

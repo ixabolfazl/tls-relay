@@ -19,6 +19,8 @@ const STATUS_DEFINITIONS = {
   // Info
   forwarded: { label: 'Forwarded', tone: 'info' },
   forwarded_unauthorized: { label: 'Passthrough', tone: 'info' },
+  resolved_empty: { label: 'Empty Answer', tone: 'info' },
+  redirected_https: { label: 'Redirected HTTPS', tone: 'info' },
 
   // Neutral
   closed: { label: 'Closed', tone: 'neutral' },

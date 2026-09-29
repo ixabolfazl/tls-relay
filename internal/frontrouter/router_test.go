@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,4 +346,144 @@ func TestFrontRouter_RoutingMatrix(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestFrontRouter_ConnectionLimits(t *testing.T) {
+	routerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("router listen failed: %v", err)
+	}
+	defer routerLn.Close()
+
+	_, routerPortStr, _ := net.SplitHostPort(routerLn.Addr().String())
+	var routerPort int
+	fmt.Sscanf(routerPortStr, "%d", &routerPort)
+
+	cfg := setupTestConfig(routerPort)
+	ruleStore := rules.NewRuleStore([]int{routerPort}, "allow_default_port")
+	accessStore := access.NewAccessStore(access.ModePublic)
+	security, _ := relay.NewSecurityChecker(false, false, nil)
+	limits := relay.NewLimitTracker(100, 10)
+
+	panelHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	router, err := frontrouter.New(cfg, panelHandler, ruleStore, accessStore, security, limits, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("frontrouter.New: %v", err)
+	}
+
+	// Limit to 1 connection per IP
+	router.FrontLimits().SetMaxPerIP(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = router.ServeListener(ctx, routerLn, nil) }()
+
+	// Connect 1st connection and keep it open
+	conn1, err := net.Dial("tcp", routerLn.Addr().String())
+	if err != nil {
+		t.Fatalf("first dial failed: %v", err)
+	}
+	defer conn1.Close()
+
+	// Connect 2nd connection from same IP (127.0.0.1) -> should be rejected by front limit
+	conn2, err := net.Dial("tcp", routerLn.Addr().String())
+	if err != nil {
+		t.Fatalf("second dial failed: %v", err)
+	}
+	defer conn2.Close()
+
+	_ = conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 100)
+	n, _ := conn2.Read(buf)
+	if n > 0 {
+		t.Errorf("expected immediate close on over-limit conn, got %q", string(buf[:n]))
+	}
+
+	// Now close conn1 -> slot should be released, allowing new connection
+	_ = conn1.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	conn3, err := net.Dial("tcp", routerLn.Addr().String())
+	if err != nil {
+		t.Fatalf("third dial failed: %v", err)
+	}
+	defer conn3.Close()
+
+	_, _ = conn3.Write([]byte("GET / HTTP/1.1\r\nHost: panel.local\r\n\r\n"))
+	_ = conn3.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err = conn3.Read(buf)
+	if err != nil || n == 0 {
+		t.Fatalf("expected successful response on conn3 after conn1 closed, err: %v", err)
+	}
+	if !strings.Contains(string(buf[:n]), "200 OK") {
+		t.Errorf("expected 200 OK, got: %s", string(buf[:n]))
+	}
+}
+
+func TestFrontRouter_HTTPSRedirect(t *testing.T) {
+	routerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("router listen failed: %v", err)
+	}
+	defer routerLn.Close()
+
+	_, routerPortStr, _ := net.SplitHostPort(routerLn.Addr().String())
+	var routerPort int
+	fmt.Sscanf(routerPortStr, "%d", &routerPort)
+
+	cfg := setupTestConfig(routerPort)
+	// Rule allows port 443 only (not routerPort)
+	ruleStore := rules.NewRuleStore([]int{443}, "reject")
+	if err := ruleStore.Swap(map[string]string{
+		"secure.example.com": `{"mode":"proxy","ports":[443]}`,
+	}); err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	accessStore := access.NewAccessStore(access.ModePublic)
+	security, _ := relay.NewSecurityChecker(false, false, nil)
+	limits := relay.NewLimitTracker(100, 10)
+
+	panelHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	router, err := frontrouter.New(cfg, panelHandler, ruleStore, accessStore, security, limits, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("frontrouter.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = router.ServeListener(ctx, routerLn, nil) }()
+
+	conn, err := net.Dial("tcp", routerLn.Addr().String())
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	reqStr := "GET /secure/path HTTP/1.1\r\nHost: secure.example.com\r\n\r\n"
+	_, _ = conn.Write([]byte(reqStr))
+
+	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	respStr := string(buf[:n])
+	if !strings.Contains(respStr, "301 Moved Permanently") {
+		t.Errorf("expected 301 Moved Permanently, got: %s", respStr)
+	}
+	if !strings.Contains(respStr, "Location: https://secure.example.com/secure/path") {
+		t.Errorf("expected Location header to https, got: %s", respStr)
+	}
 }

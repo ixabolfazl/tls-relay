@@ -37,6 +37,7 @@ type Router struct {
 	accessStore  *access.AccessStore
 	security     *relay.SecurityChecker
 	limits       *relay.LimitTracker
+	frontLimits  *relay.LimitTracker
 	egressDialer *relay.EgressDialer
 	connTracker  *relay.ConnTracker
 	logger       *requestlog.Logger
@@ -85,6 +86,7 @@ func New(
 		accessStore:  accessStore,
 		security:     security,
 		limits:       limits,
+		frontLimits:  relay.NewLimitTracker(5000, 60),
 		egressDialer: egressDialer,
 		connTracker:  connTracker,
 		logger:       logger,
@@ -92,6 +94,11 @@ func New(
 		stats:        stats,
 		relayServer:  httpRelay,
 	}, nil
+}
+
+// FrontLimits returns the dedicated LimitTracker for front router port-80 connections.
+func (r *Router) FrontLimits() *relay.LimitTracker {
+	return r.frontLimits
 }
 
 // SetCustomDialer sets a custom dialer on the internal HTTP relay server (useful for tests).
@@ -185,6 +192,17 @@ func (r *Router) dispatchConn(ctx context.Context, conn net.Conn, pln *panelList
 	start := time.Now()
 	clientIP := relay.ExtractIP(conn.RemoteAddr().String())
 
+	// 0. Acquire front connection limit BEFORE reading any bytes
+	if r.frontLimits != nil {
+		release, ok := r.frontLimits.Acquire(clientIP)
+		if !ok {
+			r.logRejection(clientIP, "", r.listenPort, "rejected_limit", start)
+			_ = conn.Close()
+			return
+		}
+		conn = &limitConn{Conn: conn, release: release}
+	}
+
 	// 1. Check IP Access control (Blacklist only at this stage to allow unregistered IPs to reach the landing/setup page)
 	var ip net.IP
 	if r.accessStore != nil {
@@ -263,6 +281,10 @@ func (r *Router) dispatchConn(ctx context.Context, conn net.Conn, pln *panelList
 					r.relayServer.HandlePrevalidatedConn(ctx, conn, peeked, host, rule, matchInfo)
 					return
 				}
+				if httprelay.TryHTTPSRedirect(conn, peeked, host, r.ruleStore) {
+					r.logRejection(clientIP, host, r.listenPort, "redirected_https", start)
+					return
+				}
 				r.logRejection(clientIP, host, r.listenPort, "rejected_port", start)
 				_ = conn.Close()
 				return
@@ -275,6 +297,21 @@ func (r *Router) dispatchConn(ctx context.Context, conn net.Conn, pln *panelList
 	if !pln.Send(rc) {
 		_ = conn.Close()
 	}
+}
+
+type limitConn struct {
+	net.Conn
+	release func()
+	once    sync.Once
+}
+
+func (c *limitConn) Close() error {
+	c.once.Do(func() {
+		if c.release != nil {
+			c.release()
+		}
+	})
+	return c.Conn.Close()
 }
 
 func (r *Router) logRejection(clientIP, host string, port int, status string, start time.Time) {

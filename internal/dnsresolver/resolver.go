@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -62,6 +63,23 @@ type Server struct {
 	userLookup         UserLookup
 	stats              *reqstats.Collector
 	usageTracker       UserDNSUsageEmitter
+	sampled            *sampledLogger
+}
+
+// Close stops background caches and sweepers.
+func (s *Server) Close() {
+	if s.cache != nil {
+		s.cache.Close()
+	}
+	if s.limiter != nil {
+		s.limiter.Close()
+	}
+	if s.passthroughLimiter != nil {
+		s.passthroughLimiter.Close()
+	}
+	if s.sampled != nil {
+		s.sampled.Close()
+	}
 }
 
 // SetUnauthorizedPassthrough enables or disables DNS resolution for unregistered IPs on unconfigured domains.
@@ -151,6 +169,7 @@ func New(cfg Config, rs *rules.RuleStore, as *access.AccessStore) (*Server, erro
 		cache:              newDNSCache(),
 		relayIP:            relayIP,
 		upstream:           &dns.Client{Timeout: 5 * time.Second},
+		sampled:            newSampledLogger(),
 	}
 	srv.passthroughEnabled.Store(cfg.PassthroughEnabled)
 	return srv, nil
@@ -158,6 +177,7 @@ func New(cfg Config, rs *rules.RuleStore, as *access.AccessStore) (*Server, erro
 
 // ListenAndServe starts UDP and TCP listeners and blocks until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	defer s.Close()
 	errCh := make(chan error, 2)
 
 	mux := dns.NewServeMux()
@@ -209,7 +229,9 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	// Step 1: Per-source-IP rate limit. Drop silently if over limit.
 	// ------------------------------------------------------------------
 	if !s.limiter.Allow(clientIP) {
-		slog.Warn("dns query rate-limited", "client_ip", clientIP)
+		s.sampled.Log("rate_limited", func() {
+			slog.Warn("dns query rate-limited", "client_ip", clientIP)
+		})
 		return
 	}
 
@@ -217,7 +239,7 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		resp := new(dns.Msg)
 		resp.SetReply(req)
 		resp.Rcode = dns.RcodeFormatError
-		_ = w.WriteMsg(resp)
+		s.writeMsg(w, req, resp)
 		return
 	}
 
@@ -227,17 +249,18 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	// Step 2: Refuse ANY queries (amplification prevention).
 	// ------------------------------------------------------------------
 	if q.Qtype == dns.TypeANY {
-		slog.Warn("dns query refused: ANY query type", "client_ip", clientIP, "qname", q.Name)
+		s.sampled.Log("refused_any", func() {
+			slog.Warn("dns query refused: ANY query type", "client_ip", clientIP, "qname", q.Name)
+		})
 		resp := refusedMsg(req)
-		capEDNS(resp, s.cfg.EDNSBufSize)
-		_ = w.WriteMsg(resp)
+		s.writeMsg(w, req, resp)
 		return
 	}
 
 	qname := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 	qtypeStr := dns.TypeToString[q.Qtype]
 
-	slog.Info("dns query received",
+	slog.Debug("dns query received",
 		slog.String("client_ip", clientIP),
 		slog.String("qname", qname),
 		slog.String("qtype", qtypeStr),
@@ -266,14 +289,15 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		if s.stats != nil {
 			s.stats.Emit("DNS", "blocked")
 		}
-		slog.Warn("dns query refused: domain rule is in block mode",
-			slog.String("client_ip", clientIP),
-			slog.String("qname", qname),
-		)
+		s.sampled.Log("refused_block", func() {
+			slog.Warn("dns query refused: domain rule is in block mode",
+				slog.String("client_ip", clientIP),
+				slog.String("qname", qname),
+			)
+		})
 		s.emitLog(clientIP, qname, "rejected_domain_blocked")
 		resp := refusedMsg(req)
-		capEDNS(resp, s.cfg.EDNSBufSize)
-		_ = w.WriteMsg(resp)
+		s.writeMsg(w, req, resp)
 		return
 	}
 
@@ -294,8 +318,19 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 				)
 				s.emitLog(clientIP, qname, "error_no_relay_ip")
 				resp := serverFailureMsg(req)
-				capEDNS(resp, s.cfg.EDNSBufSize)
-				_ = w.WriteMsg(resp)
+				s.writeMsg(w, req, resp)
+				return
+			}
+
+			if q.Qtype == dns.TypeHTTPS || q.Qtype == dns.TypeSVCB || q.Qtype == 65 || q.Qtype == 64 {
+				slog.Info("dns query answered with empty authoritative answer for HTTPS/SVCB",
+					slog.String("client_ip", clientIP),
+					slog.String("qname", qname),
+					slog.String("qtype", qtypeStr),
+				)
+				s.emitLog(clientIP, qname, "resolved_empty")
+				resp := s.buildAuthoritativeResponse(req, q, qname)
+				s.writeMsg(w, req, resp)
 				return
 			}
 
@@ -308,12 +343,11 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 				)
 				s.emitLog(clientIP, qname, "resolved")
 				resp := s.buildAuthoritativeResponse(req, q, qname)
-				capEDNS(resp, s.cfg.EDNSBufSize)
-				_ = w.WriteMsg(resp)
+				s.writeMsg(w, req, resp)
 				return
 			}
 
-			// For non-A/AAAA queries on configured domains (e.g. TXT, MX), forward to upstream.
+			// For non-A/AAAA/HTTPS/SVCB queries on configured domains (e.g. TXT, MX), forward to upstream.
 			s.emitLog(clientIP, qname, "forwarded")
 			s.forwardQuery(w, req, q)
 			return
@@ -330,14 +364,15 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 			return
 		}
 
-		slog.Warn("dns query rejected: domain not configured in rules and policy is reject",
-			slog.String("client_ip", clientIP),
-			slog.String("qname", qname),
-		)
+		s.sampled.Log("rejected_domain", func() {
+			slog.Warn("dns query rejected: domain not configured in rules and policy is reject",
+				slog.String("client_ip", clientIP),
+				slog.String("qname", qname),
+			)
+		})
 		s.emitLog(clientIP, qname, "rejected_domain")
 		resp := refusedMsg(req)
-		capEDNS(resp, s.cfg.EDNSBufSize)
-		_ = w.WriteMsg(resp)
+		s.writeMsg(w, req, resp)
 		return
 	}
 
@@ -347,14 +382,15 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		if s.stats != nil {
 			s.stats.Emit("DNS", "unauthorized_rejected")
 		}
-		slog.Warn("dns query rejected: unauthorized IP attempted to query configured domain",
-			slog.String("client_ip", clientIP),
-			slog.String("qname", qname),
-		)
+		s.sampled.Log("unauthorized_configured", func() {
+			slog.Warn("dns query rejected: unauthorized IP attempted to query configured domain",
+				slog.String("client_ip", clientIP),
+				slog.String("qname", qname),
+			)
+		})
 		s.emitLog(clientIP, qname, "rejected_client_ip")
 		resp := refusedMsg(req)
-		capEDNS(resp, s.cfg.EDNSBufSize)
-		_ = w.WriteMsg(resp)
+		s.writeMsg(w, req, resp)
 		return
 	}
 
@@ -365,7 +401,9 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		}
 		// Enforce dedicated stricter rate limiter for passthrough queries
 		if s.passthroughLimiter != nil && !s.passthroughLimiter.Allow(clientIP) {
-			slog.Warn("dns passthrough query rate-limited", "client_ip", clientIP, "qname", qname)
+			s.sampled.Log("passthrough_rate_limited", func() {
+				slog.Warn("dns passthrough query rate-limited", "client_ip", clientIP, "qname", qname)
+			})
 			return
 		}
 
@@ -382,10 +420,15 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	if s.stats != nil {
 		s.stats.Emit("DNS", "unauthorized_rejected")
 	}
+	s.sampled.Log("unauthorized_rejected", func() {
+		slog.Warn("dns query rejected: unauthorized IP",
+			slog.String("client_ip", clientIP),
+			slog.String("qname", qname),
+		)
+	})
 	s.emitLog(clientIP, qname, "rejected_client_ip")
 	resp := refusedMsg(req)
-	capEDNS(resp, s.cfg.EDNSBufSize)
-	_ = w.WriteMsg(resp)
+	s.writeMsg(w, req, resp)
 }
 
 // domainConfiguredForRelay checks whether qname matches a configured domain rule
@@ -437,7 +480,7 @@ func (s *Server) buildAuthoritativeResponse(req *dns.Msg, q dns.Question, qname 
 		}
 		resp.Answer = append(resp.Answer, rr)
 	}
-	// For AAAA, return NOERROR with empty answer (no IPv6 relay IP).
+	// For AAAA, HTTPS, SVCB: return NOERROR with empty answer.
 	return resp
 }
 
@@ -447,20 +490,25 @@ func (s *Server) forwardQuery(w dns.ResponseWriter, req *dns.Msg, q dns.Question
 		cachedMsg := new(dns.Msg)
 		if err := cachedMsg.Unpack(cached); err == nil {
 			cachedMsg.Id = req.Id
-			capEDNS(cachedMsg, s.cfg.EDNSBufSize)
-			_ = w.WriteMsg(cachedMsg)
+			s.writeMsg(w, req, cachedMsg)
 			return
 		}
 	}
 
 	// Forward to upstream.
 	resp, _, err := s.upstream.Exchange(req, s.cfg.UpstreamAddr)
+	if err == nil && resp != nil && resp.Truncated {
+		// When the upstream UDP answer has TC set, retry over TCP before answering
+		tcpClient := &dns.Client{Net: "tcp", Timeout: 5 * time.Second}
+		if tcpResp, _, tcpErr := tcpClient.Exchange(req, s.cfg.UpstreamAddr); tcpErr == nil && tcpResp != nil {
+			resp = tcpResp
+		}
+	}
+
 	if err != nil {
 		slog.Warn("dns upstream query failed", "name", q.Name, "error", err)
-		// Return SERVFAIL.
 		fail := serverFailureMsg(req)
-		capEDNS(fail, s.cfg.EDNSBufSize)
-		_ = w.WriteMsg(fail)
+		s.writeMsg(w, req, fail)
 		return
 	}
 
@@ -477,8 +525,105 @@ func (s *Server) forwardQuery(w dns.ResponseWriter, req *dns.Msg, q dns.Question
 		}
 	}
 
+	s.writeMsg(w, req, resp)
+}
+
+func (s *Server) writeMsg(w dns.ResponseWriter, req *dns.Msg, resp *dns.Msg) {
+	if w == nil || resp == nil {
+		return
+	}
 	capEDNS(resp, s.cfg.EDNSBufSize)
+
+	// For UDP, resp.Truncate(min(clientEDNSSize or 512, cfg.EDNSBufSize)) (sets TC when needed)
+	isUDP := false
+	if rAddr := w.RemoteAddr(); rAddr != nil {
+		netName := strings.ToLower(rAddr.Network())
+		if strings.HasPrefix(netName, "udp") {
+			isUDP = true
+		}
+	}
+
+	if isUDP && req != nil {
+		clientBuf := 512
+		if opt := req.IsEdns0(); opt != nil && opt.UDPSize() > 0 {
+			clientBuf = int(opt.UDPSize())
+		}
+		maxBuf := clientBuf
+		if s.cfg.EDNSBufSize > 0 && int(s.cfg.EDNSBufSize) < maxBuf {
+			maxBuf = int(s.cfg.EDNSBufSize)
+		}
+		resp.Truncate(maxBuf)
+	}
+
 	_ = w.WriteMsg(resp)
+}
+
+type sampleEntry struct {
+	lastLogged time.Time
+	count      int
+}
+
+type sampledLogger struct {
+	mu      sync.Mutex
+	entries map[string]*sampleEntry
+	stopCh  chan struct{}
+}
+
+func newSampledLogger() *sampledLogger {
+	sl := &sampledLogger{
+		entries: make(map[string]*sampleEntry),
+		stopCh:  make(chan struct{}),
+	}
+	go sl.flusher()
+	return sl
+}
+
+func (sl *sampledLogger) Close() {
+	if sl.stopCh != nil {
+		select {
+		case <-sl.stopCh:
+		default:
+			close(sl.stopCh)
+		}
+	}
+}
+
+func (sl *sampledLogger) flusher() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sl.stopCh:
+			return
+		case now := <-ticker.C:
+			sl.mu.Lock()
+			for reason, entry := range sl.entries {
+				if entry.count > 0 && now.Sub(entry.lastLogged) >= 10*time.Second {
+					slog.Warn("dns query drops/refusals sampled", "reason", reason, "count", entry.count)
+					entry.count = 0
+					entry.lastLogged = now
+				}
+			}
+			sl.mu.Unlock()
+		}
+	}
+}
+
+func (sl *sampledLogger) Log(reason string, logFirst func()) {
+	now := time.Now()
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+
+	entry, exists := sl.entries[reason]
+	if !exists || now.Sub(entry.lastLogged) >= 10*time.Second {
+		if exists && entry.count > 0 {
+			slog.Warn("dns query drops/refusals sampled", "reason", reason, "count", entry.count)
+		}
+		sl.entries[reason] = &sampleEntry{lastLogged: now, count: 0}
+		logFirst()
+		return
+	}
+	entry.count++
 }
 
 // ---------------------------------------------------------------------------

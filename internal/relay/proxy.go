@@ -448,6 +448,20 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 
 // HalfCloseTimeout is the maximum duration to wait for the other direction after clean EOF.
 var HalfCloseTimeout = 60 * time.Second
+var halfCloseMu sync.RWMutex
+
+func getHalfCloseTimeout() time.Duration {
+	halfCloseMu.RLock()
+	defer halfCloseMu.RUnlock()
+	return HalfCloseTimeout
+}
+
+// SetHalfCloseTimeout safely updates HalfCloseTimeout.
+func SetHalfCloseTimeout(d time.Duration) {
+	halfCloseMu.Lock()
+	defer halfCloseMu.Unlock()
+	HalfCloseTimeout = d
+}
 
 // Pipe runs a bidirectional copy between client and dest, enforcing idle and
 // max-duration timeouts. It blocks until both directions are done.
@@ -526,7 +540,7 @@ func Pipe(
 			if readErr != nil {
 				if readErr == io.EOF {
 					halfClose()
-					time.AfterFunc(HalfCloseTimeout, closeBoth)
+					time.AfterFunc(getHalfCloseTimeout(), closeBoth)
 					return
 				}
 

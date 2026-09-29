@@ -38,6 +38,8 @@ type settingsResponse struct {
 	LookupEnabled              bool   `json:"lookup_enabled"`
 	LookupRequireRegistered    bool   `json:"lookup_require_registered"`
 	DefaultMaxIPs              int    `json:"default_max_ips"`
+	HttpFrontMaxConnsPerIP     int    `json:"http_front_max_conns_per_ip"`
+	HttpFrontMaxGlobalConns    int    `json:"http_front_max_global_conns"`
 	AdminUsername              string `json:"admin_username"`
 	UptimeSeconds              int64  `json:"uptime_seconds"`
 }
@@ -162,6 +164,12 @@ func (s *Server) currentSettings() settingsResponse {
 	}
 	username := s.username
 	uptime := int64(time.Since(s.startTime).Seconds())
+	frontMaxIP := 60
+	frontMaxGlobal := 5000
+	if s.frontLimits != nil {
+		frontMaxIP = s.frontLimits.MaxPerIP()
+		frontMaxGlobal = s.frontLimits.MaxGlobal()
+	}
 	s.mu.RUnlock()
 
 	lookupEn, lookupReq := s.LookupPolicy()
@@ -187,6 +195,8 @@ func (s *Server) currentSettings() settingsResponse {
 		LookupEnabled:              lookupEn,
 		LookupRequireRegistered:    lookupReq,
 		DefaultMaxIPs:              s.DefaultMaxIPs(),
+		HttpFrontMaxConnsPerIP:     frontMaxIP,
+		HttpFrontMaxGlobalConns:    frontMaxGlobal,
 		AdminUsername:              username,
 		UptimeSeconds:              uptime,
 	}
@@ -215,6 +225,8 @@ type updateSettingsRequest struct {
 	ListenHTTPPorts            *[]int  `json:"listen_http_ports,omitempty"`
 	LookupEnabled              *bool   `json:"lookup_enabled,omitempty"`
 	LookupRequireRegistered    *bool   `json:"lookup_require_registered,omitempty"`
+	HttpFrontMaxConnsPerIP     *int    `json:"http_front_max_conns_per_ip,omitempty"`
+	HttpFrontMaxGlobalConns    *int    `json:"http_front_max_global_conns,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -396,6 +408,22 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		toPersist["lookup_require_registered"] = val
 	}
 
+	if req.HttpFrontMaxConnsPerIP != nil {
+		if *req.HttpFrontMaxConnsPerIP <= 0 {
+			jsonErr(w, "http_front_max_conns_per_ip must be positive", http.StatusBadRequest)
+			return
+		}
+		toPersist["http_front_max_conns_per_ip"] = strconv.Itoa(*req.HttpFrontMaxConnsPerIP)
+	}
+
+	if req.HttpFrontMaxGlobalConns != nil {
+		if *req.HttpFrontMaxGlobalConns <= 0 {
+			jsonErr(w, "http_front_max_global_conns must be positive", http.StatusBadRequest)
+			return
+		}
+		toPersist["http_front_max_global_conns"] = strconv.Itoa(*req.HttpFrontMaxGlobalConns)
+	}
+
 	// (2) Verify egress config by building a candidate dialer without swapping
 	var candidateEgressCfg *config.EgressProxyConfig
 	if req.EgressProxyEnabled != nil || req.EgressProxyAddr != nil || req.EgressProxyUser != nil || req.EgressProxyPassword != nil {
@@ -501,6 +529,21 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.RUnlock()
 		slog.Info("max_connections_per_ip updated via admin panel", "max_connections_per_ip", *req.MaxConnectionsPerIP, "remote_addr", r.RemoteAddr)
+	}
+
+	if req.HttpFrontMaxConnsPerIP != nil || req.HttpFrontMaxGlobalConns != nil {
+		s.mu.RLock()
+		fl := s.frontLimits
+		s.mu.RUnlock()
+		if fl != nil {
+			if req.HttpFrontMaxConnsPerIP != nil {
+				fl.SetMaxPerIP(*req.HttpFrontMaxConnsPerIP)
+			}
+			if req.HttpFrontMaxGlobalConns != nil {
+				fl.SetMaxGlobal(*req.HttpFrontMaxGlobalConns)
+			}
+		}
+		slog.Info("http front limits updated via admin panel", "remote_addr", r.RemoteAddr)
 	}
 
 	if req.DNSUnauthorizedPassthrough != nil {

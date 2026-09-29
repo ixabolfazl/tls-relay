@@ -267,6 +267,7 @@ type Server struct {
 	connTracker             *relay.ConnTracker
 	reqLogger               *requestlog.Logger
 	limits                  *relay.LimitTracker
+	frontLimits             *relay.LimitTracker
 	dnsServer               *dnsresolver.Server
 	egressDialer            *relay.EgressDialer
 	allowList               *relay.PortAllowList
@@ -604,6 +605,13 @@ func (s *Server) SetLimitTracker(lt *relay.LimitTracker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.limits = lt
+}
+
+// SetFrontLimits registers a LimitTracker instance for dynamic front router connection limits.
+func (s *Server) SetFrontLimits(lt *relay.LimitTracker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frontLimits = lt
 }
 
 // SetDNSServer registers a DNS server instance for runtime settings management.

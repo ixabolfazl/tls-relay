@@ -183,4 +183,54 @@ func TestExtendedSettingsManagement(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /api/service/restart failed: code %d", w.Code)
 	}
+
+	// 7. Update HTTP front limits
+	frontLimits := relay.NewLimitTracker(5000, 60)
+	panelSrv.SetFrontLimits(frontLimits)
+
+	frontPayload := map[string]interface{}{
+		"http_front_max_conns_per_ip": 120,
+		"http_front_max_global_conns": 3000,
+	}
+	body, _ = json.Marshal(frontPayload)
+	frontReq := httptest.NewRequest("PUT", "/api/settings", bytes.NewReader(body))
+	frontReq.Header.Set("Content-Type", "application/json")
+	frontReq.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	frontReq.AddCookie(sessCookie)
+	w = httptest.NewRecorder()
+	panelSrv.ServeHTTP(w, frontReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT front limits failed: code %d, body %s", w.Code, w.Body.String())
+	}
+	if frontLimits.MaxPerIP() != 120 {
+		t.Errorf("expected MaxPerIP 120, got %d", frontLimits.MaxPerIP())
+	}
+	if frontLimits.MaxGlobal() != 3000 {
+		t.Errorf("expected MaxGlobal 3000, got %d", frontLimits.MaxGlobal())
+	}
+
+	// Verify persistence
+	valIP, found, _ := store.GetSetting(context.Background(), "http_front_max_conns_per_ip")
+	if !found || valIP != "120" {
+		t.Errorf("expected persisted 120, got %s", valIP)
+	}
+	valGlobal, found, _ := store.GetSetting(context.Background(), "http_front_max_global_conns")
+	if !found || valGlobal != "3000" {
+		t.Errorf("expected persisted 3000, got %s", valGlobal)
+	}
+
+	// Negative limit rejected with 400
+	badPayload := map[string]interface{}{
+		"http_front_max_conns_per_ip": -1,
+	}
+	body, _ = json.Marshal(badPayload)
+	badReq := httptest.NewRequest("PUT", "/api/settings", bytes.NewReader(body))
+	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	badReq.AddCookie(sessCookie)
+	w = httptest.NewRecorder()
+	panelSrv.ServeHTTP(w, badReq)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative limit, got %d", w.Code)
+	}
 }

@@ -30,7 +30,8 @@ func NewLimitTracker(maxGlobal, maxPerIP int) *LimitTracker {
 // Returns true and a release func on success, or false if any limit is exceeded.
 func (lt *LimitTracker) Acquire(ip string) (release func(), ok bool) {
 	// Fast path: check global first without locking per-IP map.
-	if lt.global.Load() >= lt.maxGlobal {
+	maxGlobal := atomic.LoadInt64(&lt.maxGlobal)
+	if lt.global.Load() >= maxGlobal {
 		return nil, false
 	}
 
@@ -43,7 +44,7 @@ func (lt *LimitTracker) Acquire(ip string) (release func(), ok bool) {
 	lt.mu.Unlock()
 
 	// Increment global AFTER per-IP to avoid double counting on failure.
-	if lt.global.Add(1) > lt.maxGlobal {
+	if lt.global.Add(1) > maxGlobal {
 		// Race: we incremented but global is now over limit; roll back.
 		lt.global.Add(-1)
 		lt.mu.Lock()
@@ -75,6 +76,19 @@ func (lt *LimitTracker) Acquire(ip string) (release func(), ok bool) {
 // GlobalCount returns the current number of active connections.
 func (lt *LimitTracker) GlobalCount() int64 {
 	return lt.global.Load()
+}
+
+// MaxGlobal returns the maximum allowed concurrent connections globally.
+func (lt *LimitTracker) MaxGlobal() int {
+	return int(atomic.LoadInt64(&lt.maxGlobal))
+}
+
+// SetMaxGlobal sets the maximum allowed concurrent connections globally.
+func (lt *LimitTracker) SetMaxGlobal(limit int) {
+	if limit <= 0 {
+		return
+	}
+	atomic.StoreInt64(&lt.maxGlobal, int64(limit))
 }
 
 // MaxPerIP returns the maximum allowed concurrent connections per client IP.

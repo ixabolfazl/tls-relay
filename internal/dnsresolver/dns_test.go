@@ -1,8 +1,13 @@
 package dnsresolver_test
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
 	"github.com/ixabolfazl/tls-relay/internal/dnsresolver"
@@ -218,5 +223,200 @@ func TestDNSCache_CaseInsensitive(t *testing.T) {
 	gotUpper := c.Get("EXAMPLE.COM.", 1)
 	if string(gotUpper) != string(payload) {
 		t.Errorf("expected cache hit for uppercase 'EXAMPLE.COM.', got %s", gotUpper)
+	}
+}
+
+func TestServer_HTTPSAndSVCBSuppression(t *testing.T) {
+	rs := rules.NewRuleStore([]int{443}, "reject")
+	if err := rs.Swap(map[string]string{
+		"example.com": `{"mode":"proxy","ports":[443]}`,
+	}); err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	as := access.NewAccessStore(access.ModePublic)
+
+	ln, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket failed: %v", err)
+	}
+	addr := ln.LocalAddr().String()
+	_ = ln.Close()
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:         addr,
+		RelayIP:      "1.2.3.4",
+		UpstreamAddr: "127.0.0.1:5353",
+		TTL:          60,
+		QPS:          100,
+		Burst:        100,
+		EDNSBufSize:  1232,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = srv.ListenAndServe(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	c := new(dns.Client)
+
+	// Test qtype 65 (HTTPS)
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeHTTPS)
+	in, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatalf("Exchange HTTPS failed: %v", err)
+	}
+	if in.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected RcodeSuccess for HTTPS, got %v", in.Rcode)
+	}
+	if !in.Authoritative {
+		t.Errorf("expected Authoritative response for HTTPS")
+	}
+	if len(in.Answer) != 0 {
+		t.Errorf("expected empty answer for HTTPS, got %d answers", len(in.Answer))
+	}
+
+	// Test qtype 64 (SVCB)
+	mSVCB := new(dns.Msg)
+	mSVCB.SetQuestion("example.com.", dns.TypeSVCB)
+	inSVCB, _, err := c.Exchange(mSVCB, addr)
+	if err != nil {
+		t.Fatalf("Exchange SVCB failed: %v", err)
+	}
+	if inSVCB.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected RcodeSuccess for SVCB, got %v", inSVCB.Rcode)
+	}
+	if !inSVCB.Authoritative {
+		t.Errorf("expected Authoritative response for SVCB")
+	}
+	if len(inSVCB.Answer) != 0 {
+		t.Errorf("expected empty answer for SVCB, got %d answers", len(inSVCB.Answer))
+	}
+}
+
+func TestServer_TCPRetryOnTruncatedUpstream(t *testing.T) {
+	// Set up mock upstream DNS server on UDP and TCP
+	udpLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("udp listen: %v", err)
+	}
+	defer udpLn.Close()
+	upstreamAddr := udpLn.LocalAddr().String()
+
+	tcpLn, err := net.Listen("tcp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("tcp listen: %v", err)
+	}
+	defer tcpLn.Close()
+
+	// Upstream UDP handler: always returns truncated response
+	udpSrv := &dns.Server{
+		PacketConn: udpLn,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+			m := new(dns.Msg)
+			m.SetReply(r)
+			m.Truncated = true
+			_ = w.WriteMsg(m)
+		}),
+	}
+	go func() { _ = udpSrv.ActivateAndServe() }()
+	defer func() { _ = udpSrv.Shutdown() }()
+
+	// Upstream TCP handler: returns full answer
+	tcpSrv := &dns.Server{
+		Listener: tcpLn,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+			m := new(dns.Msg)
+			m.SetReply(r)
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   r.Question[0].Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    300,
+				},
+				A: net.ParseIP("93.184.216.34").To4(),
+			})
+			_ = w.WriteMsg(m)
+		}),
+	}
+	go func() { _ = tcpSrv.ActivateAndServe() }()
+	defer func() { _ = tcpSrv.Shutdown() }()
+
+	// Relay resolver
+	rs := rules.NewRuleStore([]int{443}, "allow_default_port")
+	as := access.NewAccessStore(access.ModePublic)
+
+	srvLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("srv listen: %v", err)
+	}
+	srvAddr := srvLn.LocalAddr().String()
+	_ = srvLn.Close()
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:         srvAddr,
+		UpstreamAddr: upstreamAddr,
+		TTL:          60,
+		QPS:          100,
+		Burst:        100,
+		EDNSBufSize:  1232,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	c := new(dns.Client)
+	req := new(dns.Msg)
+	req.SetQuestion("unconfigured.org.", dns.TypeA)
+
+	resp, _, err := c.Exchange(req, srvAddr)
+	if err != nil {
+		t.Fatalf("exchange failed: %v", err)
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatalf("expected non-empty answer from TCP retry, got 0")
+	}
+	aRec, ok := resp.Answer[0].(*dns.A)
+	if !ok || aRec.A.String() != "93.184.216.34" {
+		t.Errorf("unexpected answer: %v", resp.Answer[0])
+	}
+}
+
+func TestDNSCache_BoundedCapacityAndClose(t *testing.T) {
+	c := dnsresolver.NewDNSCache()
+	defer c.Close()
+
+	for i := 0; i < 20500; i++ {
+		c.Set(fmt.Sprintf("host%d.com.", i), 1, []byte("data"), time.Minute)
+	}
+
+	if c.Get("host20499.com.", 1) == nil {
+		t.Errorf("expected host20499.com to be in cache")
+	}
+}
+
+func TestIPRateLimiter_BoundedCapacityAndClose(t *testing.T) {
+	rl := dnsresolver.NewIPRateLimiter(10, 5)
+	defer rl.Close()
+
+	for i := 0; i < 1000; i++ {
+		rl.Allow(fmt.Sprintf("10.0.%d.%d", i/256, i%256))
 	}
 }

@@ -404,6 +404,22 @@ func run(cfgPath string) error {
 	}
 	router.SetConnContext(connCtx)
 
+	frontMaxIP := 60
+	if v, ok := dbSettings["http_front_max_conns_per_ip"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			frontMaxIP = n
+		}
+	}
+	frontMaxGlobal := 5000
+	if v, ok := dbSettings["http_front_max_global_conns"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			frontMaxGlobal = n
+		}
+	}
+	router.FrontLimits().SetMaxPerIP(frontMaxIP)
+	router.FrontLimits().SetMaxGlobal(frontMaxGlobal)
+	panelSrv.SetFrontLimits(router.FrontLimits())
+
 	listenerWG.Add(1)
 	go func() {
 		defer listenerWG.Done()

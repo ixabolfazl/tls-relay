@@ -159,6 +159,19 @@ export function mount(container) {
                   <span class="field-hint">Rate limiting per client IP (default: 200).</span>
                 </div>
 
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div class="field">
+                    <label class="field-label" for="set-front-max-ip-input">HTTP Front Max Conns Per IP</label>
+                    <input id="set-front-max-ip-input" type="number" class="input tabular-nums" min="1" max="10000" placeholder="60" />
+                    <span class="field-hint">Port-80 / front router limit per client IP (default: 60).</span>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="set-front-max-global-input">HTTP Front Max Global Conns</label>
+                    <input id="set-front-max-global-input" type="number" class="input tabular-nums" min="1" max="50000" placeholder="5000" />
+                    <span class="field-hint">Port-80 / front router total concurrent limit (default: 5000).</span>
+                  </div>
+                </div>
+
                 <!-- Domain Lookup Controls -->
                 <div class="field pt-2 border-t border-border space-y-3">
                   <label class="field-label mb-1">Public Domain Lookup API (/api/lookup)</label>
@@ -470,6 +483,8 @@ export function mount(container) {
       // DNS Passthrough switch (GET key is dns_unauthorized_passthrough)
       $('#set-dns-passthrough-switch', container).checked = Boolean(settings.dns_unauthorized_passthrough);
       $('#set-max-conns-input', container).value = settings.max_connections_per_ip || 200;
+      $('#set-front-max-ip-input', container).value = settings.http_front_max_conns_per_ip || 60;
+      $('#set-front-max-global-input', container).value = settings.http_front_max_global_conns || 5000;
 
       // Lookup policy
       $('#set-lookup-enabled-switch', container).checked = settings.lookup_enabled !== false;
@@ -693,6 +708,8 @@ export function mount(container) {
     }
 
     try {
+      const frontMaxIP = parseInt($('#set-front-max-ip-input', container)?.value, 10);
+      const frontMaxGlobal = parseInt($('#set-front-max-global-input', container)?.value, 10);
       // Note PUT key asymmetry: dns_unauthorized_passthrough_enabled
       await api.updateSettings({
         access_mode: accessMode,
@@ -701,6 +718,8 @@ export function mount(container) {
         lookup_enabled: lookupEnabled,
         lookup_require_registered: lookupRequireRegistered,
         max_connections_per_ip: maxConns,
+        http_front_max_conns_per_ip: !isNaN(frontMaxIP) && frontMaxIP > 0 ? frontMaxIP : undefined,
+        http_front_max_global_conns: !isNaN(frontMaxGlobal) && frontMaxGlobal > 0 ? frontMaxGlobal : undefined,
       });
       toast.success('Access policies saved successfully');
       await loadSettings();

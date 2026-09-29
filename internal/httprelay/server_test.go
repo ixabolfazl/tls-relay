@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,5 +361,128 @@ func TestHTTPRelay_EgressSOCKS5Reuse(t *testing.T) {
 	}
 	if n == 0 {
 		t.Errorf("expected non-empty response")
+	}
+}
+
+func TestTryHTTPSRedirect_MethodAndTargetSanitizing(t *testing.T) {
+	ruleStore := rules.NewRuleStore([]int{443}, "reject")
+	if err := ruleStore.Swap(map[string]string{
+		"example.com":   `{"mode":"proxy","ports":[443]}`,
+		"noproxy.com":   `{"mode":"direct","ports":[443]}`,
+		"noport443.com": `{"mode":"proxy","ports":[8080]}`,
+	}); err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		host         string
+		peeked       string
+		expectRedir  bool
+		expectCode   string
+		expectTarget string
+	}{
+		{
+			name:         "GET method with valid path",
+			host:         "example.com",
+			peeked:       "GET /hello/world?foo=bar HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectRedir:  true,
+			expectCode:   "301",
+			expectTarget: "/hello/world?foo=bar",
+		},
+		{
+			name:         "HEAD method with valid path",
+			host:         "example.com",
+			peeked:       "HEAD /test HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectRedir:  true,
+			expectCode:   "301",
+			expectTarget: "/test",
+		},
+		{
+			name:         "POST method with valid path",
+			host:         "example.com",
+			peeked:       "POST /api/submit HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectRedir:  true,
+			expectCode:   "308",
+			expectTarget: "/api/submit",
+		},
+		{
+			name:         "PUT method with valid path",
+			host:         "example.com",
+			peeked:       "PUT /api/update HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectRedir:  true,
+			expectCode:   "308",
+			expectTarget: "/api/update",
+		},
+		{
+			name:         "Target with CRLF falls back to slash",
+			host:         "example.com",
+			peeked:       "GET /bad\r\ntarget HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectRedir:  true,
+			expectCode:   "301",
+			expectTarget: "/",
+		},
+		{
+			name:         "Target without leading slash falls back to slash",
+			host:         "example.com",
+			peeked:       "GET http://example.com/foo HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			expectRedir:  true,
+			expectCode:   "301",
+			expectTarget: "/",
+		},
+		{
+			name:        "Domain without port 443 -> No redirect",
+			host:        "noport443.com",
+			peeked:      "GET /test HTTP/1.1\r\nHost: noport443.com\r\n\r\n",
+			expectRedir: false,
+		},
+		{
+			name:        "Direct mode domain -> No redirect",
+			host:        "noproxy.com",
+			peeked:      "GET /test HTTP/1.1\r\nHost: noproxy.com\r\n\r\n",
+			expectRedir: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+
+			done := make(chan struct{})
+			var redirected bool
+			go func() {
+				redirected = httprelay.TryHTTPSRedirect(server, []byte(tc.peeked), tc.host, ruleStore)
+				close(done)
+			}()
+
+			if !tc.expectRedir {
+				<-done
+				if redirected {
+					t.Errorf("expected no redirect for %s", tc.name)
+				}
+				return
+			}
+
+			buf := make([]byte, 1024)
+			_ = client.SetReadDeadline(time.Now().Add(time.Second))
+			n, err := client.Read(buf)
+			if err != nil {
+				t.Fatalf("read failed: %v", err)
+			}
+			<-done
+			if !redirected {
+				t.Fatalf("expected redirect to be true")
+			}
+
+			respStr := string(buf[:n])
+			if !strings.Contains(respStr, "HTTP/1.1 "+tc.expectCode) {
+				t.Errorf("expected status %s, got response:\n%s", tc.expectCode, respStr)
+			}
+			expectedLocation := fmt.Sprintf("Location: https://%s%s", tc.host, tc.expectTarget)
+			if !strings.Contains(respStr, expectedLocation) {
+				t.Errorf("expected %q, got response:\n%s", expectedLocation, respStr)
+			}
+		})
 	}
 }

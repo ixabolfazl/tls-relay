@@ -2,11 +2,13 @@
 package httprelay
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -339,6 +341,11 @@ func (s *Server) handleConn(
 
 			if !allowed {
 				fields.Egress = s.resolveEgressMode(ruleUseProxy)
+				if TryHTTPSRedirect(clientConn, peeked, host, s.ruleStore) {
+					fields.Status = "redirected_https"
+					slog.Info("http connection redirected to https", "client_ip", clientIP, "host", host)
+					return
+				}
 				fields.Status = "rejected_port"
 				slog.Warn("http connection rejected: port not allowed by domain rule",
 					"client_ip", clientIP, "host", host, "port", s.port, "matched_rule", fields.MatchedRule)
@@ -454,4 +461,68 @@ func (s *Server) handleConn(
 	fields.BytesSent = atomicSent.Load()
 	fields.BytesReceived = atomicReceived.Load()
 	fields.Status = "closed"
+}
+
+// TryHTTPSRedirect inspects a request that matched a proxy-mode domain rule where
+// the listen port was NOT allowed. If the rule allows port 443, it writes an HTTPS redirect
+// response and returns true.
+func TryHTTPSRedirect(conn net.Conn, peeked []byte, host string, rs *rules.RuleStore) bool {
+	if rs == nil || conn == nil || host == "" {
+		return false
+	}
+
+	allowed443, rule, matchInfo := rs.LookupDetailed(host, 443)
+	if !matchInfo.Matched {
+		return false
+	}
+	mode := rule.Mode
+	if mode == "" {
+		mode = "proxy"
+	}
+	if mode != "proxy" || !allowed443 {
+		return false
+	}
+
+	// Parse method and target from peeked request line
+	method := "GET"
+	rawTarget := "/"
+	if len(peeked) > 0 {
+		firstLine := peeked
+		if idx := bytes.IndexByte(peeked, '\n'); idx != -1 {
+			firstLine = peeked[:idx]
+		}
+		firstLine = bytes.TrimRight(firstLine, "\r")
+		parts := bytes.SplitN(firstLine, []byte(" "), 3)
+		if len(parts) >= 1 && len(parts[0]) > 0 {
+			method = strings.ToUpper(string(parts[0]))
+		}
+		if len(parts) >= 2 && len(parts[1]) > 0 {
+			rawTarget = string(parts[1])
+		}
+	}
+
+	target := "/"
+	if strings.HasPrefix(rawTarget, "/") && len(rawTarget) <= 2048 && !strings.ContainsAny(rawTarget, "\r\n ") {
+		target = rawTarget
+	}
+
+	statusCode := 308
+	statusText := "Permanent Redirect"
+	if method == "GET" || method == "HEAD" {
+		statusCode = 301
+		statusText = "Moved Permanently"
+	}
+
+	normHost := strings.ToLower(strings.TrimSpace(host))
+	if h, _, err := net.SplitHostPort(normHost); err == nil {
+		normHost = h
+	}
+
+	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\nLocation: https://%s%s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+		statusCode, statusText, normHost, target)
+
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_, _ = conn.Write([]byte(resp))
+	_ = conn.Close()
+	return true
 }
