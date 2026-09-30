@@ -853,3 +853,202 @@ func isPortList(s string) bool {
 	}
 	return true
 }
+
+// ---------------------------------------------------------------------------
+// JSON Export / Import (domain-rules only)
+// ---------------------------------------------------------------------------
+
+// domainJSONItem is the per-domain record used in the JSON export/import format.
+// use_egress is included in export only when the global egress switch is on,
+// and is accepted on import only when the global switch is on.
+type domainJSONItem struct {
+	Domain    string      `json:"domain"`
+	Mode      string      `json:"mode"`
+	Ports     interface{} `json:"ports"`                // []int or "all"
+	Group     string      `json:"group,omitempty"`      // group_name; omitted when empty
+	UseEgress *bool       `json:"use_egress,omitempty"` // omitted when egress is globally off
+}
+
+type domainJSONExport struct {
+	Version       int              `json:"version"`
+	ExportedAt    string           `json:"exported_at"`
+	EgressEnabled bool             `json:"egress_enabled"`
+	Domains       []domainJSONItem `json:"domains"`
+}
+
+type domainJSONImport struct {
+	Domains []domainJSONItem `json:"domains"`
+}
+
+// egressGlobalEnabled returns true if the egress dialer is configured and enabled.
+func (s *Server) egressGlobalEnabled() bool {
+	if s.egressDialer == nil {
+		return false
+	}
+	return s.egressDialer.Config().Enabled
+}
+
+// handleExportDomainsJSON downloads all domain rules as a JSON file.
+// When the global egress proxy is enabled, use_egress is included per domain.
+// When it is disabled, use_egress is omitted entirely from the output.
+func (s *Server) handleExportDomainsJSON(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.sqlStore.ListDomainRules(r.Context())
+	if err != nil {
+		slog.Error("admin panel json export error", "error", err)
+		jsonErr(w, "export failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	egressOn := s.egressGlobalEnabled()
+
+	items := make([]domainJSONItem, 0, len(rows))
+	for _, row := range rows {
+		mode := row.Mode
+		if mode == "" {
+			mode = "proxy"
+		}
+
+		ps, _ := rules.ParsePorts(row.Ports)
+		var portsVal interface{}
+		if ps.All {
+			portsVal = "all"
+		} else {
+			portsVal = ps.Ports
+		}
+
+		item := domainJSONItem{
+			Domain: row.Domain,
+			Mode:   mode,
+			Ports:  portsVal,
+			Group:  row.GroupName,
+		}
+		if egressOn {
+			v := row.UseEgressProxy == "true"
+			item.UseEgress = &v
+		}
+		items = append(items, item)
+	}
+
+	payload := domainJSONExport{
+		Version:       1,
+		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		EgressEnabled: egressOn,
+		Domains:       items,
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Disposition", `attachment; filename="domains.json"`)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(payload)
+}
+
+// handleImportDomainsJSON reads a JSON domain list from the request body and
+// upserts the rules transactionally (add new + update existing; existing domains
+// that are absent from the payload are left untouched).
+//
+// When the global egress switch is off, use_egress values from the JSON are
+// ignored and every rule is imported with use_egress_proxy="false".
+func (s *Server) handleImportDomainsJSON(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+	var req domainJSONImport
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	egressOn := s.egressGlobalEnabled()
+
+	var failed int
+	var errs []string
+	seen := make(map[string]struct{})
+	var rows []sqlitestore.DomainRuleRow
+
+	for i, item := range req.Domains {
+		norm, err := rules.NormalizeDomainInput(item.Domain)
+		if err != nil {
+			failed++
+			errs = append(errs, fmt.Sprintf("item %d (%s): %v", i+1, item.Domain, err))
+			continue
+		}
+
+		mode, err := rules.NormalizeMode(item.Mode)
+		if err != nil {
+			mode = "proxy"
+		}
+
+		// Parse ports field — accept []int, "all", or nil (defaults to [443]).
+		var ps rules.PortsSpec
+		switch v := item.Ports.(type) {
+		case string:
+			ps, err = rules.ParsePorts(v)
+		case []interface{}:
+			nums := make([]int, 0, len(v))
+			for _, x := range v {
+				if f, ok := x.(float64); ok {
+					nums = append(nums, int(f))
+				}
+			}
+			if len(nums) == 0 {
+				ps, err = rules.ParsePorts("[443]")
+			} else {
+				b, _ := json.Marshal(nums)
+				ps, err = rules.ParsePorts(string(b))
+			}
+		case nil:
+			ps, err = rules.ParsePorts("[443]")
+		default:
+			ps, err = rules.ParsePorts("[443]")
+		}
+		if err != nil {
+			failed++
+			errs = append(errs, fmt.Sprintf("item %d (%s): invalid ports: %v", i+1, norm, err))
+			continue
+		}
+
+		useEgress := "false"
+		if egressOn && item.UseEgress != nil && *item.UseEgress {
+			useEgress = "true"
+		}
+
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+
+		rows = append(rows, sqlitestore.DomainRuleRow{
+			Domain:         norm,
+			GroupName:      strings.TrimSpace(item.Group),
+			Ports:          marshalPortsJSON(ps),
+			Mode:           mode,
+			UseEgressProxy: useEgress,
+			Enabled:        true,
+		})
+	}
+
+	ctx := r.Context()
+	result, err := s.sqlStore.ImportData(ctx, rows, nil, nil)
+	if err != nil {
+		slog.Error("admin panel json import error", "error", err)
+		jsonErr(w, "import database error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if result.DomainsAdded > 0 || result.DomainsUpdated > 0 {
+		_ = s.refreshDomains(ctx)
+	}
+
+	slog.Info("admin panel json import",
+		"added", result.DomainsAdded, "updated", result.DomainsUpdated,
+		"failed", failed,
+		"remote_addr", r.RemoteAddr,
+	)
+	jsonOK(w, map[string]interface{}{
+		"domains_added":   result.DomainsAdded,
+		"domains_updated": result.DomainsUpdated,
+		"failed":          failed,
+		"errors":          errs,
+	})
+}

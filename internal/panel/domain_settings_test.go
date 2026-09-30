@@ -530,3 +530,161 @@ func TestImportDomainsTXT_EgressFieldPreserved(t *testing.T) {
 		t.Error("egress.example.com not found in DB after import")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// JSON Export / Import
+// ---------------------------------------------------------------------------
+
+func TestExportDomainsJSON_EmptyStore(t *testing.T) {
+	dir := t.TempDir()
+	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
+	defer store.Close()
+
+	rec := doAuthedRequest(t, srv, "GET", "/api/domains/export.json", "", "", session, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	ct := rec.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("expected application/json, got %q", ct)
+	}
+	var payload map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if v, _ := payload["version"].(float64); int(v) != 1 {
+		t.Errorf("expected version=1, got %v", payload["version"])
+	}
+	domains, _ := payload["domains"].([]interface{})
+	if len(domains) != 0 {
+		t.Errorf("expected empty domains array, got %d items", len(domains))
+	}
+}
+
+func TestImportDomainsJSON_BasicRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
+	defer store.Close()
+
+	body := `{"domains":[
+		{"domain":"example.com","mode":"proxy","ports":[443],"group":"streaming"},
+		{"domain":"bypass.example.com","mode":"direct","ports":[443]},
+		{"domain":"block.example.com","mode":"block","ports":[80,443],"group":"ads"},
+		{"domain":"multi.example.com","mode":"proxy","ports":"all","group":"cdn"}
+	]}`
+
+	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-json", "application/json", body, session, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&result)
+	if int(result["domains_added"].(float64)) != 4 {
+		t.Errorf("expected 4 added, got %v", result["domains_added"])
+	}
+	if int(result["failed"].(float64)) != 0 {
+		t.Errorf("expected 0 failed, got %v", result["failed"])
+	}
+
+	// Round-trip: export and verify group + mode
+	expRec := doAuthedRequest(t, srv, "GET", "/api/domains/export.json", "", "", session, csrf)
+	if expRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on export, got %d", expRec.Code)
+	}
+	var exported map[string]interface{}
+	_ = json.NewDecoder(expRec.Body).Decode(&exported)
+	items, _ := exported["domains"].([]interface{})
+	if len(items) != 4 {
+		t.Fatalf("expected 4 domains in export, got %d", len(items))
+	}
+
+	// Verify group is preserved
+	foundGroup := false
+	for _, raw := range items {
+		item := raw.(map[string]interface{})
+		if item["domain"] == "example.com" {
+			if item["group"] != "streaming" {
+				t.Errorf("expected group=streaming, got %v", item["group"])
+			}
+			foundGroup = true
+		}
+		if item["domain"] == "multi.example.com" {
+			if item["ports"] != "all" {
+				t.Errorf("expected ports=all, got %v", item["ports"])
+			}
+		}
+	}
+	if !foundGroup {
+		t.Error("example.com not found in export")
+	}
+}
+
+func TestImportDomainsJSON_EgressIgnoredWhenGloballyOff(t *testing.T) {
+	dir := t.TempDir()
+	// egressDialer is nil → global switch is off
+	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
+	defer store.Close()
+
+	body := `{"domains":[
+		{"domain":"egress.example.com","mode":"proxy","ports":[443],"use_egress":true},
+		{"domain":"normal.example.com","mode":"proxy","ports":[443]}
+	]}`
+	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-json", "application/json", body, session, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rows, err := store.ListDomainRules(context.Background())
+	if err != nil {
+		t.Fatalf("ListDomainRules: %v", err)
+	}
+	for _, row := range rows {
+		if row.UseEgressProxy == "true" {
+			t.Errorf("use_egress should be ignored when global switch is off, but %s has use_egress=true", row.Domain)
+		}
+	}
+}
+
+func TestImportDomainsJSON_DuplicatesDeduplicated(t *testing.T) {
+	dir := t.TempDir()
+	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
+	defer store.Close()
+
+	body := `{"domains":[
+		{"domain":"example.com","mode":"proxy","ports":[443]},
+		{"domain":"example.com","mode":"direct","ports":[443]}
+	]}`
+	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-json", "application/json", body, session, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var result map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&result)
+	if int(result["domains_added"].(float64)) != 1 {
+		t.Errorf("expected 1 added (deduplicated), got %v", result["domains_added"])
+	}
+}
+
+func TestImportDomainsJSON_InvalidDomainReported(t *testing.T) {
+	dir := t.TempDir()
+	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
+	defer store.Close()
+
+	body := `{"domains":[
+		{"domain":"valid.example.com","mode":"proxy","ports":[443]},
+		{"domain":"!!BAD!!","mode":"proxy","ports":[443]},
+		{"domain":"also.valid.com","mode":"direct","ports":[443]}
+	]}`
+	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-json", "application/json", body, session, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&result)
+	if int(result["domains_added"].(float64)) != 2 {
+		t.Errorf("expected 2 added, got %v", result["domains_added"])
+	}
+	if int(result["failed"].(float64)) != 1 {
+		t.Errorf("expected 1 failed, got %v", result["failed"])
+	}
+}

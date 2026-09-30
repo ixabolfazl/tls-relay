@@ -917,6 +917,8 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(route("POST", "/api/domains/bulk-assign-mode"), s.auth(s.handleBulkAssignMode))
 	mux.HandleFunc(route("GET", "/api/domains/export.txt"), s.auth(s.handleExportDomainsTXT))
 	mux.HandleFunc(route("POST", "/api/domains/import-txt"), s.auth(s.handleImportDomainsTXT))
+	mux.HandleFunc(route("GET", "/api/domains/export.json"), s.auth(s.handleExportDomainsJSON))
+	mux.HandleFunc(route("POST", "/api/domains/import-json"), s.auth(s.handleImportDomainsJSON))
 	mux.HandleFunc(route("PUT", "/api/domains/{domain}"), s.auth(s.handleUpdateDomain))
 	mux.HandleFunc(route("DELETE", "/api/domains/{domain}"), s.auth(s.handleDeleteDomain))
 	mux.HandleFunc(route("GET", "/api/domains/{domain}/usage"), s.auth(s.handleGetDomainUsage))

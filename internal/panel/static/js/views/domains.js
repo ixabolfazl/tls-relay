@@ -62,11 +62,21 @@ export function mount(container) {
               <span>Import TXT</span>
               <input id="dom-import-txt-input" type="file" accept=".txt,text/plain" class="hidden" />
             </label>
+            <button id="dom-export-json-btn" type="button" class="btn btn-secondary btn-sm">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              <span>Export JSON</span>
+            </button>
+            <label id="dom-import-json-label" class="btn btn-secondary btn-sm cursor-pointer" role="button" tabindex="0">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+              <span>Import JSON</span>
+              <input id="dom-import-json-input" type="file" accept=".json,application/json" class="hidden" />
+            </label>
             <button id="dom-toggle-add-btn" type="button" class="btn btn-primary btn-sm">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
               <span>Add Domain Rule</span>
             </button>
           </div>
+
         </div>
 
         <!-- Add Domain Card (Collapsible) -->
@@ -1299,6 +1309,34 @@ export function mount(container) {
       await fetchDomains();
     } catch (err) {
       toast.error('TXT import failed: ' + (err.message || 'Unknown error'));
+    } finally {
+      e.target.value = '';
+    }
+  });
+
+  // JSON Export
+  $('#dom-export-json-btn', container).addEventListener('click', () => {
+    window.location.href = getApiUrl('api/domains/export.json');
+  });
+
+  // JSON Import
+  $('#dom-import-json-input', container).addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const res = await api.importDomainsJson(payload);
+      const failedMsg = res.failed > 0 ? ` (${res.failed} invalid items skipped)` : '';
+      toast.success(
+        `Imported: ${res.domains_added || 0} added, ${res.domains_updated || 0} updated${failedMsg}`
+      );
+      if (res.errors && res.errors.length > 0) {
+        console.warn('JSON import errors:', res.errors);
+      }
+      await fetchDomains();
+    } catch (err) {
+      toast.error('JSON import failed: ' + (err.message || 'Unknown error'));
     } finally {
       e.target.value = '';
     }

@@ -201,4 +201,6 @@ export const api = {
   importData: (jsonData) => apiFetch('api/import', { method: 'POST', body: JSON.stringify(jsonData) }),
   importDomainsTxt: (text) =>
     apiFetch('api/domains/import-txt', { method: 'POST', body: text, headers: { 'Content-Type': 'text/plain' } }),
+  importDomainsJson: (payload) =>
+    apiFetch('api/domains/import-json', { method: 'POST', body: JSON.stringify(payload) }),
 };

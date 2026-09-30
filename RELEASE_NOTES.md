@@ -1,5 +1,11 @@
 # Release Notes
 
+## v1.6.0
+
+* **JSON domain export / import:** new `GET /api/domains/export.json` and `POST /api/domains/import-json` endpoints for domain rule backup and restore. Preserves domain groups (`group`) and respects the global egress proxy status (`use_egress` is omitted when globally disabled, and ignored during import if disabled). "Export JSON" and "Import JSON" buttons added to the Domain Rules page header.
+
+---
+
 ## v1.5.0
 
 * **Relay log status:** connections that complete the bidirectional pipe now record `status = "relayed"` in the request log (was `"closed"` / `"connected"`).

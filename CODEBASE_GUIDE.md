@@ -96,6 +96,8 @@
 *   `GET /api/dns-check/result?token=<hex>` (portal): Returns `{"seen": bool, "seen_at": RFC3339, "source_ip": string}`. When `seen` is true the DNS resolver intercepted a probe query for the token, confirming the client routes DNS through the relay.
 *   `GET /api/domains/export.txt` (**v1.5.0**): Downloads all domain rules as `text/plain`. Format: `[mode:]domain[:ports] [use_egress=true]`. Proxy mode and port 443 are omitted.
 *   `POST /api/domains/import-txt` (**v1.5.0**): Accepts `text/plain` body, one rule per line. Parses `direct:`, `block:`, or `proxy:` prefix, optional `:ports` suffix (or `:all`), `use_egress=true` flag. Skips blank lines and `#` comments. Returns `{domains_added, domains_updated, failed, errors[]}`.
+*   `GET /api/domains/export.json` (**v1.6.0**): Downloads all domain rules as `application/json` (`domains.json`). Includes `domain`, `mode`, `ports`, `group`, and conditionally `use_egress` when global egress is enabled.
+*   `POST /api/domains/import-json` (**v1.6.0**): Accepts `application/json` payload `{domains: [...]}`. Upserts domain rules transactionally, preserves groups, and validates/sanitizes domains. Returns `{domains_added, domains_updated, failed, errors[]}`.
 
 ---
 
