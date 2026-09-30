@@ -32,9 +32,11 @@ export function createDomainRuleForm({
   let currentGroup = initialData.group_name || '';
 
   let initialPortsValue = '443';
+  let initialAllPorts = false;
   if (isEdit && initialData.ports !== undefined && initialData.ports !== null) {
     if (initialData.ports === 'all') {
       initialPortsValue = 'all';
+      initialAllPorts = true;
     } else if (Array.isArray(initialData.ports)) {
       initialPortsValue = initialData.ports.length > 0 ? initialData.ports.join(', ') : '443';
     } else {
@@ -102,14 +104,26 @@ export function createDomainRuleForm({
       <!-- 2. Permitted Ports (shown for proxy mode) -->
       <div id="${uid}-ports-field" class="field ${currentMode !== 'proxy' ? 'hidden' : ''}">
         <label class="field-label" for="${uid}-ports-input">Permitted Ports</label>
-        <input
-          id="${uid}-ports-input"
-          type="text"
-          class="input font-mono"
-          placeholder="443, 8443 or all"
-          value="${initialPortsValue}"
-        />
-        <span class="field-hint">Comma-separated TCP ports (e.g. "443, 8443") or "all".</span>
+        <div class="flex items-center gap-2">
+          <input
+            id="${uid}-ports-input"
+            type="text"
+            class="input font-mono flex-1"
+            placeholder="443, 8443 or all"
+            value="${initialAllPorts ? 'all' : initialPortsValue}"
+            ${initialAllPorts ? 'disabled' : ''}
+          />
+          <label class="flex items-center gap-1.5 text-xs text-txt-muted cursor-pointer select-none whitespace-nowrap" title="Allow connections on any TCP port">
+            <input
+              id="${uid}-all-ports-checkbox"
+              type="checkbox"
+              class="checkbox"
+              ${initialAllPorts ? 'checked' : ''}
+            />
+            All ports
+          </label>
+        </div>
+        <span class="field-hint">Comma-separated TCP ports (e.g. "443, 8443") or check "All ports".</span>
       </div>
 
       <!-- 3. Subdomains checkbox (only shown for Add Domain form, never in Edit) -->
@@ -204,6 +218,23 @@ export function createDomainRuleForm({
 
   const portsField = formWrapper.querySelector(`#${uid}-ports-field`);
   const egressField = formWrapper.querySelector(`#${uid}-egress-field`);
+  const portsInputEl2 = formWrapper.querySelector(`#${uid}-ports-input`);
+  const allPortsCheckbox = formWrapper.querySelector(`#${uid}-all-ports-checkbox`);
+
+  // Wire up 'All ports' checkbox
+  if (allPortsCheckbox && portsInputEl2) {
+    allPortsCheckbox.addEventListener('change', () => {
+      if (allPortsCheckbox.checked) {
+        portsInputEl2.value = 'all';
+        portsInputEl2.disabled = true;
+      } else {
+        portsInputEl2.disabled = false;
+        portsInputEl2.value = '443';
+        portsInputEl2.focus();
+      }
+      if (onChange) onChange();
+    });
+  }
 
   const modeStyles = {
     proxy: {
@@ -423,13 +454,20 @@ export function createDomainRuleForm({
     }
     if (data.ports !== undefined) {
       const pInput = formWrapper.querySelector(`#${uid}-ports-input`);
+      const allChk = formWrapper.querySelector(`#${uid}-all-ports-checkbox`);
       if (pInput) {
         if (data.ports === 'all') {
           pInput.value = 'all';
+          pInput.disabled = true;
+          if (allChk) allChk.checked = true;
         } else if (Array.isArray(data.ports)) {
           pInput.value = data.ports.join(', ');
+          pInput.disabled = false;
+          if (allChk) allChk.checked = false;
         } else {
           pInput.value = data.ports || '443';
+          pInput.disabled = false;
+          if (allChk) allChk.checked = false;
         }
       }
     }
