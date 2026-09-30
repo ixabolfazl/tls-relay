@@ -30,11 +30,11 @@
 
 ### Hot Path Packages (Connection Performance Critical)
 *   **`internal/relay`**: Manages the core TCP connection pipeline (limits, presence tracker, security validation, and bidirectional byte piping) for TLS SNI proxying.
-*   **`internal/relay/egress.go`**: Thread-safe outbound SOCKS5 dialer (`EgressDialer`) supporting dynamic hot-reloading, live latency/connectivity testing, and direct fallback.
+*   **`internal/relay/egress.go`**: Thread-safe outbound SOCKS5 dialer (`EgressDialer`) supporting dynamic hot-reloading, live latency/connectivity testing, and direct fallback. **v1.5.0**: The global `egress_proxy_enabled` flag is now a strict gate — `DialContextWithOverride` and `ResolveMode` both ignore per-rule `use_egress_proxy=true` when the global switch is off.
 *   **`internal/httprelay`**: Mirrored pipeline matching `internal/relay` but adapted for plain HTTP stream routing by examining the decrypted HTTP Host header.
 *   **`internal/httphost`**: High-performance HTTP parser reading the request line and extracting the Host header on the shared port.
 *   **`internal/frontrouter`**: Gathers all shared listener traffic. Parses headers first, resolves domain configuration, and directs matching relay traffic to `internal/httprelay` or routes unmatched traffic to the `internal/panel` HTTP server.
-*   **`internal/dnsresolver`**: Custom DNS resolver filtering client IPs, updating metrics, and routing matching configuration domains authoritatively to the relay IP. Also intercepts `<token>.dnscheck.relay-probe.net.` probe queries (via `DNSCheckRegistry`) so the portal landing page can verify client DNS configuration without touching the hot path.
+*   **`internal/dnsresolver`**: Custom DNS resolver filtering client IPs, updating metrics, and routing matching configuration domains authoritatively to the relay IP. Also intercepts `<token>.dnscheck.relay-probe.net.` probe queries (via `DNSCheckRegistry`) so the portal landing page can verify client DNS configuration without touching the hot path. **v1.5.0 behavior**: domains with `mode=direct` are always forwarded to upstream DNS for authorized clients regardless of `unknown_domain_policy`.
 *   **`internal/rules`**: Core lookup structure maintaining normalized rules mapping domains to mode (proxy/direct/block) and destination port lists. Uses `atomic.Pointer` for lock-free hot path reads.
 *   **`internal/access`**: Fast, thread-safe IP access control check validating clients against registered user IPs and blacklist rules.
 *   **`internal/sni`**: Extracts Server Name Indication (SNI) hostnames from raw TLS ClientHello handshakes.
@@ -94,6 +94,8 @@
 *   `GET /api/settings` & `PUT /api/settings`: Exposes `lookup_enabled`, `lookup_require_registered`, `http_front_max_conns_per_ip`, `http_front_max_global_conns`, and returns `default_max_ips`.
 *   `POST /api/dns-check/start` (portal): Issues a short-lived 24-character hex probe token, records it in `DNSCheckRegistry`, and returns `{"token": "<hex>"}`. Rate-limited to 5 req/s per IP.
 *   `GET /api/dns-check/result?token=<hex>` (portal): Returns `{"seen": bool, "seen_at": RFC3339, "source_ip": string}`. When `seen` is true the DNS resolver intercepted a probe query for the token, confirming the client routes DNS through the relay.
+*   `GET /api/domains/export.txt` (**v1.5.0**): Downloads all domain rules as `text/plain`. Format: `[mode:]domain[:ports] [use_egress=true]`. Proxy mode and port 443 are omitted.
+*   `POST /api/domains/import-txt` (**v1.5.0**): Accepts `text/plain` body, one rule per line. Parses `direct:`, `block:`, or `proxy:` prefix, optional `:ports` suffix (or `:all`), `use_egress=true` flag. Skips blank lines and `#` comments. Returns `{domains_added, domains_updated, failed, errors[]}`.
 
 ---
 
@@ -198,3 +200,16 @@ make build
 3.  Add the column to the queries in `internal/sqlitestore/domain_rules.go` (`ListDomainRules`, `GetDomainRule`, `AllDomainRulesRaw`).
 4.  Update `rules.DomainRule` in `internal/rules/domain.go` to handle the parsing/lookup.
 5.  Update `domain-rule-form.js` and `views/domains.js`.
+
+### DNS Mode Routing (v1.5.0 Reference)
+
+| Rule mode | DNS query result |
+|-----------|------------------|
+| `proxy` (default) | Relay IP returned authoritatively |
+| `direct` | Forwarded to upstream DNS (real IP) — ignores `unknown_domain_policy` |
+| `block` | REFUSED |
+| Not configured | Depends on `unknown_domain_policy` (`reject` → REFUSED, `allow_default_port` → forwarded) |
+
+### Egress Proxy Semantics (v1.5.0 Reference)
+
+`egress_proxy_enabled=false` (global switch off) is a **strict gate**: `EgressDialer.DialContextWithOverride` and `ResolveMode` return `direct` for all domains regardless of per-rule `use_egress_proxy` values. Per-rule values remain stored in the DB and automatically take effect when the global switch is enabled again. The UI hides the Egress column, bulk-assign button, and per-row egress cells when the global switch is off.

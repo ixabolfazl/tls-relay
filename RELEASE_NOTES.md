@@ -1,5 +1,17 @@
 # Release Notes
 
+## v1.5.0
+
+* **Relay log status:** connections that complete the bidirectional pipe now record `status = "relayed"` in the request log (was `"closed"` / `"connected"`).
+* **Portal — registered-user cleanup:** the Magic Link registration card and setup step are hidden when the visiting IP is already registered. The lookup card is gated to registered IPs when `lookup_require_registered` is on.
+* **Portal — lookup authorization:** `lookup_require_registered` now checks the in-memory `AccessStore` snapshot instead of querying SQLite directly, making it blacklist-aware and mode-aware with zero database overhead.
+* **Egress strict gate:** `egress_proxy_enabled=false` now overrides all per-rule `use_egress_proxy=true` settings globally. Per-rule values are preserved in the database and take effect again when the switch is re-enabled. The Domains UI hides the Egress column and bulk action when the global switch is off.
+* **TXT import / export:** new `GET /api/domains/export.txt` and `POST /api/domains/import-txt` endpoints. Format: one domain per line, optional `direct:`/`block:` prefix, optional `:port` suffix, optional `use_egress=true` flag. "Export TXT" and "Import TXT" buttons added to the Domain Rules page header.
+* **"All ports" checkbox:** the domain rule form now has an "All ports" checkbox that disables the port input and sets it to `all`.
+* **DNS fix — direct-mode domains:** domains with `mode=direct` were being REFUSED by the DNS resolver when `unknown_domain_policy=reject`. They are now always forwarded to upstream DNS, bypassing the policy check.
+
+---
+
 ## v1.4.2
 
 ### DNS Status Check & Portal Fixes
