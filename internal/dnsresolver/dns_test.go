@@ -81,17 +81,19 @@ func TestRateLimiter_RefillsAfterWait(t *testing.T) {
 // Domain+IP gate tests (using a mock Server helper)
 // ---------------------------------------------------------------------------
 
-// makeMatcher creates a RuleStore + IPRuleSet for testing the DNS match logic.
-func makeMatcherStores(rawRules map[string]string, ipMode rules.IPMode, ipEntries []string) (*rules.RuleStore, *rules.IPRuleSet) {
+// makeMatcher creates a RuleStore + AccessStore for testing the DNS match logic.
+func makeMatcherStores(rawRules map[string]string, mode access.AccessMode, ipEntries []string) (*rules.RuleStore, *access.AccessStore) {
 	rs := rules.NewRuleStore([]int{443, 8443}, "reject")
 	if err := rs.Swap(rawRules); err != nil {
 		panic(err)
 	}
-	ir := rules.NewIPRuleSet()
-	if err := ir.Swap(ipMode, ipEntries); err != nil {
-		panic(err)
+	as := access.NewAccessStore(mode)
+	if mode == access.ModeUser {
+		as.SwapUserIPs(ipEntries)
+	} else if len(ipEntries) > 0 {
+		as.SwapBlacklist(ipEntries)
 	}
-	return rs, ir
+	return rs, as
 }
 
 // domainConfigured mirrors the logic in resolver.go for testing.
@@ -99,27 +101,32 @@ func domainConfigured(rs *rules.RuleStore, qname string) bool {
 	return rs.IsConfigured(qname)
 }
 
-func clientIPAllowed(ir *rules.IPRuleSet, ipStr string) bool {
-	return rules.IPCheckAllowed(ir, ipStr)
+func clientIPAllowed(as *access.AccessStore, ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	allowed, _ := as.CheckAccess(ip)
+	return allowed
 }
 
 func TestDNSGate_ExactDomain_AllowedIP(t *testing.T) {
-	rs, ir := makeMatcherStores(
+	rs, as := makeMatcherStores(
 		map[string]string{"example.com": `{"ports":[443]}`},
-		rules.IPModeBlacklist, nil,
+		access.ModePublic, nil,
 	)
 	if !domainConfigured(rs, "example.com") {
 		t.Error("example.com should be a configured domain")
 	}
-	if !clientIPAllowed(ir, "1.2.3.4") {
-		t.Error("IP should be allowed in empty blacklist")
+	if !clientIPAllowed(as, "1.2.3.4") {
+		t.Error("IP should be allowed in public mode")
 	}
 }
 
 func TestDNSGate_WildcardDomain_AllowedIP(t *testing.T) {
 	rs, _ := makeMatcherStores(
 		map[string]string{"*.example.com": `{"ports":[443]}`},
-		rules.IPModeBlacklist, nil,
+		access.ModePublic, nil,
 	)
 	if !domainConfigured(rs, "api.example.com") {
 		t.Error("api.example.com should match *.example.com")
@@ -130,30 +137,30 @@ func TestDNSGate_WildcardDomain_AllowedIP(t *testing.T) {
 }
 
 func TestDNSGate_ConfiguredDomain_BlockedIP(t *testing.T) {
-	rs, ir := makeMatcherStores(
+	rs, as := makeMatcherStores(
 		map[string]string{"example.com": `{"ports":[443]}`},
-		rules.IPModeWhitelist, []string{"10.0.0.1"},
+		access.ModeUser, []string{"10.0.0.1"},
 	)
 	if !domainConfigured(rs, "example.com") {
 		t.Error("domain should be configured")
 	}
-	// IP not in whitelist → should be denied.
-	if clientIPAllowed(ir, "1.2.3.4") {
-		t.Error("1.2.3.4 should NOT be allowed (whitelist mode, not listed)")
+	// IP not in registered users → should be denied.
+	if clientIPAllowed(as, "1.2.3.4") {
+		t.Error("1.2.3.4 should NOT be allowed (user mode, not listed)")
 	}
 }
 
 func TestDNSGate_UnconfiguredDomain_AnyIP(t *testing.T) {
-	rs, ir := makeMatcherStores(
+	rs, as := makeMatcherStores(
 		map[string]string{"example.com": `{"ports":[443]}`},
-		rules.IPModeBlacklist, nil,
+		access.ModePublic, nil,
 	)
 	// Domain not configured → should be refused regardless of IP.
 	if domainConfigured(rs, "unknown.org") {
 		t.Error("unknown.org should NOT be a configured domain")
 	}
 	// IP allowed is irrelevant when domain not configured.
-	_ = clientIPAllowed(ir, "1.2.3.4")
+	_ = clientIPAllowed(as, "1.2.3.4")
 }
 
 // ---------------------------------------------------------------------------

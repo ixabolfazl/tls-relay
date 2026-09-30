@@ -599,6 +599,12 @@ update_app() {
         systemctl daemon-reload
     fi
 
+    # Ensure system user and file ownership for tls-relay user
+    if ! id -u tls-relay >/dev/null 2>&1; then
+        useradd -r -s /usr/sbin/nologin -M -d /opt/tls-relay tls-relay 2>/dev/null || useradd -r -s /bin/false -M -d /opt/tls-relay tls-relay 2>/dev/null || true
+    fi
+    chown -R tls-relay:tls-relay "${INSTALL_DIR}" /var/lib/tls-relay /var/log/tls-relay 2>/dev/null || true
+
     echo -e "Starting ${SERVICE_NAME}..."
     systemctl start "${SERVICE_NAME}"
 

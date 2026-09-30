@@ -1,5 +1,30 @@
 # Release Notes
 
+## v1.6.1
+
+### Security & Hardening
+* **Dedicated Unprivileged Service User:** Systemd service now runs under a dedicated, locked system user and group (`tls-relay:tls-relay`) with `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, and strict `ReadWritePaths`.
+* **Installation Script Hardening:** `install.sh` and `tls-relay.sh` automatically provision the `tls-relay` system user, fix permissions across `/opt/tls-relay`, `/var/lib/tls-relay`, and `/var/log/tls-relay`, and abort immediately if SHA256 checksums are missing or do not match.
+* **Removal of Deprecated `-pass` CLI Flag:** Removed the plaintext `-pass` flag in the CLI to prevent credential leakage via shell history and process inspection. Use `-pass-stdin` or `TLS_RELAY_ADMIN_PASS`.
+* **Login Brute-Force Rate Limiting:** Panel authentication rate limiter is now keyed per `IP + username` with exponential backoff on consecutive failed attempts.
+* **Proxy Header Spoofing Protection:** `X-Forwarded-Proto` is only trusted when the remote address is a verified loopback proxy (`127.0.0.1` or `::1`).
+* **Default Reject Unknown Domain Policy:** Updated default policy to `unknown_domain_policy: "reject"` across code defaults and default configuration template.
+* **CI/CD Vulnerability & Test Gates:** `govulncheck` in CI now strictly fails the build on vulnerabilities (`continue-on-error` removed), and release workflow now runs the full test suite before compilation.
+
+### Architecture & Performance
+* **Shared Connection Pipeline:** Extracted unified domain evaluation, client IP access validation, and egress dialer dispatch into `internal/relay/pipeline.go`, removing duplicated hot-path code between TLS relay and HTTP relay.
+* **Transactional Bulk Operations:** SQLite operations for bulk domain rule deletion, domain group assignment, and blacklist deletion now execute in isolated database transactions (`BeginTx`) with prepared statements.
+* **Atomic Rule Upsert:** Adding or updating a domain rule now uses atomic SQL operations, eliminating race conditions and redundant pre-lookups.
+* **Import Payload Limits:** Guarded domain/blacklist/user import against memory exhaustion by enforcing maximum entity caps per import payload (10,000 domains, 5,000 blacklist entries, 1,000 users).
+* **Dead Code Cleanup:** Cleaned up unused legacy IP rule checking types and redundant methods in `internal/rules` and `internal/dnsresolver`.
+
+### UI & Frontend Fixes
+* **Segmented Control Initialization:** Fixed argument passing in `createSegmentedControl` on the Domains page and Usage Report dialog so date/time range pickers (Today/7d/30d) render and toggle properly.
+* **Toast Duration Safety:** Normalized `toast.error(msg, dur)` to accept both integer milliseconds and options objects (`{ duration: ms }`).
+* **Safe LocalStorage:** Wrapped `localStorage` reads and writes in `try / catch` blocks to avoid unhandled security exceptions in private/incognito browsing modes.
+
+---
+
 ## v1.6.0
 
 * **JSON domain export / import:** new `GET /api/domains/export.json` and `POST /api/domains/import-json` endpoints for domain rule backup and restore. Preserves domain groups (`group`) and respects the global egress proxy status (`use_egress` is omitted when globally disabled, and ignored during import if disabled). "Export JSON" and "Import JSON" buttons added to the Domain Rules page header.

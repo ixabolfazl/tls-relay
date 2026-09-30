@@ -40,7 +40,7 @@
 *   **`internal/sni`**: Extracts Server Name Indication (SNI) hostnames from raw TLS ClientHello handshakes.
 
 ### Cold Path Packages (Admin Panel & Storage Operations)
-*   **`cmd/relay/main.go`**: Service entrypoint, CLI flag parsing (`-config`, `-init-admin`, `-user`, `-pass`), runtime settings resolution (SQLite `app_settings` > Env > `config.yaml`), and graceful restart channel management.
+*   **`cmd/relay/main.go`**: Service entrypoint, CLI flag parsing (`-config`, `-init-admin`, `-user`, `-pass-stdin`), runtime settings resolution (SQLite `app_settings` > Env > `config.yaml`), and graceful restart channel management.
 *   **`internal/panel`**: Serves the admin panel interface, registers REST endpoints, manages active session cookies, locks out brute-force login attempts, enforces CSRF tokens, and manages dynamic proxy/port settings.
 *   **`internal/sqlitestore`**: Backing SQLite database persisting users, IP allocations, configuration settings (`app_settings`), domain rules, blacklist logs, and telemetry metrics.
 *   **`internal/portal`**: Services the public landing page, client setup guide, and magic-link connection portal to register clients automatically.
@@ -59,7 +59,7 @@
 *   **SQLite as Primary Source of Truth & SIGHUP Live Reload**: Application settings live in SQLite (`app_settings` table). The CLI reads and writes configurations via `tls-relay settings get/set` and triggers runtime reloads via `SIGHUP` (or `systemctl reload tls-relay`), taking effect dynamically without restarting listeners or dropping active connections. `config.yaml` serves only as initial seed and fallback defaults. Environment variables in the service environment override SQLite.
 *   **Dynamic Port & Proxy Hot-Reloading**: Allowed destination ports (`relay.PortAllowList` and `RuleStore.SetGlobalPorts`) and SOCKS5 egress (`relay.EgressDialer`) are updated dynamically without service restart. Destination port validation uses atomic slices/read locks.
 *   **No Plaintext .env Credentials**: Admin credentials and dynamic proxy configs are stored in the SQLite `app_settings` table. Admin passwords must always be hashed with `bcrypt`. Never introduce `.env` dependencies into standard workflows.
-*   **Separate Connection Handling Loops**: TLS SNI relaying (`internal/relay/proxy.go`) and HTTP relaying (`internal/httprelay/server.go`) maintain independent connection handlers due to protocol differences. Security validations, presence tracking, and limits must be updated in both files.
+*   **Shared Connection Pipeline**: TLS SNI relaying (`internal/relay/proxy.go`) and HTTP relaying (`internal/httprelay/server.go`) maintain independent protocol parsing, but share their access checking, routing decisions, and dialer construction through `internal/relay/pipeline.go` (`relay.CheckClientAccess`, `relay.EvaluateRoute`, and `relay.BuildDialer`).
 *   **Front Router Execution Sequence**: `frontrouter` checks IP access control and extracts the Host header *before* examining domain rule configurations. It routes to the admin panel handler *only* when no rule matches. Changing this sequence will expose the panel to forbidden IPs or route traffic incorrectly.
 *   **CSRF Enforcement**: All state-modifying panel endpoints (`POST`, `PUT`, `DELETE`) require a valid `X-CSRF-Token` header matching the current session cookie, except the `/api/login` endpoint.
 *   **No Node/npm Dependencies**: The frontend toolchain utilizes the standalone official Tailwind CLI executable only. No Node.js runtime, npm dependencies, or node_modules are used locally, in CI, or in production.
@@ -68,6 +68,7 @@
 ### Known Limitations & Architecture Caveats
 *   **Encrypted Client Hello (ECH)**: Encrypted Client Hello obscures the outer SNI during the TLS handshake. Transparent SNI routing cannot inspect encrypted inner ClientHellos. Domains using mandatory ECH without outer SNI fall back to the default or unknown domain policy.
 *   **IP-Based Authentication behind CGNAT**: In `user` access mode, authorization is mapped per client public IPv4 address. When multiple mobile or residential clients share a single carrier-grade NAT (CGNAT) address, registering one client authorizes the shared public IP. Users should set appropriate IP quotas or use dedicated IPs where isolation is critical.
+*   **In-Memory Admin Sessions**: Panel authentication sessions are maintained in an in-memory thread-safe map with a 24-hour expiration window. A service restart or reload resets active sessions, intentionally requiring administrators to re-authenticate to prevent stale session persistence.
 
 ### Settings Keys & Defaults
 | Key | Type / Format | Default | Description |
@@ -192,7 +193,7 @@ make build
 ### Initializing / Resetting Admin Credentials:
 *   From CLI:
     ```bash
-    go run ./cmd/relay -config config.yaml -init-admin -user admin -pass mypassword
+    TLS_RELAY_ADMIN_PASS="mypassword" go run ./cmd/relay -config config.yaml -init-admin -user admin
     ```
 *   Or via Web Panel: `PUT /api/admin/credentials` (handled by `handleUpdateAdminCredentials` in `panel_settings.go`).
 

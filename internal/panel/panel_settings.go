@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -50,70 +49,6 @@ type settingsResponse struct {
 	UpdateCheckEnabled         bool   `json:"update_check_enabled"`
 }
 
-func parseDurationWithDays(s string) (time.Duration, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, fmt.Errorf("empty duration")
-	}
-	if strings.HasSuffix(s, "d") || strings.HasSuffix(s, "D") {
-		numStr := s[:len(s)-1]
-		days, err := strconv.Atoi(numStr)
-		if err != nil {
-			return 0, fmt.Errorf("invalid days format %q: %w", s, err)
-		}
-		if days <= 0 {
-			return 0, fmt.Errorf("duration must be positive")
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	dur, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, err
-	}
-	if dur <= 0 {
-		return 0, fmt.Errorf("duration must be positive")
-	}
-	return dur, nil
-}
-
-func formatDurationClean(d time.Duration) string {
-	if d <= 0 {
-		return "24h"
-	}
-	if d%(24*time.Hour) == 0 && d >= 24*time.Hour {
-		return fmt.Sprintf("%dd", d/(24*time.Hour))
-	}
-	if d%time.Hour == 0 {
-		return fmt.Sprintf("%dh", d/time.Hour)
-	}
-	if d%time.Minute == 0 {
-		return fmt.Sprintf("%dm", d/time.Minute)
-	}
-	return d.String()
-}
-
-func normalizeAndValidateEgressAddr(raw string) (string, error) {
-	addr := strings.TrimSpace(raw)
-	if addr == "" {
-		return "", nil
-	}
-	addrLower := strings.ToLower(addr)
-	if strings.HasPrefix(addrLower, "http://") || strings.HasPrefix(addrLower, "https://") {
-		return "", fmt.Errorf("only SOCKS5 host:port is supported")
-	}
-	if strings.HasPrefix(addrLower, "socks5://") {
-		addr = addr[len("socks5://"):]
-	} else if strings.HasPrefix(addrLower, "socks5h://") {
-		addr = addr[len("socks5h://"):]
-	}
-	addr = strings.TrimSpace(addr)
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil || host == "" || port == "" {
-		return "", fmt.Errorf("invalid proxy address (must be host:port): %s", raw)
-	}
-	return addr, nil
-}
-
 func (s *Server) currentSettings() settingsResponse {
 	mode := "user"
 	if s.accessStore != nil {
@@ -141,7 +76,7 @@ func (s *Server) currentSettings() settingsResponse {
 	s.mu.RLock()
 	if s.reqLogger != nil {
 		reqEnabled = s.reqLogger.IsEnabled()
-		reqRetention = formatDurationClean(s.reqLogger.Retention())
+		reqRetention = settings.FormatDurationClean(s.reqLogger.Retention())
 	}
 	if s.limits != nil {
 		maxConn = s.limits.MaxPerIP()
@@ -316,12 +251,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.RequestLogsRetention != nil {
 		retentionStr := strings.TrimSpace(*req.RequestLogsRetention)
 		var err error
-		retentionDur, err = parseDurationWithDays(retentionStr)
+		retentionDur, err = settings.ParseDurationWithDays(retentionStr)
 		if err != nil {
 			jsonErr(w, fmt.Sprintf("invalid retention duration %q (e.g. 1h, 12h, 24h, 7d)", retentionStr), http.StatusBadRequest)
 			return
 		}
-		retentionClean = formatDurationClean(retentionDur)
+		retentionClean = settings.FormatDurationClean(retentionDur)
 		toPersist["request_logs_retention"] = retentionClean
 	}
 
@@ -485,7 +420,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			curCfg.Enabled = *req.EgressProxyEnabled
 		}
 		if req.EgressProxyAddr != nil {
-			normAddr, err := normalizeAndValidateEgressAddr(*req.EgressProxyAddr)
+			normAddr, err := settings.ValidateEgressAddr(*req.EgressProxyAddr)
 			if err != nil {
 				jsonErr(w, err.Error(), http.StatusBadRequest)
 				return
@@ -680,7 +615,7 @@ func (s *Server) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 
 	var ed *relay.EgressDialer
 	if req.Addr != "" {
-		normAddr, normErr := normalizeAndValidateEgressAddr(req.Addr)
+		normAddr, normErr := settings.ValidateEgressAddr(req.Addr)
 		if normErr != nil {
 			jsonOK(w, map[string]interface{}{
 				"ok":    false,

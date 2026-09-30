@@ -66,7 +66,6 @@ func main() {
 	flag.BoolVar(showVersion, "v", false, "display version and build information (shorthand)")
 	initAdmin := flag.Bool("init-admin", false, "initialize or reset admin credentials in database")
 	adminUser := flag.String("user", "admin", "admin username for -init-admin")
-	adminPass := flag.String("pass", "", "admin password for -init-admin (deprecated: use TLS_RELAY_ADMIN_PASS or -pass-stdin)")
 	passStdin := flag.Bool("pass-stdin", false, "read admin password from stdin for -init-admin")
 	flag.Parse()
 
@@ -77,10 +76,7 @@ func main() {
 
 	if *initAdmin {
 		var pass string
-		if *adminPass != "" {
-			fmt.Fprintln(os.Stderr, "warning: -pass flag is deprecated due to process-list exposure; use TLS_RELAY_ADMIN_PASS environment variable or -pass-stdin instead")
-			pass = *adminPass
-		} else if *passStdin {
+		if *passStdin {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error reading password from stdin: %v\n", err)
@@ -90,7 +86,7 @@ func main() {
 		} else if envPass := os.Getenv("TLS_RELAY_ADMIN_PASS"); envPass != "" {
 			pass = envPass
 		} else {
-			fmt.Fprintln(os.Stderr, "error: password required via TLS_RELAY_ADMIN_PASS environment variable, -pass-stdin, or -pass")
+			fmt.Fprintln(os.Stderr, "error: password required via TLS_RELAY_ADMIN_PASS environment variable or -pass-stdin")
 			os.Exit(1)
 		}
 

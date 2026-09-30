@@ -31,6 +31,11 @@ const ICONS = {
 export function showToast(message, type = 'info', duration = 4000) {
   const root = getToastRoot();
 
+  let durMs = typeof duration === 'object' && duration !== null ? duration.duration : duration;
+  if (durMs === undefined || durMs === null || isNaN(durMs)) {
+    durMs = type === 'error' ? 6000 : 4000;
+  }
+
   // Prune older toasts if over limit
   while (root.children.length >= MAX_TOASTS) {
     root.removeChild(root.firstElementChild);
@@ -58,16 +63,22 @@ export function showToast(message, type = 'info', duration = 4000) {
 
   closeBtn.addEventListener('click', dismiss);
 
-  if (duration > 0) {
-    setTimeout(dismiss, duration);
+  if (durMs > 0) {
+    setTimeout(dismiss, durMs);
   }
 
   root.appendChild(toastEl);
 }
 
+function normalizeDur(dur, defaultDur) {
+  if (dur === undefined || dur === null) return defaultDur;
+  if (typeof dur === 'object') return dur.duration || defaultDur;
+  return dur;
+}
+
 export const toast = {
-  success: (msg, dur) => showToast(msg, 'success', dur),
-  error: (msg, dur) => showToast(msg, 'error', dur || 6000),
-  warning: (msg, dur) => showToast(msg, 'warning', dur),
-  info: (msg, dur) => showToast(msg, 'info', dur),
+  success: (msg, dur) => showToast(msg, 'success', normalizeDur(dur, 4000)),
+  error: (msg, dur) => showToast(msg, 'error', normalizeDur(dur, 6000)),
+  warning: (msg, dur) => showToast(msg, 'warning', normalizeDur(dur, 4000)),
+  info: (msg, dur) => showToast(msg, 'info', normalizeDur(dur, 4000)),
 };

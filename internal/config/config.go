@@ -105,9 +105,11 @@ type SQLiteConfig struct {
 	Path string `yaml:"path"` // e.g. "/var/lib/tls-relay/data.db"
 }
 
-// MagicLinkConfig holds the magic link HTTP service settings.
+// MagicLinkConfig holds legacy magic link HTTP service settings.
+// Deprecated: Public portal routes (/connect, /lookup, /setup, /api/portal/*) are
+// mounted directly on the panel / frontrouter HTTP listener.
 type MagicLinkConfig struct {
-	Addr string `yaml:"addr"` // e.g. "0.0.0.0:8090"
+	Addr string `yaml:"addr"` // Deprecated: preserved for backward compatibility
 }
 
 // UsersConfig holds default user settings.
@@ -169,7 +171,7 @@ func defaultConfig() Config {
 			HTTPPorts: []int{80},
 		},
 		AllowedDestPorts:    []int{443, 8443, 2053, 2083, 2087, 2096, 9443},
-		UnknownDomainPolicy: "allow_default_port",
+		UnknownDomainPolicy: "reject",
 		AccessMode:          "user",
 		Timezone:            "UTC",
 		Timeouts: TimeoutConfig{

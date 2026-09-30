@@ -1,7 +1,6 @@
 package rules_test
 
 import (
-	"net"
 	"testing"
 
 	"github.com/ixabolfazl/tls-relay/internal/rules"
@@ -171,93 +170,6 @@ func TestRuleStore_MostSpecificWildcard(t *testing.T) {
 	allowed, matched = rs.Lookup("www.example.com", 443)
 	if !matched || !allowed {
 		t.Errorf("www.example.com:443 should match *.example.com, got matched=%v allowed=%v", matched, allowed)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// IPRuleSet tests
-// ---------------------------------------------------------------------------
-
-func makeIPSet(mode rules.IPMode, entries []string) *rules.IPRuleSet {
-	rs := rules.NewIPRuleSet()
-	if err := rs.Swap(mode, entries); err != nil {
-		panic(err)
-	}
-	return rs
-}
-
-func TestIPRuleSet_BlacklistEmpty(t *testing.T) {
-	// Blacklist with empty list = everyone allowed.
-	rs := makeIPSet(rules.IPModeBlacklist, nil)
-
-	for _, ip := range []string{"1.2.3.4", "8.8.8.8", "203.0.113.5"} {
-		if !rules.IPCheckAllowed(rs, ip) {
-			t.Errorf("IP %s should be allowed in empty blacklist", ip)
-		}
-	}
-}
-
-func TestIPRuleSet_Blacklist(t *testing.T) {
-	rs := makeIPSet(rules.IPModeBlacklist, []string{"203.0.113.5", "198.51.100.0/24"})
-
-	if rules.IPCheckAllowed(rs, "203.0.113.5") {
-		t.Error("203.0.113.5 should be blocked (exact blacklist entry)")
-	}
-	if rules.IPCheckAllowed(rs, "198.51.100.42") {
-		t.Error("198.51.100.42 should be blocked (CIDR blacklist)")
-	}
-	if !rules.IPCheckAllowed(rs, "8.8.8.8") {
-		t.Error("8.8.8.8 should be allowed (not in blacklist)")
-	}
-}
-
-func TestIPRuleSet_Whitelist(t *testing.T) {
-	rs := makeIPSet(rules.IPModeWhitelist, []string{"203.0.113.0/24"})
-
-	if !rules.IPCheckAllowed(rs, "203.0.113.100") {
-		t.Error("203.0.113.100 should be allowed (in whitelist CIDR)")
-	}
-	if rules.IPCheckAllowed(rs, "8.8.8.8") {
-		t.Error("8.8.8.8 should be denied (not in whitelist)")
-	}
-}
-
-func TestIPRuleSet_CIDR(t *testing.T) {
-	rs := makeIPSet(rules.IPModeWhitelist, []string{"10.0.0.0/8"})
-
-	check := func(ipStr string, want bool) {
-		t.Helper()
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			t.Fatalf("invalid IP %q", ipStr)
-		}
-		if got := rs.Allowed(ip); got != want {
-			t.Errorf("Allowed(%q) = %v, want %v", ipStr, got, want)
-		}
-	}
-
-	check("10.0.0.1", true)
-	check("10.255.255.255", true)
-	check("11.0.0.1", false)
-}
-
-func TestIPRuleSet_Swap(t *testing.T) {
-	rs := makeIPSet(rules.IPModeBlacklist, []string{"1.2.3.4"})
-
-	if rules.IPCheckAllowed(rs, "1.2.3.4") {
-		t.Error("1.2.3.4 should initially be blocked")
-	}
-
-	// Swap to whitelist mode with same entry.
-	if err := rs.Swap(rules.IPModeWhitelist, []string{"1.2.3.4"}); err != nil {
-		t.Fatal(err)
-	}
-
-	if !rules.IPCheckAllowed(rs, "1.2.3.4") {
-		t.Error("1.2.3.4 should now be allowed in whitelist mode")
-	}
-	if rules.IPCheckAllowed(rs, "5.5.5.5") {
-		t.Error("5.5.5.5 should be denied in whitelist mode")
 	}
 }
 

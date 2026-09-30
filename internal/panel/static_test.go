@@ -206,8 +206,16 @@ func TestStaticIntegrity(t *testing.T) {
 			t.Errorf("%s contains external URL", page)
 		}
 	}
-	inputCSS, err := os.ReadFile("internal/panel/static/css/input.css")
-	if err == nil && extRe.MatchString(string(inputCSS)) {
+	inputCSSPath := "static/css/input.css"
+	if _, err := os.Stat(inputCSSPath); os.IsNotExist(err) {
+		inputCSSPath = "internal/panel/static/css/input.css"
+	}
+	inputCSS, err := os.ReadFile(inputCSSPath)
+	if err != nil {
+		t.Fatalf("failed to read input.css: %v", err)
+	}
+	cleanCSS := strings.ReplaceAll(string(inputCSS), "http://www.w3.org/2000/svg", "")
+	if extRe.MatchString(cleanCSS) {
 		t.Errorf("input.css contains external URL (e.g. font imports)")
 	}
 }

@@ -174,13 +174,21 @@ if curl -sLf -o "${TMP_DIR}/${TAR_NAME}.sha256" "${CHECKSUM_URL}" 2>/dev/null; t
     fi
     echo -e "${GREEN}✓${NC} Checksum verified successfully."
 else
-    echo -e "${YELLOW}Warning: Checksum file not found on GitHub (${CHECKSUM_URL}); proceeding without checksum verification...${NC}"
+    echo -e "${RED}[ERROR] SHA256 checksum file not found on GitHub (${CHECKSUM_URL}). Aborting installation.${NC}"
+    rm -rf "${TMP_DIR}"
+    exit 1
 fi
 
 # 9. Stop service if already running
 if systemctl is-active --quiet tls-relay 2>/dev/null; then
     echo -e "${YELLOW}Stopping existing tls-relay service for update...${NC}"
     systemctl stop tls-relay
+fi
+
+# Ensure dedicated system user exists
+if ! id -u tls-relay >/dev/null 2>&1; then
+    echo -e "${CYAN}Creating system user 'tls-relay'...${NC}"
+    useradd -r -s /usr/sbin/nologin -M -d /opt/tls-relay tls-relay 2>/dev/null || useradd -r -s /bin/false -M -d /opt/tls-relay tls-relay 2>/dev/null || true
 fi
 
 # 10. Extract and install files
@@ -207,18 +215,31 @@ else
     cat > "${SERVICE_FILE}" << 'EOF'
 [Unit]
 Description=TLS SNI Relay and DNS Resolver Service
+Documentation=https://github.com/ixabolfazl/tls-relay
 After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=tls-relay
+Group=tls-relay
 WorkingDirectory=/opt/tls-relay
 ExecStart=/opt/tls-relay/tls-relay -config /opt/tls-relay/config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=3s
 LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+# Security Hardening & Sandboxing
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/tls-relay /var/lib/tls-relay /var/log/tls-relay
 
 [Install]
 WantedBy=multi-user.target
@@ -387,6 +408,9 @@ if [[ -f "${INSTALL_DIR}/config.yaml" ]]; then
     fi
 fi
 [[ -z "${ADMIN_PATH}" ]] && ADMIN_PATH="/admin"
+
+# Ensure directory and file ownership for tls-relay user
+chown -R tls-relay:tls-relay "${INSTALL_DIR}" "${DATA_DIR}" "${LOG_DIR}" 2>/dev/null || true
 
 # 13. Enable and Start Systemd Service
 echo -e "${CYAN}Reloading systemd and enabling tls-relay service...${NC}"

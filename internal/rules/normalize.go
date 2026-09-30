@@ -199,11 +199,11 @@ func isASCIIString(s string) bool {
 	return true
 }
 
-// isValidHostnameLabel returns true if label is a syntactically valid DNS
+// IsValidHostnameLabel returns true if label is a syntactically valid DNS
 // hostname label: 1–63 characters, consisting of [a-zA-Z0-9] and hyphens,
 // with no leading or trailing hyphen. This also accepts punycode labels
 // (xn--…) since they satisfy the same character constraints.
-func isValidHostnameLabel(label string) bool {
+func IsValidHostnameLabel(label string) bool {
 	n := len(label)
 	if n == 0 || n > 63 {
 		return false
@@ -221,4 +221,8 @@ func isValidHostnameLabel(label string) bool {
 		}
 	}
 	return true
+}
+
+func isValidHostnameLabel(label string) bool {
+	return IsValidHostnameLabel(label)
 }

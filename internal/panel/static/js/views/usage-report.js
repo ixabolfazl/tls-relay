@@ -278,19 +278,23 @@ export function openUsageReportDialog({ kind, id, name, onReset }) {
 
   // Setup Range Selector
   const rangeContainer = content.querySelector('#report-range-segmented');
-  createSegmentedControl(rangeContainer, {
-    options: [
-      { value: '7d', label: '7d' },
-      { value: '30d', label: '30d' },
-      { value: '90d', label: '90d' },
-      { value: '365d', label: '365d' },
-    ],
-    value: currentRange,
-    onChange: (val) => {
-      currentRange = val;
-      loadData(currentRange);
-    },
-  });
+  if (rangeContainer) {
+    const rangeSeg = createSegmentedControl({
+      options: [
+        { value: '7d', label: '7d' },
+        { value: '30d', label: '30d' },
+        { value: '90d', label: '90d' },
+        { value: '365d', label: '365d' },
+      ],
+      value: currentRange,
+      onChange: (val) => {
+        currentRange = val;
+        loadData(currentRange);
+      },
+    });
+    rangeContainer.innerHTML = '';
+    rangeContainer.appendChild(rangeSeg.el);
+  }
 
   // Setup Reset Usage Button (User only)
   if (isUser) {

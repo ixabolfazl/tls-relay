@@ -6,7 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=tls-relay
+Group=tls-relay
 WorkingDirectory=/opt/tls-relay
 ExecStart=/opt/tls-relay/tls-relay -config /opt/tls-relay/config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
@@ -16,9 +17,14 @@ LimitNOFILE=65535
 StandardOutput=journal
 StandardError=journal
 
-# Security Sandboxing (Permissive for network relay functionality)
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+# Security Hardening & Sandboxing
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/tls-relay /var/lib/tls-relay /var/log/tls-relay
 
 [Install]
 WantedBy=multi-user.target

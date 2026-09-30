@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ixabolfazl/tls-relay/internal/config"
+	"github.com/ixabolfazl/tls-relay/internal/rules"
 )
 
 // ValidateAccessMode validates that the access mode is either "public" or "user".
@@ -331,22 +332,7 @@ func isAllDigitsAndDots(s string) bool {
 }
 
 func isValidHostnameLabel(label string) bool {
-	n := len(label)
-	if n == 0 || n > 63 {
-		return false
-	}
-	for i := 0; i < n; i++ {
-		c := label[i]
-		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-		isHyphen := c == '-'
-		if !isAlphaNum && !isHyphen {
-			return false
-		}
-		if isHyphen && (i == 0 || i == n-1) {
-			return false
-		}
-	}
-	return true
+	return rules.IsValidHostnameLabel(label)
 }
 
 func isValidHostname(h string) bool {

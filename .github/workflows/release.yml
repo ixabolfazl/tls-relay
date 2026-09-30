@@ -68,6 +68,9 @@ jobs:
             echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Run Tests
+        run: go test -v ./...
+
       - name: Build Binary
         env:
           CGO_ENABLED: "0"

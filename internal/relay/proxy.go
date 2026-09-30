@@ -214,21 +214,13 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 	// 1. IP access control — check before anything else to reject blocked IPs
 	//    with minimal resource use (before reading the ClientHello).
 	// -----------------------------------------------------------------------
-	if s.accessStore != nil {
-		ip := net.ParseIP(clientIP)
-		if ip == nil {
-			fields.Status = "rejected_ip_invalid"
-			slog.Warn("connection rejected: invalid client IP", "client_ip", clientIP)
-			return
-		}
-		allowed, reason := s.accessStore.CheckAccess(ip)
-		if !allowed {
-			fields.Status = "rejected_" + reason
-			slog.Warn("connection rejected: access denied",
-				"client_ip", clientIP, "reason", reason,
-				"mode", string(s.accessStore.Mode()))
-			return
-		}
+	// 1. IP access control — check before anything else to reject blocked IPs
+	//    with minimal resource use (before reading the ClientHello).
+	// -----------------------------------------------------------------------
+	if allowed, status := CheckClientAccess(s.accessStore, clientIP); !allowed {
+		fields.Status = status
+		slog.Warn("connection rejected: access denied", "client_ip", clientIP, "status", status)
+		return
 	}
 
 	// -----------------------------------------------------------------------
@@ -297,65 +289,14 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 	// -----------------------------------------------------------------------
 	// 4. Domain rule check & Mode validation (single atomic read)
 	// -----------------------------------------------------------------------
-	ruleUseProxy := "default"
-	if s.ruleStore != nil {
-		allowed, rule, matchInfo := s.ruleStore.LookupDetailed(hostname, s.port)
-		if matchInfo.Kind == "exact" {
-			fields.MatchedRule = "exact"
-		} else if matchInfo.Kind == "wildcard" {
-			fields.MatchedRule = matchInfo.Rule
-		} else {
-			fields.MatchedRule = "none"
-		}
-
-		if matchInfo.Matched {
-			ruleUseProxy = rule.UseEgressProxy
-			fields.Egress = s.resolveEgressMode(ruleUseProxy)
-
-			switch rule.Mode {
-			case "block":
-				fields.Status = "rejected_domain_blocked"
-				slog.Warn("connection rejected: domain in block mode", "client_ip", clientIP, "sni", hostname)
-				return
-			case "direct":
-				fields.Status = "rejected_direct_mode"
-				slog.Warn("connection rejected: domain in direct mode", "client_ip", clientIP, "sni", hostname)
-				return
-			}
-
-			if !allowed {
-				fields.Status = "rejected_port"
-				slog.Warn("connection rejected: port not allowed by domain rule",
-					"client_ip", clientIP, "sni", hostname, "port", s.port, "matched_rule", fields.MatchedRule)
-				return
-			}
-			// Explicit rule allows — skip the global port allow-list check.
-		} else {
-			fields.Egress = s.resolveEgressMode(ruleUseProxy)
-			// No rule matches — apply unknown_domain_policy.
-			if !s.ruleStore.IsPortAllowedByPolicy(s.port) {
-				fields.Status = "rejected_domain"
-				slog.Warn("connection rejected: domain not in rules and policy is reject",
-					"client_ip", clientIP, "sni", hostname)
-				return
-			}
-			// Policy is allow_default_port — fall through to global allow-list check.
-			if !s.allowList.Allowed(s.port) {
-				fields.Status = "rejected_port"
-				slog.Warn("connection rejected: port not in global allow-list (fallback)",
-					"client_ip", clientIP, "port", s.port)
-				return
-			}
-		}
-	} else {
-		fields.MatchedRule = "none"
-		fields.Egress = s.resolveEgressMode(ruleUseProxy)
-		// No rule store configured — use the global port allow-list (v1 behaviour).
-		if !s.allowList.Allowed(s.port) {
-			fields.Status = "rejected_port"
-			slog.Warn("connection rejected: port not in allow-list", "client_ip", clientIP, "port", s.port)
-			return
-		}
+	decision := EvaluateRoute(s.ruleStore, s.allowList, hostname, s.port, nil, nil)
+	fields.MatchedRule = decision.MatchedRule
+	fields.Egress = s.resolveEgressMode(decision.RuleUseProxy)
+	if !decision.Allowed {
+		fields.Status = decision.Status
+		slog.Warn("connection rejected: route not allowed",
+			"client_ip", clientIP, "sni", hostname, "port", s.port, "status", decision.Status, "matched_rule", fields.MatchedRule)
+		return
 	}
 
 	// -----------------------------------------------------------------------
@@ -380,16 +321,7 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 	// -----------------------------------------------------------------------
 	// 6. Dial destination (by validated IP to prevent DNS rebinding)
 	// -----------------------------------------------------------------------
-	dialFunc := func(dCtx context.Context, network, addr string) (net.Conn, error) {
-		if s.egressDialer != nil {
-			return s.egressDialer.DialContextWithOverride(dCtx, network, addr, ruleUseProxy)
-		}
-		if s.customDialer != nil {
-			return s.customDialer(dCtx, network, addr)
-		}
-		var dialer net.Dialer
-		return dialer.DialContext(dCtx, network, addr)
-	}
+	dialFunc := BuildDialer(s.customDialer, s.egressDialer, decision.RuleUseProxy)
 
 	destConn, err := DialAny(ctx, destIPs, s.port, dialFunc)
 	if err != nil {

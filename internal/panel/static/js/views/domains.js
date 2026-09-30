@@ -27,7 +27,10 @@ export function mount(container) {
   let allDomains = [];
   let groups = [];
   let activeMode = 'proxy'; // proxy | direct | block
-  let viewMode = localStorage.getItem('relay_domains_view') || 'flat'; // flat | grouped
+  let viewMode = 'flat';
+  try {
+    viewMode = localStorage.getItem('relay_domains_view') || 'flat';
+  } catch (_) {} // flat | grouped
   let expandedGroups = new Set(); // Default: all groups collapsed
   let activeRange = 'today';
   let searchQuery = '';
@@ -308,7 +311,9 @@ export function mount(container) {
     size: 'sm',
     onChange: (val) => {
       viewMode = val;
-      localStorage.setItem('relay_domains_view', val);
+      try {
+        localStorage.setItem('relay_domains_view', val);
+      } catch (_) {}
       tableState.currentPage = 1;
       renderTable();
     },
@@ -1244,7 +1249,7 @@ export function mount(container) {
   function initRangeSegmented() {
     const el = $('#dom-range-segmented', container);
     if (!el || rangeSegObj) return;
-    rangeSegObj = createSegmentedControl(el, {
+    rangeSegObj = createSegmentedControl({
       options: [
         { value: 'today', label: 'Today' },
         { value: '7d', label: '7d' },
@@ -1259,6 +1264,8 @@ export function mount(container) {
         fetchDomains();
       },
     });
+    el.innerHTML = '';
+    el.appendChild(rangeSegObj.el);
   }
 
   // Sorting header click listeners

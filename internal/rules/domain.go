@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"sync/atomic"
 )
@@ -408,14 +407,4 @@ func ParsePorts(s string) (PortsSpec, error) {
 		return PortsSpec{}, fmt.Errorf("at least one port is required")
 	}
 	return PortsSpec{Ports: ports}, nil
-}
-
-// IPCheckAllowed validates a single client IP string against the IP rule set.
-// It is a convenience wrapper used in tests and by the relay connection handler.
-func IPCheckAllowed(rs *IPRuleSet, ipStr string) bool {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-	return rs.Allowed(ip)
 }

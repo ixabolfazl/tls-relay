@@ -63,12 +63,27 @@ func (s *Store) AllBlacklistEntries(ctx context.Context) ([]string, error) {
 	return entries, rows.Err()
 }
 
-// BulkDeleteBlacklist deletes multiple blacklist entries by ID.
+// BulkDeleteBlacklist deletes multiple blacklist entries by ID using a transaction.
 func (s *Store) BulkDeleteBlacklist(ctx context.Context, ids []int64) (int, int, error) {
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM global_blacklist WHERE id = ?`)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer stmt.Close()
+
 	deleted := 0
 	skipped := 0
 	for _, id := range ids {
-		res, err := s.writer.ExecContext(ctx, `DELETE FROM global_blacklist WHERE id = ?`, id)
+		res, err := stmt.ExecContext(ctx, id)
 		if err != nil {
 			return deleted, skipped, err
 		}
@@ -78,6 +93,9 @@ func (s *Store) BulkDeleteBlacklist(ctx context.Context, ids []int64) (int, int,
 		} else {
 			skipped++
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, len(ids), err
 	}
 	return deleted, skipped, nil
 }

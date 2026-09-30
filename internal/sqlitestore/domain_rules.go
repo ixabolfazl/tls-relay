@@ -75,18 +75,36 @@ func (s *Store) GetDomainRule(ctx context.Context, domain string) (*DomainRuleRo
 	return r, nil
 }
 
-// AddDomainRule inserts or replaces a domain rule.
-func (s *Store) AddDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) error {
+// UpsertDomainRule inserts a domain rule if it doesn't exist, or updates it if it does.
+// It returns inserted=true if a new row was created, or inserted=false if an existing row was updated.
+func (s *Store) UpsertDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) (bool, error) {
 	groupName = SanitizeGroupName(groupName)
 	if mode == "" {
 		mode = "proxy"
 	}
-	_, err := s.writer.ExecContext(ctx,
+	res, err := s.writer.ExecContext(ctx,
 		`INSERT INTO domain_rules (domain, group_name, ports, use_egress_proxy, mode)
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(domain) DO UPDATE SET group_name = excluded.group_name, ports = excluded.ports, use_egress_proxy = excluded.use_egress_proxy, mode = excluded.mode, updated_at = datetime('now')`,
+		 ON CONFLICT(domain) DO NOTHING`,
 		domain, groupName, ports, useEgressProxy, mode,
 	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return true, nil
+	}
+	_, err = s.writer.ExecContext(ctx,
+		`UPDATE domain_rules SET group_name = ?, ports = ?, use_egress_proxy = ?, mode = ?, updated_at = datetime('now') WHERE domain = ?`,
+		groupName, ports, useEgressProxy, mode, domain,
+	)
+	return false, err
+}
+
+// AddDomainRule inserts or replaces a domain rule.
+func (s *Store) AddDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) error {
+	_, err := s.UpsertDomainRule(ctx, domain, groupName, ports, useEgressProxy, mode)
 	return err
 }
 
@@ -167,8 +185,23 @@ func (s *Store) AllDomainRulesRaw(ctx context.Context) (map[string]string, error
 	return result, rows.Err()
 }
 
-// BulkDeleteDomainRules deletes multiple domain rules by name, returning deleted and skipped counts.
+// BulkDeleteDomainRules deletes multiple domain rules by name using a transaction, returning deleted and skipped counts.
 func (s *Store) BulkDeleteDomainRules(ctx context.Context, domains []string) (int, int, error) {
+	if len(domains) == 0 {
+		return 0, 0, nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer stmt.Close()
+
 	deleted := 0
 	skipped := 0
 	for _, d := range domains {
@@ -177,7 +210,7 @@ func (s *Store) BulkDeleteDomainRules(ctx context.Context, domains []string) (in
 			skipped++
 			continue
 		}
-		res, err := s.writer.ExecContext(ctx, `DELETE FROM domain_rules WHERE domain = ?`, d)
+		res, err := stmt.ExecContext(ctx, d)
 		if err != nil {
 			return deleted, skipped, err
 		}
@@ -188,12 +221,30 @@ func (s *Store) BulkDeleteDomainRules(ctx context.Context, domains []string) (in
 			skipped++
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return 0, len(domains), err
+	}
 	return deleted, skipped, nil
 }
 
-// BulkAssignDomainGroup updates the group_name for multiple existing domain rules.
+// BulkAssignDomainGroup updates the group_name for multiple existing domain rules using a transaction.
 func (s *Store) BulkAssignDomainGroup(ctx context.Context, domains []string, groupName string) (int, int, error) {
+	if len(domains) == 0 {
+		return 0, 0, nil
+	}
 	groupName = SanitizeGroupName(groupName)
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `UPDATE domain_rules SET group_name = ?, updated_at = datetime('now') WHERE domain = ?`)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer stmt.Close()
+
 	updated := 0
 	skipped := 0
 	for _, d := range domains {
@@ -202,7 +253,7 @@ func (s *Store) BulkAssignDomainGroup(ctx context.Context, domains []string, gro
 			skipped++
 			continue
 		}
-		res, err := s.writer.ExecContext(ctx, `UPDATE domain_rules SET group_name = ?, updated_at = datetime('now') WHERE domain = ?`, groupName, d)
+		res, err := stmt.ExecContext(ctx, groupName, d)
 		if err != nil {
 			return updated, skipped, err
 		}
@@ -212,6 +263,9 @@ func (s *Store) BulkAssignDomainGroup(ctx context.Context, domains []string, gro
 		} else {
 			skipped++
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, len(domains), err
 	}
 	return updated, skipped, nil
 }

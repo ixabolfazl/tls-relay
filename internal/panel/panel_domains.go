@@ -386,20 +386,20 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	updatedCount := 0
 
 	for _, d := range targetDomains {
-		existing, _ := s.sqlStore.GetDomainRule(ctx, d)
-		if err := s.sqlStore.AddDomainRule(ctx, d, req.GroupName, portsJSON, useEgress, mode); err != nil {
+		inserted, err := s.sqlStore.UpsertDomainRule(ctx, d, req.GroupName, portsJSON, useEgress, mode)
+		if err != nil {
 			slog.Error("admin panel add domain sqlite error", "domain", d, "error", err)
 			jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if existing != nil {
-			updatedCount++
-		} else {
+		if inserted {
 			addedCount++
+		} else {
+			updatedCount++
 		}
 	}
 
-	// Refresh Redis cache + in-memory snapshot.
+	// Refresh in-memory rule snapshot.
 	if err := s.refreshDomains(ctx); err != nil {
 		slog.Error("admin panel refresh domains error", "error", err)
 	}
@@ -431,7 +431,7 @@ type updateDomainRequest struct {
 }
 
 func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
-	domain := r.PathValue("domain")
+	domain := parseDomainParam(r)
 	var req updateDomainRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid request body", http.StatusBadRequest)
@@ -510,7 +510,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
-	domain := r.PathValue("domain")
+	domain := parseDomainParam(r)
 	ctx := r.Context()
 
 	if err := s.sqlStore.DeleteDomainRule(ctx, domain); err != nil {

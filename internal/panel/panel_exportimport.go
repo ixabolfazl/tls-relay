@@ -24,7 +24,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Disposition", `attachment; filename="mydns-export.json"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="tls-relay-export.json"`)
 	_ = json.NewEncoder(w).Encode(data)
 }
 
@@ -33,6 +33,19 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	var payload sqlitestore.ExportData
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		jsonErr(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(payload.DomainRules) > 10000 {
+		jsonErr(w, fmt.Sprintf("import payload exceeds maximum limit of 10000 domain rules (got %d)", len(payload.DomainRules)), http.StatusBadRequest)
+		return
+	}
+	if len(payload.Blacklist) > 5000 {
+		jsonErr(w, fmt.Sprintf("import payload exceeds maximum limit of 5000 blacklist entries (got %d)", len(payload.Blacklist)), http.StatusBadRequest)
+		return
+	}
+	if len(payload.Users) > 1000 {
+		jsonErr(w, fmt.Sprintf("import payload exceeds maximum limit of 1000 users (got %d)", len(payload.Users)), http.StatusBadRequest)
 		return
 	}
 

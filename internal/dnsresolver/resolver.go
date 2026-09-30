@@ -546,27 +546,6 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	s.writeMsg(w, req, resp)
 }
 
-// domainConfiguredForRelay checks whether qname matches a configured domain rule
-// that is set to "proxy" mode. Rules in "direct" or "block" mode return false
-// so they are not redirected to the relay IP.
-func (s *Server) domainConfiguredForRelay(qname string) bool {
-	if s.ruleStore == nil {
-		return false
-	}
-	rule, matched := s.ruleStore.LookupRule(qname)
-	if !matched {
-		return false
-	}
-	return rule.Mode == "proxy" || rule.Mode == ""
-}
-
-// domainConfigured checks whether qname matches any configured domain rule
-// (exact or wildcard), regardless of port. Used to decide whether the relay
-// should redirect DNS queries to its own IP.
-func (s *Server) domainConfigured(qname string) bool {
-	return s.ruleStore.IsConfigured(qname)
-}
-
 // clientIPAllowed checks if the querying client IP is allowed by the access rules.
 func (s *Server) clientIPAllowed(ipStr string) bool {
 	ip := net.ParseIP(ipStr)

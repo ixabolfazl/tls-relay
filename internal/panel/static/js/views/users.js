@@ -469,7 +469,7 @@ export function mount(container) {
                 if (ok) {
                   toast.success('Magic link copied to clipboard');
                 } else {
-                  toast.error(`Failed to copy link automatically. Link: ${link}`, { duration: 8000 });
+                  toast.error(`Failed to copy link automatically. Link: ${link}`, 8000);
                 }
               } else {
                 toast.error('User has no magic token configured');

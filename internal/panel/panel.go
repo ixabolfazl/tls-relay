@@ -196,8 +196,10 @@ func (l *loginLimiter) recordFailure(ip string) (bool, time.Duration) {
 	}
 	att.count++
 	if att.count >= l.maxAttempts {
-		att.lockoutUntil = now.Add(l.lockoutDuration)
-		return true, l.lockoutDuration
+		mult := 1 << (min(att.count-l.maxAttempts, 3))
+		lockout := l.lockoutDuration * time.Duration(mult)
+		att.lockoutUntil = now.Add(lockout)
+		return true, lockout
 	}
 	return false, 0
 }
@@ -214,6 +216,18 @@ func getClientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func isTrustedProxy(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func randomHex(n int) string {
@@ -1017,17 +1031,22 @@ type loginRequest struct {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	clientIP := getClientIP(r)
 
-	if locked, rem := s.loginLimiter.isLockedOut(clientIP); locked {
-		mins := int(rem.Minutes()) + 1
-		slog.Warn("admin panel login attempt blocked due to lockout", "remote_addr", r.RemoteAddr, "client_ip", clientIP)
-		jsonErr(w, fmt.Sprintf("Too many failed login attempts. Account locked out for %d minutes.", mins), http.StatusTooManyRequests)
-		return
-	}
-
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		slog.Warn("admin panel login request decoding error", "remote_addr", r.RemoteAddr, "error", err)
 		jsonErr(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	limitKey := clientIP
+	if req.Username != "" {
+		limitKey = clientIP + ":" + req.Username
+	}
+
+	if locked, rem := s.loginLimiter.isLockedOut(limitKey); locked {
+		mins := int(rem.Minutes()) + 1
+		slog.Warn("admin panel login attempt blocked due to lockout", "remote_addr", r.RemoteAddr, "client_ip", clientIP, "username", req.Username)
+		jsonErr(w, fmt.Sprintf("Too many failed login attempts. Account locked out for %d minutes.", mins), http.StatusTooManyRequests)
 		return
 	}
 
@@ -1052,7 +1071,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	passErr := bcrypt.CompareHashAndPassword(hashToCompare, []byte(req.Password))
 
 	if !userMatch || passErr != nil {
-		locked, rem := s.loginLimiter.recordFailure(clientIP)
+		locked, rem := s.loginLimiter.recordFailure(limitKey)
 		slog.Warn("admin panel login failed: invalid credentials", "username", req.Username, "remote_addr", r.RemoteAddr, "client_ip", clientIP)
 		if locked {
 			mins := int(rem.Minutes()) + 1
@@ -1063,10 +1082,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.loginLimiter.recordSuccess(clientIP)
+	s.loginLimiter.recordSuccess(limitKey)
 
 	token, csrfToken := s.sessions.create()
-	isSecure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	isSecure := r.TLS != nil || (isTrustedProxy(r.RemoteAddr) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
@@ -1093,7 +1112,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		s.sessions.delete(cookie.Value)
 	}
-	isSecure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	isSecure := r.TLS != nil || (isTrustedProxy(r.RemoteAddr) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",

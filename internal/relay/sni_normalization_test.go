@@ -128,7 +128,8 @@ func TestServer_SNINormalizationAndValidation(t *testing.T) {
 
 	ruleStore := rules.NewRuleStore([]int{relayPort, 443}, "reject")
 	_ = ruleStore.Swap(map[string]string{
-		"blocked.com":    `{"ports":[443],"mode":"block"}`,
+		"blocked1.com":   `{"ports":[443],"mode":"block"}`,
+		"blocked2.com":   `{"ports":[443],"mode":"block"}`,
 		"*.wildcard.com": `{"ports":[443],"mode":"block"}`,
 		"allowed.com":    `{"ports":[443],"mode":"proxy"}`,
 	})
@@ -165,15 +166,15 @@ func TestServer_SNINormalizationAndValidation(t *testing.T) {
 	}{
 		{
 			name:           "Uppercase exact blocked domain normalized to lowercase",
-			rawSNI:         "BLOCKED.com",
+			rawSNI:         "BLOCKED1.COM",
 			expectedStatus: "rejected_domain_blocked",
-			expectedDomain: "blocked.com",
+			expectedDomain: "blocked1.com",
 		},
 		{
 			name:           "Trailing dot on exact blocked domain trimmed",
-			rawSNI:         "blocked.com.",
+			rawSNI:         "blocked2.com.",
 			expectedStatus: "rejected_domain_blocked",
-			expectedDomain: "blocked.com",
+			expectedDomain: "blocked2.com",
 		},
 		{
 			name:           "Uppercase and trailing dot on wildcard domain",
@@ -183,21 +184,21 @@ func TestServer_SNINormalizationAndValidation(t *testing.T) {
 		},
 		{
 			name:           "Bad SNI containing space",
-			rawSNI:         "bad domain.com",
+			rawSNI:         "bad space.com",
 			expectedStatus: "rejected_bad_sni",
-			expectedDomain: "bad domain.com",
+			expectedDomain: "bad space.com",
 		},
 		{
 			name:           "Bad SNI containing control character",
-			rawSNI:         "bad\x01domain.com",
+			rawSNI:         "bad\x01ctrl.com",
 			expectedStatus: "rejected_bad_sni",
-			expectedDomain: "bad\x01domain.com",
+			expectedDomain: "bad\x01ctrl.com",
 		},
 		{
 			name:           "Bad SNI containing slash",
-			rawSNI:         "bad/domain.com",
+			rawSNI:         "bad/slash.com",
 			expectedStatus: "rejected_bad_sni",
-			expectedDomain: "bad/domain.com",
+			expectedDomain: "bad/slash.com",
 		},
 	}
 
