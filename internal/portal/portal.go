@@ -594,6 +594,16 @@ const landingLookupCardHTML = `
       <div id="lookup-result" class="result"></div>
     </div>`
 
+// landingLookupRestrictedNoteHTML is shown instead of the lookup card when the
+// server requires a registered IP for lookups but the visiting client is not
+// registered (or is blacklisted).
+const landingLookupRestrictedNoteHTML = `
+    <!-- Domain Lookup restricted -->
+    <div class="card">
+      <div class="card-title">Domain Support Check</div>
+      <p class="hint-top" style="color:var(--text-muted);margin:0;">Register your IP to use domain lookup.</p>
+    </div>`
+
 const setupLookupCardHTML = `
     <!-- Domain Support Check -->
     <div class="card">
@@ -1059,7 +1069,23 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 	out = strings.ReplaceAll(out, "{{.SecondaryDNS}}", htmlEscape(dnsIP))
 	lookupCard := ""
 	if s.lookupEnabled.Load() {
-		lookupCard = landingLookupCardHTML
+		// When lookup_require_registered is on, check whether this client is
+		// allowed (in-memory, mode-aware) before showing the interactive card.
+		// Unallowed clients see a short muted note instead.
+		if s.lookupRequireRegistered.Load() && s.accessStore != nil {
+			ip := net.ParseIP(clientIP)
+			var lookupAllowed bool
+			if ip != nil {
+				lookupAllowed, _ = s.accessStore.CheckAccess(ip)
+			}
+			if lookupAllowed {
+				lookupCard = landingLookupCardHTML
+			} else {
+				lookupCard = landingLookupRestrictedNoteHTML
+			}
+		} else {
+			lookupCard = landingLookupCardHTML
+		}
 	}
 	out = strings.ReplaceAll(out, "{{.LookupCard}}", lookupCard)
 	out = strings.ReplaceAll(out, "{{.MagicLinkCard}}", magicLinkCard)
@@ -1244,12 +1270,22 @@ func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP := extractIP(r.RemoteAddr)
-	if s.lookupRequireRegistered.Load() {
-		var isReg bool
-		if s.store != nil {
-			isReg, _ = s.store.IsIPRegistered(r.Context(), clientIP)
+	// When lookup_require_registered is on, use the in-memory AccessStore as
+	// the single source of truth (atomic snapshot, mode-aware, blacklist-aware).
+	// A nil accessStore means no access control is configured — allow.
+	// In public mode CheckAccess always returns (true, "") so the requirement
+	// never locks anyone out.
+	if s.lookupRequireRegistered.Load() && s.accessStore != nil {
+		ip := net.ParseIP(clientIP)
+		if ip == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "registered clients only"})
+			return
 		}
-		if !isReg {
+		allowed, _ := s.accessStore.CheckAccess(ip)
+		if !allowed {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusForbidden)
@@ -1446,10 +1482,20 @@ func isBrowser(r *http.Request) bool {
 	return strings.Contains(accept, "text/html")
 }
 
+// extractIP parses the host from a host:port addr and normalises IPv4-mapped
+// IPv6 addresses to plain IPv4 (e.g. "::ffff:1.2.3.4" -> "1.2.3.4").
+// This keeps the portal consistent with relay.ExtractIP and AccessStore.
 func extractIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return addr
+		host = addr
+	}
+	host = strings.TrimSpace(host)
+	if parsed := net.ParseIP(host); parsed != nil {
+		if v4 := parsed.To4(); v4 != nil {
+			return v4.String()
+		}
+		return parsed.String()
 	}
 	return host
 }

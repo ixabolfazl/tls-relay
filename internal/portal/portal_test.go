@@ -355,7 +355,6 @@ func TestConnect_BotUserAgent(t *testing.T) {
 func TestLookup_Policy(t *testing.T) {
 	store := newTestStore(t)
 	as := access.NewAccessStore(access.ModeUser)
-	ctx := context.Background()
 
 	srv := portal.New(":0", store, as, &mockRefresher{})
 	mux := http.NewServeMux()
@@ -371,7 +370,8 @@ func TestLookup_Policy(t *testing.T) {
 		t.Fatalf("expected 404 when lookup disabled, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 2. Lookup enabled, require_registered = true, unregistered caller -> 403
+	// 2. Lookup enabled, require_registered = true, unregistered caller -> 403.
+	// The check uses accessStore.CheckAccess (in-memory snapshot), not a DB query.
 	srv.SetLookupPolicy(true, true)
 	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
 	req.RemoteAddr = "10.0.0.1:12345"
@@ -381,9 +381,9 @@ func TestLookup_Policy(t *testing.T) {
 		t.Fatalf("expected 403 for unregistered client, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 3. Register IP -> 200
-	user, _ := store.CreateUser(ctx, "reg_user", 2)
-	_ = store.RegisterIP(ctx, user.ID, "10.0.0.1", 2)
+	// 3. Register IP in the in-memory AccessStore (SwapUserIPs) -> 200.
+	// Only updating the DB without SwapUserIPs must NOT grant access.
+	as.SwapUserIPs([]string{"10.0.0.1"})
 
 	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
 	req.RemoteAddr = "10.0.0.1:12345"
@@ -392,6 +392,39 @@ func TestLookup_Policy(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for registered client, got %d: %s", w.Code, w.Body.String())
 	}
+
+	// 4. Blacklisted IP -> 403 even if it also appears in userIPs.
+	_ = as.SwapBlacklist([]string{"10.0.0.2"})
+	as.SwapUserIPs([]string{"10.0.0.1", "10.0.0.2"})
+	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
+	req.RemoteAddr = "10.0.0.2:12345"
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for blacklisted IP, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. Public mode: require_registered must NOT block any client.
+	as.SetMode(access.ModePublic)
+	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
+	req.RemoteAddr = "10.0.0.99:12345"
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 in public mode regardless of require_registered, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 6. IPv4-mapped IPv6 is normalised so the registered IPv4 is found.
+	as.SetMode(access.ModeUser)
+	as.SwapUserIPs([]string{"10.0.1.1"})
+	req = httptest.NewRequest("GET", "/api/lookup?domain=example.com", nil)
+	req.RemoteAddr = "[::ffff:10.0.1.1]:12345"
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for IPv4-mapped IPv6 registered client, got %d: %s", w.Code, w.Body.String())
+	}
+	_ = store
 }
 
 func TestLandingAndSetup_LookupCardHiddenWhenDisabled(t *testing.T) {
