@@ -406,7 +406,10 @@ func TestFrontRouter_ConnectionLimits(t *testing.T) {
 
 	// Now close conn1 -> slot should be released, allowing new connection
 	_ = conn1.Close()
-	time.Sleep(50 * time.Millisecond)
+	deadline := time.Now().Add(3 * time.Second)
+	for router.FrontLimits().GlobalCount() > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	conn3, err := net.Dial("tcp", routerLn.Addr().String())
 	if err != nil {
