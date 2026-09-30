@@ -1026,9 +1026,9 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 
 	isPublic := s.accessStore != nil && s.accessStore.Mode() == access.ModePublic
 
+	var isReg bool
 	var badgeHTML string
 	if !isPublic {
-		var isReg bool
 		if s.store != nil {
 			isReg, _ = s.store.IsIPRegistered(r.Context(), clientIP)
 		}
@@ -1039,10 +1039,14 @@ func (s *Server) renderLanding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Show the Magic Link card only when the client is in user mode and its
+	// IP is not yet registered. A registered client has no need to paste a
+	// magic link; hiding the card reduces noise and avoids presenting unused
+	// UI elements. Public mode never shows it at all.
 	magicLinkCard := ""
 	setupStepRegister := ""
 	magicLinkScript := ""
-	if !isPublic {
+	if !isPublic && !isReg {
 		magicLinkCard = landingMagicLinkCardHTML
 		setupStepRegister = landingStepRegisterHTML
 		magicLinkScript = landingMagicLinkScript

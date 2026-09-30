@@ -481,7 +481,7 @@ func TestLandingPage_UserModeShowsRegistrationUI(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterHandlersWithLandingAt(mux)
 
-	// 1. Unregistered IP
+	// 1. Unregistered IP — Magic Link card and step 3 must be present.
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "192.0.2.20:12345"
 	w := httptest.NewRecorder()
@@ -501,7 +501,7 @@ func TestLandingPage_UserModeShowsRegistrationUI(t *testing.T) {
 		t.Errorf("expected setup instructions to contain registration step")
 	}
 
-	// 2. Registered IP
+	// 2. Registered IP — Magic Link card and step 3 must be absent.
 	user, err := store.CreateUser(ctx, "testuser", 2)
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
@@ -518,6 +518,13 @@ func TestLandingPage_UserModeShowsRegistrationUI(t *testing.T) {
 	body = w.Body.String()
 	if !strings.Contains(body, "✓ Registered") {
 		t.Errorf("expected registered IP to show '✓ Registered' badge")
+	}
+	// Registered clients have no need for the Magic Link card or step 3.
+	if strings.Contains(body, "Register via Magic Link") {
+		t.Errorf("registered client: landing page must NOT contain 'Register via Magic Link'")
+	}
+	if strings.Contains(body, "Ensure your IP is registered") {
+		t.Errorf("registered client: landing page must NOT contain step-3 registration text")
 	}
 }
 
