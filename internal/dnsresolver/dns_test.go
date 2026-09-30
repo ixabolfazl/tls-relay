@@ -947,3 +947,109 @@ func TestDNSCheckRegistry_UnknownProbeGetsNXDOMAIN(t *testing.T) {
 		t.Errorf("expected NXDOMAIN for unknown probe token, got %d", resp.Rcode)
 	}
 }
+
+// TestDirectModeDomain_ForwardsUpstream_IgnoresRejectPolicy verifies that a
+// domain configured with mode="direct" is always forwarded to upstream DNS for
+// authorized clients, even when unknown_domain_policy is "reject".  Without the
+// fix the server would REFUSE the query because the domain is not a proxy rule.
+func TestDirectModeDomain_ForwardsUpstream_IgnoresRejectPolicy(t *testing.T) {
+	// Upstream mock: always returns NOERROR with a dummy A record.
+	upMux := dns.NewServeMux()
+	upMux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Authoritative = true
+		if r.Question[0].Qtype == dns.TypeA {
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+				A:   net.ParseIP("9.9.9.9"),
+			})
+		}
+		_ = w.WriteMsg(m)
+	})
+	upLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("upstream listen: %v", err)
+	}
+	upSrv := &dns.Server{PacketConn: upLn, Net: "udp", Handler: upMux}
+	go func() { _ = upSrv.ActivateAndServe() }()
+	defer upSrv.Shutdown()
+	upAddr := upLn.LocalAddr().String()
+
+	// DNS server rule store: "reject" policy + one direct-mode rule.
+	rs := rules.NewRuleStore([]int{443}, "reject")
+	if err := rs.Swap(map[string]string{
+		"bypass.example.com": `{"mode":"direct","ports":[443]}`,
+	}); err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+
+	// Public access mode so any client IP is authorized.
+	as := access.NewAccessStore(access.ModePublic)
+
+	ln, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.LocalAddr().String()
+	_ = ln.Close()
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:         addr,
+		RelayIP:      "1.2.3.4",
+		UpstreamAddr: upAddr,
+		TTL:          5,
+		QPS:          100,
+		Burst:        100,
+		EDNSBufSize:  1232,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("dnsresolver.New: %v", err)
+	}
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	c := new(dns.Client)
+
+	// Query for the direct-mode domain — must NOT be REFUSED.
+	m := new(dns.Msg)
+	m.SetQuestion("bypass.example.com.", dns.TypeA)
+	resp, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if resp.Rcode == dns.RcodeRefused {
+		t.Fatal("direct-mode domain was REFUSED; expected upstream forwarding (NOERROR with real IP)")
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR from upstream, got rcode %d", resp.Rcode)
+	}
+	if len(resp.Answer) == 0 {
+		t.Error("expected at least one answer from upstream for direct-mode domain")
+	}
+
+	// Sanity: a proxy-mode domain should still resolve to the relay IP (not upstream).
+	if err := rs.Swap(map[string]string{
+		"bypass.example.com": `{"mode":"direct","ports":[443]}`,
+		"proxy.example.com":  `{"mode":"proxy","ports":[443]}`,
+	}); err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	mp := new(dns.Msg)
+	mp.SetQuestion("proxy.example.com.", dns.TypeA)
+	resp2, _, err := c.Exchange(mp, addr)
+	if err != nil {
+		t.Fatalf("proxy Exchange: %v", err)
+	}
+	if resp2.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected proxy domain to resolve, got %d", resp2.Rcode)
+	}
+	if !resp2.Authoritative {
+		t.Error("expected authoritative response for proxy-mode domain (relay IP)")
+	}
+}

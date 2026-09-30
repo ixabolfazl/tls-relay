@@ -455,7 +455,20 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 			return
 		}
 
-		// Domain is NOT in rules -> check unknown_domain_policy
+		// Domain is configured in rules with mode="direct": the relay must NOT
+		// intercept the DNS query.  Always forward to upstream so the client
+		// resolves the domain's real IP, regardless of unknown_domain_policy.
+		if ruleMatched && matchedRule.Mode == "direct" {
+			slog.Info("dns query forwarded to upstream (direct-mode rule)",
+				slog.String("client_ip", clientIP),
+				slog.String("qname", qname),
+			)
+			s.emitLog(clientIP, qname, "forwarded")
+			s.forwardQuery(w, req, q)
+			return
+		}
+
+		// Domain is NOT in rules (and not direct) -> check unknown_domain_policy
 		if s.ruleStore != nil && s.ruleStore.UnknownDomainPolicy() == "allow_default_port" {
 			slog.Info("dns query forwarded to upstream (unconfigured domain, allow_default_port policy)",
 				slog.String("client_ip", clientIP),
