@@ -199,4 +199,6 @@ export const api = {
     apiFetch('api/admin/credentials', { method: 'PUT', body: JSON.stringify(payload) }),
   serviceRestart: () => apiFetch('api/service/restart', { method: 'POST' }),
   importData: (jsonData) => apiFetch('api/import', { method: 'POST', body: JSON.stringify(jsonData) }),
+  importDomainsTxt: (text) =>
+    apiFetch('api/domains/import-txt', { method: 'POST', body: text, headers: { 'Content-Type': 'text/plain' } }),
 };

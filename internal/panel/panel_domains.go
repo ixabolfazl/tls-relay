@@ -1,7 +1,9 @@
 package panel
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -650,4 +652,204 @@ func (s *Server) handleBulkAssignMode(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("admin panel bulk assign mode", "mode", mode, "updated", updated, "skipped", skipped, "remote_addr", r.RemoteAddr)
 	jsonOK(w, map[string]int{"deleted": 0, "updated": updated, "skipped": skipped})
+}
+
+// ---------------------------------------------------------------------------
+// TXT Export / Import
+// ---------------------------------------------------------------------------
+
+// handleExportDomainsTXT streams all domain rules as a plain-text file.
+//
+// Format (one rule per line):
+//
+//	[mode:]domain[:port1,port2,...] [use_egress=true]
+//
+// mode defaults to "proxy" and is omitted from the line.
+// ports defaults to "443" and is omitted from the line.
+// use_egress is omitted when false.
+func (s *Server) handleExportDomainsTXT(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.sqlStore.ListDomainRules(r.Context())
+	if err != nil {
+		slog.Error("admin panel txt export error", "error", err)
+		jsonErr(w, "export failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Disposition", `attachment; filename="domains.txt"`)
+
+	bw := bufio.NewWriter(w)
+	_, _ = fmt.Fprintf(bw, "# TLS Relay domain rules export\n")
+	_, _ = fmt.Fprintf(bw, "# Format: [mode:]domain[:port1,port2,...] [use_egress=true]\n")
+	_, _ = fmt.Fprintf(bw, "# mode: proxy (default), direct, block\n#\n")
+
+	for _, row := range rows {
+		mode := row.Mode
+		if mode == "" {
+			mode = "proxy"
+		}
+
+		var sb strings.Builder
+		if mode != "proxy" {
+			sb.WriteString(mode)
+			sb.WriteString(":")
+		}
+		sb.WriteString(row.Domain)
+
+		// Ports: omit if only [443]
+		ps, _ := rules.ParsePorts(row.Ports)
+		var portStr string
+		if ps.All {
+			portStr = "all"
+		} else if len(ps.Ports) == 1 && ps.Ports[0] == 443 {
+			portStr = ""
+		} else if len(ps.Ports) > 0 {
+			parts := make([]string, len(ps.Ports))
+			for i, p := range ps.Ports {
+				parts[i] = strconv.Itoa(p)
+			}
+			portStr = strings.Join(parts, ",")
+		}
+		if portStr != "" {
+			sb.WriteString(":")
+			sb.WriteString(portStr)
+		}
+
+		if row.UseEgressProxy == "true" {
+			sb.WriteString(" use_egress=true")
+		}
+
+		_, _ = fmt.Fprintf(bw, "%s\n", sb.String())
+	}
+	_ = bw.Flush()
+}
+
+// handleImportDomainsTXT reads a TXT-format domain list from the request body
+// and upserts the rules transactionally.
+//
+// Each line: [mode:]domain[:port1,port2,...] [use_egress=true|false]
+// Lines starting with '#' or blank lines are ignored.
+func (s *Server) handleImportDomainsTXT(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+	var failed int
+	var errs []string
+
+	scanner := bufio.NewScanner(r.Body)
+	var rows []sqlitestore.DomainRuleRow
+	seen := make(map[string]struct{})
+
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Split on first space to separate the token from optional flags.
+		parts := strings.SplitN(line, " ", 2)
+		token := parts[0]
+		flags := ""
+		if len(parts) == 2 {
+			flags = strings.TrimSpace(parts[1])
+		}
+
+		// Parse mode prefix: "direct:", "block:", "proxy:".
+		mode := "proxy"
+		for _, m := range []string{"direct", "block", "proxy"} {
+			if strings.HasPrefix(token, m+":") {
+				mode = m
+				token = token[len(m)+1:]
+				break
+			}
+		}
+
+		// Parse optional port suffix: "domain:443,8443" or "domain:all".
+		portsStr := "443"
+		if idx := strings.LastIndex(token, ":"); idx >= 0 {
+			candidate := token[idx+1:]
+			if candidate == "all" || isPortList(candidate) {
+				portsStr = candidate
+				token = token[:idx]
+			}
+		}
+
+		norm, err := rules.NormalizeDomainInput(token)
+		if err != nil {
+			failed++
+			errs = append(errs, fmt.Sprintf("line %d (%s): %v", lineNum, token, err))
+			continue
+		}
+
+		ps, err := rules.ParsePorts(portsStr)
+		if err != nil {
+			failed++
+			errs = append(errs, fmt.Sprintf("line %d (%s): invalid ports: %v", lineNum, norm, err))
+			continue
+		}
+
+		useEgress := "false"
+		if strings.Contains(flags, "use_egress=true") {
+			useEgress = "true"
+		}
+
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+
+		rows = append(rows, sqlitestore.DomainRuleRow{
+			Domain:         norm,
+			Ports:          marshalPortsJSON(ps),
+			Mode:           mode,
+			UseEgressProxy: useEgress,
+			Enabled:        true,
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		jsonErr(w, "read error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	result, err := s.sqlStore.ImportData(ctx, rows, nil, nil)
+	if err != nil {
+		slog.Error("admin panel txt import error", "error", err)
+		jsonErr(w, "import database error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if result.DomainsAdded > 0 || result.DomainsUpdated > 0 {
+		_ = s.refreshDomains(ctx)
+	}
+
+	slog.Info("admin panel txt import",
+		"added", result.DomainsAdded, "updated", result.DomainsUpdated,
+		"skipped", len(seen)-result.DomainsAdded-result.DomainsUpdated,
+		"failed", failed,
+		"remote_addr", r.RemoteAddr,
+	)
+	jsonOK(w, map[string]interface{}{
+		"domains_added":   result.DomainsAdded,
+		"domains_updated": result.DomainsUpdated,
+		"failed":          failed,
+		"errors":          errs,
+	})
+}
+
+// isPortList returns true if s looks like a comma-separated list of valid port numbers.
+func isPortList(s string) bool {
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	return true
 }
