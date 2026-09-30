@@ -31,6 +31,9 @@ export function mount(container) {
   let expandedGroups = new Set(); // Default: all groups collapsed
   let activeRange = 'today';
   let searchQuery = '';
+  // Whether the global egress proxy is enabled. Fetched from settings once on
+  // mount and used to hide the Egress column/button when the feature is off.
+  let egressEnabled = true;
 
   const tableState = new TableState({
     pageSize: 50,
@@ -302,6 +305,16 @@ export function mount(container) {
   // Fetch Domains
   async function fetchDomains() {
     try {
+      // Fetch settings first so egress visibility is correct before the table
+      // renders. Swallow errors — if settings are unavailable we keep the
+      // current value (default: visible).
+      try {
+        const settings = await api.getSettings();
+        egressEnabled = Boolean(settings.egress_proxy_enabled);
+      } catch (_) {
+        // Keep current egressEnabled value.
+      }
+
       const res = await api.getDomains(activeRange);
       allDomains = res.domains || [];
 
@@ -413,6 +426,25 @@ export function mount(container) {
     }
 
     updateBulkBar(filteredDomains);
+    applyEgressVisibility();
+  }
+
+  // Show or hide the Egress column (header + all cells) and the bulk 'Set
+  // Egress' button based on the global egress_proxy_enabled setting.
+  function applyEgressVisibility() {
+    // Column header: the 4th <th> in thead (0-indexed: checkbox, domain,
+    // ports, egress)
+    const egressTh = container.querySelector('thead th:nth-child(4)');
+    if (egressTh) egressTh.style.display = egressEnabled ? '' : 'none';
+
+    // Per-row egress cells
+    container.querySelectorAll('tbody td:nth-child(4)').forEach((td) => {
+      td.style.display = egressEnabled ? '' : 'none';
+    });
+
+    // Bulk action button
+    const bulkEgressBtn = $('#dom-bulk-egress-btn', container);
+    if (bulkEgressBtn) bulkEgressBtn.style.display = egressEnabled ? '' : 'none';
   }
 
   function renderFlatRows(tbody, items) {
@@ -526,7 +558,10 @@ export function mount(container) {
         ${formatPorts(d.ports)}
       </td>
       <td class="table-td text-xs">
-        ${isEgress ? `<span class="badge badge-success">Enabled</span>` : `<span class="text-txt-subtle">—</span>`}
+        ${egressEnabled
+          ? (isEgress ? `<span class="badge badge-success">Enabled</span>` : `<span class="text-txt-subtle">—</span>`)
+          : `<span class="text-txt-subtle text-[11px]">—</span>`
+        }
       </td>
       <td class="table-td text-right font-mono text-xs tabular-nums">
         <div class="flex flex-col items-end gap-0.5">

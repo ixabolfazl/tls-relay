@@ -135,6 +135,7 @@ func (e *EgressDialer) DialContext(ctx context.Context, network, addr string) (n
 }
 
 // DialContextWithOverride connects to the target address using SOCKS5 or direct dial, based on the rule's override.
+// If the global egress proxy is disabled, this always dials directly regardless of ruleUseProxy.
 func (e *EgressDialer) DialContextWithOverride(ctx context.Context, network, addr string, ruleUseProxy string) (net.Conn, error) {
 	if e == nil {
 		var d net.Dialer
@@ -142,13 +143,21 @@ func (e *EgressDialer) DialContextWithOverride(ctx context.Context, network, add
 	}
 
 	e.mu.RLock()
-	useProxy := e.enabled
+	globalEnabled := e.enabled
 	dialer := e.socksProxy
 	e.mu.RUnlock()
 
-	if ruleUseProxy == "true" {
-		useProxy = true
-	} else if ruleUseProxy == "false" {
+	// The global switch is the strict gate: if disabled, always dial directly.
+	// Per-rule values are preserved in the DB but have no effect until the
+	// global switch is re-enabled.
+	if !globalEnabled {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+
+	// Global is enabled: apply per-rule override.
+	useProxy := true // default/"" -> proxy when global is on
+	if ruleUseProxy == "false" {
 		useProxy = false
 	}
 
@@ -167,23 +176,25 @@ func (e *EgressDialer) DialContextWithOverride(ctx context.Context, network, add
 }
 
 // ResolveMode returns "proxy" or "direct" based on global status and the rule's override.
+// When the global switch is disabled, always returns "direct" regardless of ruleUseProxy.
 func (e *EgressDialer) ResolveMode(ruleUseProxy string) string {
 	if e == nil {
 		return "direct"
 	}
 	e.mu.RLock()
-	useProxy := e.enabled
+	globalEnabled := e.enabled
 	e.mu.RUnlock()
 
-	if ruleUseProxy == "true" {
-		useProxy = true
-	} else if ruleUseProxy == "false" {
-		useProxy = false
+	// Strictly respect the global switch: disabled means direct, always.
+	if !globalEnabled {
+		return "direct"
 	}
-	if useProxy {
-		return "proxy"
+
+	// Global is on: per-rule "false" -> direct, everything else -> proxy.
+	if ruleUseProxy == "false" {
+		return "direct"
 	}
-	return "direct"
+	return "proxy"
 }
 
 // Mode returns "proxy" if egress proxying is enabled, or "direct" if disabled.

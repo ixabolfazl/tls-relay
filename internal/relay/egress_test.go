@@ -314,9 +314,11 @@ func TestEgressDialer_DecisionTableOverrides(t *testing.T) {
 		expectedMode   string
 		shouldUseSocks bool
 	}{
+		// Global disabled: always direct, even if rule says "true".
 		{false, "false", "direct", false},
 		{false, "default", "direct", false},
-		{false, "true", "proxy", true},
+		{false, "true", "direct", false}, // global switch wins
+		// Global enabled: per-rule override applies; default/empty -> proxy.
 		{true, "false", "direct", false},
 		{true, "default", "proxy", true},
 		{true, "true", "proxy", true},
