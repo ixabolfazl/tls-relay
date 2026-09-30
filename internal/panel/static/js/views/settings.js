@@ -136,14 +136,15 @@ export function mount(container) {
 
                 <!-- Unknown Domain Policy Radios (Single Row with Color Accents) -->
                 <div class="field pt-2 border-t border-border">
-                  <label class="field-label mb-1">Unknown Domain Policy</label>
+                  <label class="field-label mb-0.5">Unknown Domain Relay Policy</label>
+                  <p class="text-xs text-txt-muted mb-2">Controls whether the TLS/HTTP relay proxies or drops connections for hostnames not listed in Domain Rules. (DNS queries for unlisted domains from authorized clients are always resolved via upstream).</p>
                   <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <!-- Reject Option (Red) -->
                     <label class="flex items-start gap-3 p-3 rounded-xl border border-red-500/20 bg-red-500/5 dark:bg-red-950/10 hover:border-red-500/40 hover:bg-red-500/10 cursor-pointer transition-colors" id="set-unknown-policy-opt-reject">
                       <input type="radio" name="set_unknown_policy" value="reject" class="radio radio-red mt-0.5 text-red-600 focus:ring-red-500" />
                       <div class="flex flex-col">
-                        <span class="text-sm font-semibold text-txt">Block (Reject)</span>
-                        <span class="text-xs text-txt-muted mt-0.5">Drop and reject connections to unlisted hostnames.</span>
+                        <span class="text-sm font-semibold text-txt">Block (Reject Relay)</span>
+                        <span class="text-xs text-txt-muted mt-0.5">Drop and reject relay connections to unlisted hostnames (Prevents open relay).</span>
                       </div>
                     </label>
 
@@ -151,7 +152,7 @@ export function mount(container) {
                     <label class="flex items-start gap-3 p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 dark:bg-emerald-950/10 hover:border-emerald-500/40 hover:bg-emerald-500/10 cursor-pointer transition-colors" id="set-unknown-policy-opt-allow_default_port">
                       <input type="radio" name="set_unknown_policy" value="allow_default_port" class="radio radio-emerald mt-0.5 text-emerald-600 focus:ring-emerald-500" />
                       <div class="flex flex-col">
-                        <span class="text-sm font-semibold text-txt">Allow (Relay)</span>
+                        <span class="text-sm font-semibold text-txt">Allow (Relay All)</span>
                         <span class="text-xs text-txt-muted mt-0.5">Forward unlisted hostnames through relay on permitted ports.</span>
                       </div>
                     </label>

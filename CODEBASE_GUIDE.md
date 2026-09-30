@@ -74,7 +74,7 @@
 | Key | Type / Format | Default | Description |
 |---|---|---|---|
 | `access_mode` | `user` \| `public` | `user` | Global access mode |
-| `unknown_domain_policy` | `reject` \| `allow_default_port` | `reject` | Action when no domain rule matches |
+| `unknown_domain_policy` | `reject` \| `allow_default_port` | `reject` | Action when no domain rule matches on Relay (DNS queries for authorized clients always resolve via upstream) |
 | `panel_path` | `/[A-Za-z0-9_-]{1,64}` or `/` | `/admin` | URL path prefix for admin panel |
 | `timezone` | IANA Timezone | `UTC` | Timezone for log and stat formatting |
 | `server_domain` | hostname | empty | Server hostname for magic links |

@@ -455,39 +455,17 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 			return
 		}
 
-		// Domain is configured in rules with mode="direct": the relay must NOT
-		// intercept the DNS query.  Always forward to upstream so the client
-		// resolves the domain's real IP, regardless of unknown_domain_policy.
-		if ruleMatched && matchedRule.Mode == "direct" {
-			slog.Info("dns query forwarded to upstream (direct-mode rule)",
-				slog.String("client_ip", clientIP),
-				slog.String("qname", qname),
-			)
-			s.emitLog(clientIP, qname, "forwarded")
-			s.forwardQuery(w, req, q)
-			return
-		}
-
-		// Domain is NOT in rules (and not direct) -> check unknown_domain_policy
-		if s.ruleStore != nil && s.ruleStore.UnknownDomainPolicy() == "allow_default_port" {
-			slog.Info("dns query forwarded to upstream (unconfigured domain, allow_default_port policy)",
-				slog.String("client_ip", clientIP),
-				slog.String("qname", qname),
-			)
-			s.emitLog(clientIP, qname, "forwarded")
-			s.forwardQuery(w, req, q)
-			return
-		}
-
-		s.sampled.Log("rejected_domain", func() {
-			slog.Warn("dns query rejected: domain not configured in rules and policy is reject",
-				slog.String("client_ip", clientIP),
-				slog.String("qname", qname),
-			)
-		})
-		s.emitLog(clientIP, qname, "rejected_domain")
-		resp := refusedMsg(req)
-		s.writeMsg(w, req, resp)
+		// Domain is configured in rules with mode="direct", OR domain is NOT in rules (unconfigured):
+		// For authorized clients, the DNS resolver resolves the domain's real IP via upstream DNS
+		// so the client connects directly. The unknown_domain_policy setting applies exclusively
+		// to TLS/HTTP relay proxying (refusing TCP/TLS connections for unlisted hostnames), never
+		// to authorized DNS resolution.
+		slog.Info("dns query forwarded to upstream for authorized client",
+			slog.String("client_ip", clientIP),
+			slog.String("qname", qname),
+		)
+		s.emitLog(clientIP, qname, "forwarded")
+		s.forwardQuery(w, req, q)
 		return
 	}
 

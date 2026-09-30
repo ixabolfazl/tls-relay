@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.6.2
+
+* **DNS Resolver Fix:** Fixed an issue where setting `unknown_domain_policy` to `reject` incorrectly blocked DNS queries for unconfigured domains. Authorized clients now always resolve unlisted domains normally via upstream DNS.
+* **Relay Policy Scope:** Restricted `Unknown Domain Policy` to strictly govern traffic proxying on relay ports, preventing unintended connection routing without interfering with DNS lookups.
+* **Settings UI:** Renamed the setting in the admin panel to **Unknown Domain Relay Policy** with clearer descriptions.
+
+---
+
 ## v1.6.1
 
 ### Security & Hardening

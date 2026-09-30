@@ -1060,3 +1060,79 @@ func TestDirectModeDomain_ForwardsUpstream_IgnoresRejectPolicy(t *testing.T) {
 		t.Error("expected authoritative response for proxy-mode domain (relay IP)")
 	}
 }
+
+// TestUnconfiguredDomain_ForwardsUpstream_WhenPolicyReject verifies that unlisted
+// domains are forwarded to upstream DNS for authorized clients, even when
+// UnknownDomainPolicy is "reject" (which only applies to the relay layer).
+func TestUnconfiguredDomain_ForwardsUpstream_WhenPolicyReject(t *testing.T) {
+	upMux := dns.NewServeMux()
+	upMux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Authoritative = true
+		if r.Question[0].Qtype == dns.TypeA {
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+				A:   net.ParseIP("8.8.8.8"),
+			})
+		}
+		_ = w.WriteMsg(m)
+	})
+	upLn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("upstream listen: %v", err)
+	}
+	upSrv := &dns.Server{PacketConn: upLn, Net: "udp", Handler: upMux}
+	go func() { _ = upSrv.ActivateAndServe() }()
+	defer upSrv.Shutdown()
+	upAddr := upLn.LocalAddr().String()
+
+	// Policy is "reject"
+	rs := rules.NewRuleStore([]int{443}, "reject")
+	as := access.NewAccessStore(access.ModePublic)
+
+	ln, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.LocalAddr().String()
+	_ = ln.Close()
+
+	srv, err := dnsresolver.New(dnsresolver.Config{
+		Addr:         addr,
+		RelayIP:      "1.2.3.4",
+		UpstreamAddr: upAddr,
+		TTL:          5,
+		QPS:          100,
+		Burst:        100,
+	}, rs, as)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ListenAndServe(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+
+	c := &dns.Client{Timeout: 2 * time.Second}
+	m := new(dns.Msg)
+	// Query an unconfigured domain
+	m.SetQuestion("completely-unconfigured-domain.org.", dns.TypeA)
+	resp, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR for unconfigured domain, got rcode %d", resp.Rcode)
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatal("expected answers from upstream")
+	}
+	aRec, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected *dns.A, got %T", resp.Answer[0])
+	}
+	if aRec.A.String() != "8.8.8.8" {
+		t.Errorf("expected 8.8.8.8 from upstream, got %s", aRec.A.String())
+	}
+}
