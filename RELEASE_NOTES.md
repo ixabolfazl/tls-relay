@@ -48,7 +48,7 @@
 * **Usage Report View:** New `Usage Report` section in the admin panel shows per-user and per-domain bandwidth and DNS query breakdowns with date-range filtering and CSV export.
 
 ### DNS & Portal
-* **Client DNS Status Check:** The public landing page now includes a "DNS Status" card that automatically verifies whether the visiting device routes DNS through the relay. When the page loads, the portal issues a one-time hex probe token (`POST /api/dns-check/start`), the browser resolves `<token>.dnscheck.relay-probe.net.` against the relay DNS, and the page polls `GET /api/dns-check/result?token=<hex>` until the resolver confirms the probe was received. The card displays a green "✓ DNS is correctly pointing to this server" badge on success or an amber warning if the check times out.
+* **Client DNS Status Check:** The public landing page now includes a "DNS Status" card that automatically verifies whether the visiting device routes DNS through the relay. When the page loads, the portal issues a one-time hex probe token (`POST /api/dns-check/start`), the browser resolves `<token>.dnscheck.relay-probe.net.` against the relay DNS, and the page polls `GET /api/dns-check/result?token=<hex>` until the resolver confirms the probe was received. The card displays a green "✓ DNS is correctly configured" badge on success or an amber warning if the check times out.
 * **DNSCheckRegistry:** New in-memory token registry (`internal/dnsresolver/dnscheck.go`) with a TTL-based background sweeper, bounded capacity, and lock-safe token observation recording. Wired into `handleQuery` at intercept priority (after rate limiting, before rule evaluation) with zero hot-path overhead when no probe is in flight.
 
 ### User & Domain Management

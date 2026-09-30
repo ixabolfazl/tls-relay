@@ -460,7 +460,7 @@ func (s *Server) handleConn(
 
 	fields.BytesSent = atomicSent.Load()
 	fields.BytesReceived = atomicReceived.Load()
-	fields.Status = "closed"
+	fields.Status = "relayed"
 }
 
 // TryHTTPSRedirect inspects a request that matched a proxy-mode domain rule where

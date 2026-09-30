@@ -14,16 +14,16 @@ const TONE_CLASSES = {
 const STATUS_DEFINITIONS = {
   // Success
   resolved: { label: 'Resolved', tone: 'success' },
-  connected: { label: 'Connected', tone: 'success' },
+  relayed: { label: 'Relayed', tone: 'success' },
+  // Legacy statuses kept for rows already in the DB — render consistently.
+  connected: { label: 'Relayed', tone: 'success' },
+  closed: { label: 'Relayed', tone: 'success' },
 
   // Info
   forwarded: { label: 'Forwarded', tone: 'info' },
   forwarded_unauthorized: { label: 'Passthrough', tone: 'info' },
   resolved_empty: { label: 'Empty Answer', tone: 'info' },
   redirected_https: { label: 'Redirected HTTPS', tone: 'info' },
-
-  // Neutral
-  closed: { label: 'Closed', tone: 'neutral' },
 
   // Warning
   limit: { label: 'Limit Reached', tone: 'warning' },

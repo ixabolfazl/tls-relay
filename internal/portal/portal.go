@@ -698,7 +698,7 @@ const landingDNSCheckScript = `
         var r = await fetch('/api/dns-check/result?token=' + encodeURIComponent(_dnsCheckToken));
         var data = await r.json();
         if (data.seen) {
-          updateDNSStatus('badge-ok', '\u2713 DNS is correctly pointing to this server');
+          updateDNSStatus('badge-ok', '\u2713 DNS is correctly configured');
           return;
         }
       } catch (_) {}

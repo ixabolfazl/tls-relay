@@ -443,7 +443,7 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 
 	fields.BytesSent = atomicSent.Load()
 	fields.BytesReceived = atomicReceived.Load()
-	fields.Status = "closed"
+	fields.Status = "relayed"
 }
 
 // HalfCloseTimeout is the maximum duration to wait for the other direction after clean EOF.
