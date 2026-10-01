@@ -90,6 +90,13 @@ export function mount(container) {
               <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
               <span>Data & Backup</span>
             </button>
+            <button type="button" data-target="sec-defaults" class="settings-nav-link flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-txt-muted hover:text-txt hover:bg-surface-2 transition-colors text-left w-full shrink-0">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                <span class="truncate">Default Domains</span>
+              </div>
+              <span id="set-catalog-nav-dot" class="hidden w-2 h-2 rounded-full bg-primary-600 shrink-0"></span>
+            </button>
           </nav>
 
           <!-- Right Content Column -->
@@ -491,6 +498,63 @@ export function mount(container) {
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
                     <span>Import JSON File</span>
                   </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Section 8: Default Domains -->
+            <section id="sec-defaults" class="card scroll-mt-20">
+              <div class="card-header flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-base font-semibold text-txt">Default Domains</h2>
+                  <p class="text-xs text-txt-muted">Manage pre-configured domain catalogs, update rules from GitHub, and toggle categories</p>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+                  <button id="set-catalog-check-btn" type="button" class="btn btn-secondary btn-sm">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    <span>Check GitHub</span>
+                  </button>
+                  <button id="set-catalog-load-btn" type="button" class="btn btn-primary btn-sm relative inline-flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+                    <span>Load Default Domains</span>
+                    <span id="set-catalog-update-badge" class="hidden inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500 text-white uppercase tracking-wider">Update</span>
+                  </button>
+                  <button id="set-catalog-add-cat-btn" type="button" class="btn btn-secondary btn-sm">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    <span>Add Category</span>
+                  </button>
+                </div>
+              </div>
+              <div class="card-body space-y-5">
+                <!-- Catalog Version & Status KPI Cards -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div class="p-3 rounded-xl border border-border bg-surface-2/40">
+                    <div class="text-[11px] font-medium text-txt-muted uppercase tracking-wider">Installed</div>
+                    <div id="set-catalog-installed-ver" class="text-lg font-bold text-txt font-mono tabular-nums mt-0.5">—</div>
+                  </div>
+                  <div class="p-3 rounded-xl border border-border bg-surface-2/40">
+                    <div class="text-[11px] font-medium text-txt-muted uppercase tracking-wider">Embedded</div>
+                    <div id="set-catalog-embedded-ver" class="text-lg font-bold text-txt font-mono tabular-nums mt-0.5">—</div>
+                  </div>
+                  <div class="p-3 rounded-xl border border-border bg-surface-2/40">
+                    <div class="text-[11px] font-medium text-txt-muted uppercase tracking-wider">GitHub Remote</div>
+                    <div id="set-catalog-remote-ver" class="text-lg font-bold text-txt font-mono tabular-nums mt-0.5">—</div>
+                  </div>
+                  <div class="p-3 rounded-xl border border-border bg-surface-2/40">
+                    <div class="text-[11px] font-medium text-txt-muted uppercase tracking-wider">Status</div>
+                    <div id="set-catalog-status-msg" class="text-xs font-medium text-txt-muted mt-1 truncate">Checking...</div>
+                  </div>
+                </div>
+
+                <!-- Category & Subcategory Tree -->
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between">
+                    <h4 class="text-sm font-semibold text-txt">Catalog Categories & Subcategories</h4>
+                    <span class="text-xs text-txt-subtle">Toggle switch enables/disables domains in real time</span>
+                  </div>
+                  <div id="set-catalog-tree-container" class="rounded-xl border border-border overflow-hidden divide-y divide-border bg-surface">
+                    <div class="p-6 text-center text-xs text-txt-subtle">Loading catalog...</div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -1294,7 +1358,635 @@ export function mount(container) {
     }, 1000);
   });
 
+  // Catalog State & Methods
+  let catalogStatus = null;
+  let catalogTreeData = null;
+  const expandedCategories = new Set();
+
+  async function loadCatalogStatus(refresh = false) {
+    try {
+      catalogStatus = await api.getCatalogStatus(refresh);
+      const installedEl = $('#set-catalog-installed-ver', container);
+      const embeddedEl = $('#set-catalog-embedded-ver', container);
+      const remoteEl = $('#set-catalog-remote-ver', container);
+      const statusEl = $('#set-catalog-status-msg', container);
+      const updateBadge = $('#set-catalog-update-badge', container);
+      const navDot = $('#set-catalog-nav-dot', container);
+
+      if (installedEl) {
+        installedEl.textContent =
+          catalogStatus.installed_version > 0 ? `v${catalogStatus.installed_version}` : 'Not Loaded';
+      }
+      if (embeddedEl) {
+        embeddedEl.textContent =
+          catalogStatus.embedded_version > 0 ? `v${catalogStatus.embedded_version}` : '—';
+      }
+      if (remoteEl) {
+        remoteEl.textContent =
+          catalogStatus.remote_version > 0
+            ? `v${catalogStatus.remote_version}`
+            : (catalogStatus.remote_error ? 'Error' : '—');
+      }
+
+      if (catalogStatus.update_available) {
+        if (updateBadge) updateBadge.classList.remove('hidden');
+        if (navDot) navDot.classList.remove('hidden');
+        const newerVer = Math.max(catalogStatus.embedded_version, catalogStatus.remote_version);
+        if (statusEl) {
+          statusEl.textContent = `Update available (v${newerVer})`;
+          statusEl.className = 'text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1 truncate';
+        }
+      } else {
+        if (updateBadge) updateBadge.classList.add('hidden');
+        if (navDot) navDot.classList.add('hidden');
+        if (statusEl) {
+          if (catalogStatus.remote_error) {
+            statusEl.textContent = `Check failed: ${catalogStatus.remote_error}`;
+            statusEl.className = 'text-xs font-medium text-danger mt-1 truncate';
+          } else if (catalogStatus.installed_version > 0) {
+            statusEl.textContent = 'Up to date';
+            statusEl.className = 'text-xs font-medium text-emerald-600 dark:text-emerald-400 mt-1 truncate';
+          } else {
+            statusEl.textContent = 'Not installed';
+            statusEl.className = 'text-xs font-medium text-txt-muted mt-1 truncate';
+          }
+        }
+      }
+    } catch (_) {
+      const statusEl = $('#set-catalog-status-msg', container);
+      if (statusEl) statusEl.textContent = 'Failed to fetch status';
+    }
+  }
+
+  async function loadCatalogTree() {
+    const treeContainer = $('#set-catalog-tree-container', container);
+    if (!treeContainer) return;
+    try {
+      catalogTreeData = await api.getCatalog();
+      renderCatalogTree();
+    } catch (err) {
+      treeContainer.innerHTML = `<div class="p-6 text-center text-xs text-danger">Failed to load catalog tree: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderCatalogTree() {
+    const treeContainer = $('#set-catalog-tree-container', container);
+    if (!treeContainer) return;
+    if (!catalogTreeData || !catalogTreeData.categories || catalogTreeData.categories.length === 0) {
+      treeContainer.innerHTML = `
+        <div class="p-8 text-center text-txt-subtle">
+          <p class="text-sm font-medium">No categories in catalog</p>
+          <p class="text-xs mt-1">Load the default catalog or create a category to get started.</p>
+        </div>
+      `;
+      return;
+    }
+
+    treeContainer.innerHTML = '';
+
+    for (const cat of catalogTreeData.categories) {
+      const catCard = document.createElement('div');
+      catCard.className = 'catalog-category-item';
+
+      const isExpanded = expandedCategories.has(cat.id);
+      const subs = cat.subcategories || [];
+
+      const enabledSubs = subs.filter((s) => s.enabled);
+      const isAllSubsEnabled = subs.length > 0 && enabledSubs.length === subs.length;
+      const isSomeSubsEnabled = enabledSubs.length > 0 && !isAllSubsEnabled;
+
+      const catHeader = document.createElement('div');
+      catHeader.className =
+        'flex items-center justify-between p-3.5 bg-surface hover:bg-surface-2/60 transition-colors select-none';
+
+      catHeader.innerHTML = `
+        <div class="flex items-center gap-3 min-w-0">
+          <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt cat-expand-btn" aria-label="Toggle Subcategories">
+            <svg class="w-4 h-4 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" class="checkbox cat-toggle" ${cat.enabled ? 'checked' : ''} />
+          </label>
+          <div class="flex items-baseline gap-2 min-w-0">
+            <span class="text-sm font-semibold text-txt truncate">${escapeHtml(cat.name)}</span>
+            <span class="text-xs font-mono text-txt-subtle truncate">${escapeHtml(cat.id)}</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <span class="badge badge-neutral text-xs font-mono tabular-nums">
+            ${cat.enabled_domain_count} / ${cat.domain_count}
+          </span>
+          <div class="flex items-center gap-1">
+            <button type="button" class="btn btn-ghost btn-xs text-primary-600 add-sub-btn" title="Add Subcategory">
+              + Sub
+            </button>
+            <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt edit-cat-btn" title="Edit Category">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+            </button>
+            <button type="button" class="btn-icon-xs text-txt-muted hover:text-danger delete-cat-btn" title="Delete Category">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+          </div>
+        </div>
+      `;
+
+      const catCheckbox = catHeader.querySelector('.cat-toggle');
+      if (subs.length > 0 && isSomeSubsEnabled && cat.enabled) {
+        catCheckbox.indeterminate = true;
+      }
+
+      catHeader.querySelector('.cat-expand-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (expandedCategories.has(cat.id)) {
+          expandedCategories.delete(cat.id);
+        } else {
+          expandedCategories.add(cat.id);
+        }
+        renderCatalogTree();
+      });
+
+      catCheckbox.addEventListener('change', async (e) => {
+        const enabled = e.target.checked;
+        try {
+          const res = await api.setCatalogNodeEnabled(cat.id, enabled);
+          toast.success(
+            `Category "${cat.name}" ${enabled ? 'enabled' : 'disabled'} (${res.affected_domains || 0} domains updated)`
+          );
+          await loadCatalogTree();
+          await loadCatalogStatus();
+        } catch (err) {
+          toast.error(err.message || 'Failed to toggle category');
+          e.target.checked = !enabled;
+        }
+      });
+
+      catHeader.querySelector('.add-sub-btn').addEventListener('click', () => {
+        openAddSubcategoryModal(cat);
+      });
+
+      catHeader.querySelector('.edit-cat-btn').addEventListener('click', () => {
+        openEditNodeModal(cat);
+      });
+
+      catHeader.querySelector('.delete-cat-btn').addEventListener('click', () => {
+        confirmDeleteNode(cat);
+      });
+
+      catCard.appendChild(catHeader);
+
+      if (isExpanded && subs.length > 0) {
+        const subList = document.createElement('div');
+        subList.className =
+          'pl-10 pr-3.5 py-1 bg-surface-2/40 divide-y divide-border/60 border-t border-border/60';
+
+        for (const sub of subs) {
+          const subRow = document.createElement('div');
+          subRow.className = 'flex items-center justify-between py-2 text-xs select-none';
+
+          subRow.innerHTML = `
+            <div class="flex items-center gap-2.5 min-w-0">
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" class="checkbox sub-toggle" ${sub.enabled ? 'checked' : ''} />
+              </label>
+              <span class="font-medium text-txt truncate">${escapeHtml(sub.name)}</span>
+              <span class="font-mono text-txt-subtle text-[11px] truncate">${escapeHtml(sub.id)}</span>
+            </div>
+            <div class="flex items-center gap-2.5 shrink-0">
+              <span class="badge badge-neutral text-[11px] font-mono tabular-nums">
+                ${sub.enabled_domain_count} / ${sub.domain_count}
+              </span>
+              <div class="flex items-center gap-1">
+                <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt edit-sub-btn" title="Edit Subcategory">
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                </button>
+                <button type="button" class="btn-icon-xs text-txt-muted hover:text-danger delete-sub-btn" title="Delete Subcategory">
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                </button>
+              </div>
+            </div>
+          `;
+
+          subRow.querySelector('.sub-toggle').addEventListener('change', async (e) => {
+            const enabled = e.target.checked;
+            try {
+              const res = await api.setCatalogNodeEnabled(sub.id, enabled);
+              toast.success(
+                `Subcategory "${sub.name}" ${enabled ? 'enabled' : 'disabled'} (${res.affected_domains || 0} domains updated)`
+              );
+              await loadCatalogTree();
+              await loadCatalogStatus();
+            } catch (err) {
+              toast.error(err.message || 'Failed to toggle subcategory');
+              e.target.checked = !enabled;
+            }
+          });
+
+          subRow.querySelector('.edit-sub-btn').addEventListener('click', () => {
+            openEditNodeModal(sub);
+          });
+
+          subRow.querySelector('.delete-sub-btn').addEventListener('click', () => {
+            confirmDeleteNode(sub);
+          });
+
+          subList.appendChild(subRow);
+        }
+
+        catCard.appendChild(subList);
+      }
+
+      treeContainer.appendChild(catCard);
+    }
+  }
+
+  function openAddCategoryModal() {
+    const content = document.createElement('div');
+    content.className = 'space-y-4';
+    content.innerHTML = `
+      <div class="field">
+        <label class="field-label" for="add-cat-name-input">Category Name</label>
+        <input id="add-cat-name-input" type="text" class="input" placeholder="e.g. Streaming & Media" />
+      </div>
+      <div class="field">
+        <label class="field-label" for="add-cat-id-input">Category ID (unique, lowercase alphanumeric)</label>
+        <input id="add-cat-id-input" type="text" class="input font-mono" placeholder="e.g. streaming" />
+      </div>
+    `;
+
+    const nameInput = content.querySelector('#add-cat-name-input');
+    const idInput = content.querySelector('#add-cat-id-input');
+
+    nameInput.addEventListener('input', () => {
+      if (!idInput.dataset.manual) {
+        idInput.value = nameInput.value
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, '_')
+          .replace(/_+/g, '_')
+          .replace(/^_|_$/g, '');
+      }
+    });
+    idInput.addEventListener('input', () => {
+      idInput.dataset.manual = 'true';
+    });
+
+    dialog.open({
+      title: 'Add Catalog Category',
+      content,
+      size: 'sm',
+      actions: [
+        { text: 'Cancel', className: 'btn btn-secondary', value: false },
+        {
+          text: 'Create Category',
+          primary: true,
+          onClick: async (_, { close }) => {
+            const name = nameInput.value.trim();
+            const id = idInput.value.trim().toLowerCase();
+            if (!name || !id) {
+              toast.error('Both name and ID are required');
+              return;
+            }
+            try {
+              await api.createCatalogNode({ id, name, parent_id: '' });
+              toast.success(`Category "${name}" created`);
+              close();
+              await loadCatalogTree();
+            } catch (err) {
+              toast.error(err.message || 'Failed to create category');
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  function openAddSubcategoryModal(parentCat) {
+    const content = document.createElement('div');
+    content.className = 'space-y-4';
+    content.innerHTML = `
+      <div class="field">
+        <label class="field-label">Parent Category</label>
+        <input type="text" class="input bg-surface-2" value="${escapeHtml(parentCat.name)} (${escapeHtml(parentCat.id)})" readonly />
+      </div>
+      <div class="field">
+        <label class="field-label" for="add-sub-name-input">Subcategory Name</label>
+        <input id="add-sub-name-input" type="text" class="input" placeholder="e.g. Netflix" />
+      </div>
+      <div class="field">
+        <label class="field-label" for="add-sub-id-input">Subcategory ID</label>
+        <div class="flex items-center">
+          <span class="px-3 py-2 bg-surface-2 border border-r-0 border-border rounded-l-lg text-xs font-mono text-txt-muted">${escapeHtml(parentCat.id)}.</span>
+          <input id="add-sub-id-input" type="text" class="input font-mono rounded-l-none" placeholder="netflix" />
+        </div>
+      </div>
+    `;
+
+    const nameInput = content.querySelector('#add-sub-name-input');
+    const idInput = content.querySelector('#add-sub-id-input');
+
+    nameInput.addEventListener('input', () => {
+      if (!idInput.dataset.manual) {
+        idInput.value = nameInput.value
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, '_')
+          .replace(/_+/g, '_')
+          .replace(/^_|_$/g, '');
+      }
+    });
+    idInput.addEventListener('input', () => {
+      idInput.dataset.manual = 'true';
+    });
+
+    dialog.open({
+      title: `Add Subcategory to ${parentCat.name}`,
+      content,
+      size: 'sm',
+      actions: [
+        { text: 'Cancel', className: 'btn btn-secondary', value: false },
+        {
+          text: 'Create Subcategory',
+          primary: true,
+          onClick: async (_, { close }) => {
+            const name = nameInput.value.trim();
+            const subSlug = idInput.value.trim().toLowerCase();
+            if (!name || !subSlug) {
+              toast.error('Both name and ID are required');
+              return;
+            }
+            const id = `${parentCat.id}.${subSlug}`;
+            try {
+              await api.createCatalogNode({ id, name, parent_id: parentCat.id });
+              toast.success(`Subcategory "${name}" created`);
+              close();
+              expandedCategories.add(parentCat.id);
+              await loadCatalogTree();
+            } catch (err) {
+              toast.error(err.message || 'Failed to create subcategory');
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  function openEditNodeModal(node) {
+    const content = document.createElement('div');
+    content.className = 'space-y-4';
+    content.innerHTML = `
+      <div class="field">
+        <label class="field-label">Node ID</label>
+        <input type="text" class="input bg-surface-2 font-mono" value="${escapeHtml(node.id)}" readonly />
+      </div>
+      <div class="field">
+        <label class="field-label" for="edit-node-name-input">Display Name</label>
+        <input id="edit-node-name-input" type="text" class="input" value="${escapeHtml(node.name)}" />
+      </div>
+    `;
+
+    const nameInput = content.querySelector('#edit-node-name-input');
+
+    dialog.open({
+      title: `Edit ${node.parent_id ? 'Subcategory' : 'Category'}`,
+      content,
+      size: 'sm',
+      actions: [
+        { text: 'Cancel', className: 'btn btn-secondary', value: false },
+        {
+          text: 'Save Changes',
+          primary: true,
+          onClick: async (_, { close }) => {
+            const name = nameInput.value.trim();
+            if (!name) {
+              toast.error('Name cannot be empty');
+              return;
+            }
+            try {
+              await api.updateCatalogNode(node.id, { name });
+              toast.success('Updated successfully');
+              close();
+              await loadCatalogTree();
+            } catch (err) {
+              toast.error(err.message || 'Failed to update');
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  async function confirmDeleteNode(node) {
+    const isSub = Boolean(node.parent_id);
+    const confirmed = await dialog.confirm({
+      title: `Delete ${isSub ? 'Subcategory' : 'Category'}: ${node.name}`,
+      message: `Are you sure you want to delete "${node.name}" (${node.id})? Existing domain rules assigned to it will remain intact and will become uncategorized. Nothing will be deleted from your domain rules.`,
+      confirmText: 'Delete Node',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    try {
+      await api.deleteCatalogNode(node.id);
+      toast.success(`Deleted "${node.name}"`);
+      await loadCatalogTree();
+      await loadCatalogStatus();
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete');
+    }
+  }
+
+  // Handle Load Default Domains button click
+  $('#set-catalog-load-btn', container)?.addEventListener('click', async () => {
+    await loadCatalogStatus(false);
+    const remoteAvailable = Boolean(catalogStatus && catalogStatus.remote_version > 0);
+    const defaultSource =
+      remoteAvailable && catalogStatus.remote_version > catalogStatus.embedded_version
+        ? 'github'
+        : 'embedded';
+    openCatalogPreviewModal(defaultSource);
+  });
+
+  async function openCatalogPreviewModal(selectedSource) {
+    const modalContent = document.createElement('div');
+    modalContent.className = 'space-y-4';
+
+    const embVer = catalogStatus?.embedded_version || 1;
+    const remVer = catalogStatus?.remote_version || 0;
+
+    modalContent.innerHTML = `
+      <div class="space-y-2">
+        <label class="text-xs font-semibold uppercase tracking-wider text-txt-muted">Catalog Source</label>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label class="flex items-center gap-2.5 p-3 rounded-lg border border-border bg-surface-2/60 hover:bg-surface-hover cursor-pointer transition-colors">
+            <input type="radio" name="catalog_source_opt" value="github" class="radio text-primary-600" ${selectedSource === 'github' ? 'checked' : ''} ${!remVer ? 'disabled' : ''} />
+            <div class="min-w-0">
+              <div class="text-xs font-semibold text-txt">GitHub Remote</div>
+              <div class="text-[11px] text-txt-muted font-mono">${remVer ? `v${remVer}` : '(Unavailable)'}</div>
+            </div>
+          </label>
+          <label class="flex items-center gap-2.5 p-3 rounded-lg border border-border bg-surface-2/60 hover:bg-surface-hover cursor-pointer transition-colors">
+            <input type="radio" name="catalog_source_opt" value="embedded" class="radio text-primary-600" ${selectedSource === 'embedded' ? 'checked' : ''} />
+            <div class="min-w-0">
+              <div class="text-xs font-semibold text-txt">Embedded Binary</div>
+              <div class="text-[11px] text-txt-muted font-mono">v${embVer}</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div id="catalog-preview-details" class="p-4 rounded-xl border border-border bg-surface-2/30 space-y-3">
+        <div class="flex items-center justify-center py-6 gap-2 text-txt-muted text-xs">
+          <div class="w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+          <span>Computing dry-run preview...</span>
+        </div>
+      </div>
+
+      <div class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
+        <strong>Important:</strong> Applying this catalog is a non-destructive merge. Existing matching domains will be updated to the catalog values, new domains will be added, and <u>nothing will ever be deleted</u>.
+      </div>
+    `;
+
+    let currentSource = selectedSource;
+    let previewResult = null;
+
+    const detailsEl = modalContent.querySelector('#catalog-preview-details');
+
+    async function runPreview(src) {
+      currentSource = src;
+      detailsEl.innerHTML = `
+        <div class="flex items-center justify-center py-6 gap-2 text-txt-muted text-xs">
+          <div class="w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+          <span>Computing dry-run preview for ${src}...</span>
+        </div>
+      `;
+      try {
+        previewResult = await api.previewCatalog(src);
+        renderPreviewDetails(previewResult);
+      } catch (err) {
+        detailsEl.innerHTML = `
+          <div class="p-3 text-center text-xs text-danger">
+            Preview failed: ${escapeHtml(err.message || 'Unknown error')}
+          </div>
+        `;
+      }
+    }
+
+    function renderPreviewDetails(res) {
+      const addedSamples = (res.samples?.added || [])
+        .map((d) => `<span class="badge badge-success text-[11px] font-mono">${escapeHtml(d)}</span>`)
+        .join(' ');
+      const updatedSamples = (res.samples?.updated || [])
+        .map((d) => `<span class="badge badge-warning text-[11px] font-mono">${escapeHtml(d)}</span>`)
+        .join(' ');
+
+      detailsEl.innerHTML = `
+        <div class="grid grid-cols-3 gap-2 text-center pb-2 border-b border-border/60">
+          <div>
+            <div class="text-[10px] text-txt-muted uppercase font-medium">To Add</div>
+            <div class="text-base font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">+${res.domains_added}</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-txt-muted uppercase font-medium">To Update</div>
+            <div class="text-base font-bold text-amber-600 dark:text-amber-400 font-mono mt-0.5">${res.domains_updated}</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-txt-muted uppercase font-medium">Unchanged</div>
+            <div class="text-base font-bold text-txt-muted font-mono mt-0.5">${res.domains_unchanged}</div>
+          </div>
+        </div>
+
+        <div class="text-xs text-txt-muted space-y-1">
+          <div class="flex justify-between">
+            <span>Target Catalog Version:</span>
+            <span class="font-mono font-semibold text-txt">v${res.version}</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Categories / Subcategories to Add:</span>
+            <span class="font-mono text-txt">${res.categories_added} / ${res.subcategories_added}</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Total Catalog Domains:</span>
+            <span class="font-mono text-txt">${res.domains_total}</span>
+          </div>
+        </div>
+
+        ${addedSamples ? `
+          <div class="space-y-1 pt-1 border-t border-border/60">
+            <span class="text-[11px] font-semibold text-txt-muted">Sample Added Domains:</span>
+            <div class="flex flex-wrap gap-1 max-h-24 overflow-y-auto">${addedSamples}</div>
+          </div>
+        ` : ''}
+
+        ${updatedSamples ? `
+          <div class="space-y-1 pt-1 border-t border-border/60">
+            <span class="text-[11px] font-semibold text-txt-muted">Sample Updated Domains:</span>
+            <div class="flex flex-wrap gap-1 max-h-24 overflow-y-auto">${updatedSamples}</div>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    modalContent.querySelectorAll('input[name="catalog_source_opt"]').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        if (radio.checked) runPreview(radio.value);
+      });
+    });
+
+    runPreview(currentSource);
+
+    dialog.open({
+      title: 'Preview & Apply Default Domains',
+      content: modalContent,
+      size: 'md',
+      actions: [
+        { text: 'Cancel', className: 'btn btn-secondary', value: false },
+        {
+          text: 'Apply Catalog',
+          primary: true,
+          onClick: async (_, { close }) => {
+            if (!previewResult) {
+              toast.error('Preview not ready');
+              return;
+            }
+            try {
+              const res = await api.loadCatalog(currentSource, previewResult.version);
+              toast.success(
+                `Catalog v${previewResult.version} applied: ${res.domains_added} added, ${res.domains_updated} updated.`
+              );
+              close();
+              await loadCatalogStatus(false);
+              await loadCatalogTree();
+            } catch (err) {
+              toast.error(err.message || 'Failed to apply catalog');
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  // Handle Check GitHub button click
+  $('#set-catalog-check-btn', container)?.addEventListener('click', async () => {
+    const btn = $('#set-catalog-check-btn', container);
+    if (btn) btn.disabled = true;
+    try {
+      await loadCatalogStatus(true);
+      toast.success('Catalog status updated from GitHub');
+    } catch (err) {
+      toast.error('Failed to check GitHub: ' + (err.message || 'Unknown error'));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  // Handle Add Category button click
+  $('#set-catalog-add-cat-btn', container)?.addEventListener('click', () => {
+    openAddCategoryModal();
+  });
+
   loadSettings();
+  loadCatalogStatus(false);
+  loadCatalogTree();
 
   return {
     unmount: () => {

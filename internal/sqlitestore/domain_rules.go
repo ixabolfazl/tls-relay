@@ -35,6 +35,7 @@ type DomainRuleRow struct {
 	UseEgressProxy string `json:"use_egress_proxy"` // "default", "true", "false"
 	Mode           string `json:"mode"`             // "proxy", "direct", "block"
 	Enabled        bool   `json:"enabled"`
+	CatalogNode    string `json:"catalog_node"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 }
@@ -42,7 +43,7 @@ type DomainRuleRow struct {
 // ListDomainRules returns all domain rule rows.
 func (s *Store) ListDomainRules(ctx context.Context) ([]DomainRuleRow, error) {
 	rows, err := s.reader.QueryContext(ctx,
-		`SELECT id, domain, group_name, ports, use_egress_proxy, mode, enabled, created_at, updated_at FROM domain_rules ORDER BY id`)
+		`SELECT id, domain, group_name, ports, use_egress_proxy, mode, enabled, catalog_node, created_at, updated_at FROM domain_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +53,7 @@ func (s *Store) ListDomainRules(ctx context.Context) ([]DomainRuleRow, error) {
 	for rows.Next() {
 		var r DomainRuleRow
 		var enabled int
-		if err := rows.Scan(&r.ID, &r.Domain, &r.GroupName, &r.Ports, &r.UseEgressProxy, &r.Mode, &enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Domain, &r.GroupName, &r.Ports, &r.UseEgressProxy, &r.Mode, &enabled, &r.CatalogNode, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Enabled = enabled != 0
@@ -66,8 +67,8 @@ func (s *Store) GetDomainRule(ctx context.Context, domain string) (*DomainRuleRo
 	r := &DomainRuleRow{}
 	var enabled int
 	err := s.reader.QueryRowContext(ctx,
-		`SELECT id, domain, group_name, ports, use_egress_proxy, mode, enabled, created_at, updated_at FROM domain_rules WHERE domain = ?`, domain,
-	).Scan(&r.ID, &r.Domain, &r.GroupName, &r.Ports, &r.UseEgressProxy, &r.Mode, &enabled, &r.CreatedAt, &r.UpdatedAt)
+		`SELECT id, domain, group_name, ports, use_egress_proxy, mode, enabled, catalog_node, created_at, updated_at FROM domain_rules WHERE domain = ?`, domain,
+	).Scan(&r.ID, &r.Domain, &r.GroupName, &r.Ports, &r.UseEgressProxy, &r.Mode, &enabled, &r.CatalogNode, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -78,15 +79,21 @@ func (s *Store) GetDomainRule(ctx context.Context, domain string) (*DomainRuleRo
 // UpsertDomainRule inserts a domain rule if it doesn't exist, or updates it if it does.
 // It returns inserted=true if a new row was created, or inserted=false if an existing row was updated.
 func (s *Store) UpsertDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) (bool, error) {
+	return s.UpsertDomainRuleWithNode(ctx, domain, groupName, ports, useEgressProxy, mode, "")
+}
+
+// UpsertDomainRuleWithNode inserts or updates a domain rule including catalog_node.
+func (s *Store) UpsertDomainRuleWithNode(ctx context.Context, domain, groupName, ports, useEgressProxy, mode, catalogNode string) (bool, error) {
 	groupName = SanitizeGroupName(groupName)
+	catalogNode = strings.TrimSpace(catalogNode)
 	if mode == "" {
 		mode = "proxy"
 	}
 	res, err := s.writer.ExecContext(ctx,
-		`INSERT INTO domain_rules (domain, group_name, ports, use_egress_proxy, mode)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO domain_rules (domain, group_name, ports, use_egress_proxy, mode, catalog_node)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(domain) DO NOTHING`,
-		domain, groupName, ports, useEgressProxy, mode,
+		domain, groupName, ports, useEgressProxy, mode, catalogNode,
 	)
 	if err != nil {
 		return false, err
@@ -96,8 +103,8 @@ func (s *Store) UpsertDomainRule(ctx context.Context, domain, groupName, ports, 
 		return true, nil
 	}
 	_, err = s.writer.ExecContext(ctx,
-		`UPDATE domain_rules SET group_name = ?, ports = ?, use_egress_proxy = ?, mode = ?, updated_at = datetime('now') WHERE domain = ?`,
-		groupName, ports, useEgressProxy, mode, domain,
+		`UPDATE domain_rules SET group_name = ?, ports = ?, use_egress_proxy = ?, mode = ?, catalog_node = ?, updated_at = datetime('now') WHERE domain = ?`,
+		groupName, ports, useEgressProxy, mode, catalogNode, domain,
 	)
 	return false, err
 }
@@ -108,7 +115,13 @@ func (s *Store) AddDomainRule(ctx context.Context, domain, groupName, ports, use
 	return err
 }
 
-// UpdateDomainRule updates an existing domain rule.
+// AddDomainRuleWithNode inserts or replaces a domain rule with catalog_node.
+func (s *Store) AddDomainRuleWithNode(ctx context.Context, domain, groupName, ports, useEgressProxy, mode, catalogNode string) error {
+	_, err := s.UpsertDomainRuleWithNode(ctx, domain, groupName, ports, useEgressProxy, mode, catalogNode)
+	return err
+}
+
+// UpdateDomainRule updates an existing domain rule without touching catalog_node.
 func (s *Store) UpdateDomainRule(ctx context.Context, domain, groupName, ports, useEgressProxy, mode string) error {
 	groupName = SanitizeGroupName(groupName)
 	if mode == "" {
@@ -117,6 +130,20 @@ func (s *Store) UpdateDomainRule(ctx context.Context, domain, groupName, ports, 
 	_, err := s.writer.ExecContext(ctx,
 		`UPDATE domain_rules SET group_name = ?, ports = ?, use_egress_proxy = ?, mode = ?, updated_at = datetime('now') WHERE domain = ?`,
 		groupName, ports, useEgressProxy, mode, domain,
+	)
+	return err
+}
+
+// UpdateDomainRuleWithNode updates an existing domain rule including catalog_node.
+func (s *Store) UpdateDomainRuleWithNode(ctx context.Context, domain, groupName, ports, useEgressProxy, mode, catalogNode string) error {
+	groupName = SanitizeGroupName(groupName)
+	catalogNode = strings.TrimSpace(catalogNode)
+	if mode == "" {
+		mode = "proxy"
+	}
+	_, err := s.writer.ExecContext(ctx,
+		`UPDATE domain_rules SET group_name = ?, ports = ?, use_egress_proxy = ?, mode = ?, catalog_node = ?, updated_at = datetime('now') WHERE domain = ?`,
+		groupName, ports, useEgressProxy, mode, catalogNode, domain,
 	)
 	return err
 }

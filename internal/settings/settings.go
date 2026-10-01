@@ -254,6 +254,12 @@ func ValidateSetting(key, val string) (string, error) {
 		return strings.TrimSpace(val), nil
 	case "egress_proxy_password":
 		return val, nil
+	case "catalog_version":
+		n, err := strconv.Atoi(strings.TrimSpace(val))
+		if err != nil || n < 0 {
+			return "", fmt.Errorf("catalog_version must be a non-negative integer")
+		}
+		return strconv.Itoa(n), nil
 	default:
 		return "", fmt.Errorf("unknown setting key %q", key)
 	}

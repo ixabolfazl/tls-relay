@@ -1,7 +1,6 @@
 package panel
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -20,6 +19,7 @@ type domainEntry struct {
 	ID                 int64       `json:"id"`
 	Domain             string      `json:"domain"`
 	GroupName          string      `json:"group_name"`
+	CatalogNode        string      `json:"catalog_node"`
 	Ports              interface{} `json:"ports"` // []int or "all"
 	UseEgressProxy     string      `json:"use_egress_proxy"`
 	Mode               string      `json:"mode"`
@@ -84,6 +84,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 					ID:                 rRow.ID,
 					Domain:             rRow.Domain,
 					GroupName:          rRow.GroupName,
+					CatalogNode:        rRow.CatalogNode,
 					Ports:              portsVal,
 					UseEgressProxy:     proxyVal,
 					Mode:               modeVal,
@@ -251,6 +252,7 @@ type addDomainRequest struct {
 	Domain            string   `json:"domain"`  // Single or multi-line string
 	Domains           []string `json:"domains"` // Slice of domains
 	GroupName         string   `json:"group_name"`
+	CatalogNode       string   `json:"catalog_node"`
 	Ports             string   `json:"ports"` // Default "443"
 	UseEgressProxy    string   `json:"use_egress_proxy"`
 	Mode              string   `json:"mode"`
@@ -386,7 +388,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	updatedCount := 0
 
 	for _, d := range targetDomains {
-		inserted, err := s.sqlStore.UpsertDomainRule(ctx, d, req.GroupName, portsJSON, useEgress, mode)
+		inserted, err := s.sqlStore.UpsertDomainRuleWithNode(ctx, d, req.GroupName, portsJSON, useEgress, mode, req.CatalogNode)
 		if err != nil {
 			slog.Error("admin panel add domain sqlite error", "domain", d, "error", err)
 			jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
@@ -423,6 +425,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 
 type updateDomainRequest struct {
 	GroupName                 string `json:"group_name"`
+	CatalogNode               string `json:"catalog_node"`
 	Ports                     string `json:"ports"`
 	UseEgressProxy            string `json:"use_egress_proxy"`
 	Mode                      string `json:"mode"`
@@ -479,7 +482,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update primary domain rule
-	if err := s.sqlStore.UpdateDomainRule(ctx, domain, req.GroupName, portsJSON, useEgress, mode); err != nil {
+	if err := s.sqlStore.UpdateDomainRuleWithNode(ctx, domain, req.GroupName, portsJSON, useEgress, mode, req.CatalogNode); err != nil {
 		slog.Error("admin panel update domain error", "domain", domain, "error", err)
 		jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -490,7 +493,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		wildcardDomain := "*." + domain
 		if *req.IncludeSubdomains {
 			// Add / update matching wildcard rule
-			if err := s.sqlStore.AddDomainRule(ctx, wildcardDomain, req.GroupName, portsJSON, useEgress, mode); err != nil {
+			if err := s.sqlStore.AddDomainRuleWithNode(ctx, wildcardDomain, req.GroupName, portsJSON, useEgress, mode, req.CatalogNode); err != nil {
 				slog.Error("admin panel add wildcard counterpart error", "domain", wildcardDomain, "error", err)
 			}
 		} else if req.DeleteWildcardCounterpart {
@@ -655,229 +658,68 @@ func (s *Server) handleBulkAssignMode(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// TXT Export / Import
+// JSON Export / Import (version 2 with categories/subcategories & v1 compat)
 // ---------------------------------------------------------------------------
 
-// handleExportDomainsTXT streams all domain rules as a plain-text file.
-//
-// Format (one rule per line):
-//
-//	[mode:]domain[:port1,port2,...] [use_egress=true]
-//
-// mode defaults to "proxy" and is omitted from the line.
-// ports defaults to "443" and is omitted from the line.
-// use_egress is omitted when false.
-func (s *Server) handleExportDomainsTXT(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.sqlStore.ListDomainRules(r.Context())
-	if err != nil {
-		slog.Error("admin panel txt export error", "error", err)
-		jsonErr(w, "export failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Disposition", `attachment; filename="domains.txt"`)
-
-	bw := bufio.NewWriter(w)
-	_, _ = fmt.Fprintf(bw, "# TLS Relay domain rules export\n")
-	_, _ = fmt.Fprintf(bw, "# Format: [mode:]domain[:port1,port2,...] [use_egress=true]\n")
-	_, _ = fmt.Fprintf(bw, "# mode: proxy (default), direct, block\n#\n")
-
-	for _, row := range rows {
-		mode := row.Mode
-		if mode == "" {
-			mode = "proxy"
-		}
-
-		var sb strings.Builder
-		if mode != "proxy" {
-			sb.WriteString(mode)
-			sb.WriteString(":")
-		}
-		sb.WriteString(row.Domain)
-
-		// Ports: omit if only [443]
-		ps, _ := rules.ParsePorts(row.Ports)
-		var portStr string
-		if ps.All {
-			portStr = "all"
-		} else if len(ps.Ports) == 1 && ps.Ports[0] == 443 {
-			portStr = ""
-		} else if len(ps.Ports) > 0 {
-			parts := make([]string, len(ps.Ports))
-			for i, p := range ps.Ports {
-				parts[i] = strconv.Itoa(p)
-			}
-			portStr = strings.Join(parts, ",")
-		}
-		if portStr != "" {
-			sb.WriteString(":")
-			sb.WriteString(portStr)
-		}
-
-		if row.UseEgressProxy == "true" {
-			sb.WriteString(" use_egress=true")
-		}
-
-		_, _ = fmt.Fprintf(bw, "%s\n", sb.String())
-	}
-	_ = bw.Flush()
-}
-
-// handleImportDomainsTXT reads a TXT-format domain list from the request body
-// and upserts the rules transactionally.
-//
-// Each line: [mode:]domain[:port1,port2,...] [use_egress=true|false]
-// Lines starting with '#' or blank lines are ignored.
-func (s *Server) handleImportDomainsTXT(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
-
-	var failed int
-	var errs []string
-
-	scanner := bufio.NewScanner(r.Body)
-	var rows []sqlitestore.DomainRuleRow
-	seen := make(map[string]struct{})
-
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Split on first space to separate the token from optional flags.
-		parts := strings.SplitN(line, " ", 2)
-		token := parts[0]
-		flags := ""
-		if len(parts) == 2 {
-			flags = strings.TrimSpace(parts[1])
-		}
-
-		// Parse mode prefix: "direct:", "block:", "proxy:".
-		mode := "proxy"
-		for _, m := range []string{"direct", "block", "proxy"} {
-			if strings.HasPrefix(token, m+":") {
-				mode = m
-				token = token[len(m)+1:]
-				break
-			}
-		}
-
-		// Parse optional port suffix: "domain:443,8443" or "domain:all".
-		portsStr := "443"
-		if idx := strings.LastIndex(token, ":"); idx >= 0 {
-			candidate := token[idx+1:]
-			if candidate == "all" || isPortList(candidate) {
-				portsStr = candidate
-				token = token[:idx]
-			}
-		}
-
-		norm, err := rules.NormalizeDomainInput(token)
-		if err != nil {
-			failed++
-			errs = append(errs, fmt.Sprintf("line %d (%s): %v", lineNum, token, err))
-			continue
-		}
-
-		ps, err := rules.ParsePorts(portsStr)
-		if err != nil {
-			failed++
-			errs = append(errs, fmt.Sprintf("line %d (%s): invalid ports: %v", lineNum, norm, err))
-			continue
-		}
-
-		useEgress := "false"
-		if strings.Contains(flags, "use_egress=true") {
-			useEgress = "true"
-		}
-
-		if _, dup := seen[norm]; dup {
-			continue
-		}
-		seen[norm] = struct{}{}
-
-		rows = append(rows, sqlitestore.DomainRuleRow{
-			Domain:         norm,
-			Ports:          marshalPortsJSON(ps),
-			Mode:           mode,
-			UseEgressProxy: useEgress,
-			Enabled:        true,
-		})
-	}
-	if err := scanner.Err(); err != nil {
-		jsonErr(w, "read error: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ctx := r.Context()
-	result, err := s.sqlStore.ImportData(ctx, rows, nil, nil)
-	if err != nil {
-		slog.Error("admin panel txt import error", "error", err)
-		jsonErr(w, "import database error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if result.DomainsAdded > 0 || result.DomainsUpdated > 0 {
-		_ = s.refreshDomains(ctx)
-	}
-
-	slog.Info("admin panel txt import",
-		"added", result.DomainsAdded, "updated", result.DomainsUpdated,
-		"skipped", len(seen)-result.DomainsAdded-result.DomainsUpdated,
-		"failed", failed,
-		"remote_addr", r.RemoteAddr,
-	)
-	jsonOK(w, map[string]interface{}{
-		"domains_added":   result.DomainsAdded,
-		"domains_updated": result.DomainsUpdated,
-		"failed":          failed,
-		"errors":          errs,
-	})
-}
-
-// isPortList returns true if s looks like a comma-separated list of valid port numbers.
-func isPortList(s string) bool {
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return false
-		}
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 1 || n > 65535 {
-			return false
-		}
-	}
-	return true
-}
-
-// ---------------------------------------------------------------------------
-// JSON Export / Import (domain-rules only)
-// ---------------------------------------------------------------------------
-
-// domainJSONItem is the per-domain record used in the JSON export/import format.
-// use_egress is included in export only when the global egress switch is on,
-// and is accepted on import only when the global switch is on.
-type domainJSONItem struct {
+type domainJSONItemV2 struct {
 	Domain    string      `json:"domain"`
 	Mode      string      `json:"mode"`
-	Ports     interface{} `json:"ports"`                // []int or "all"
-	Group     string      `json:"group,omitempty"`      // group_name; omitted when empty
-	UseEgress *bool       `json:"use_egress,omitempty"` // omitted when egress is globally off
+	Ports     interface{} `json:"ports"`
+	Group     string      `json:"group,omitempty"`
+	Enabled   bool        `json:"enabled"`
+	UseEgress *bool       `json:"use_egress,omitempty"`
 }
 
-type domainJSONExport struct {
-	Version       int              `json:"version"`
-	ExportedAt    string           `json:"exported_at"`
-	EgressEnabled bool             `json:"egress_enabled"`
-	Domains       []domainJSONItem `json:"domains"`
+type exportSubcategory struct {
+	ID      string             `json:"id"`
+	Name    string             `json:"name"`
+	Enabled bool               `json:"enabled"`
+	Domains []domainJSONItemV2 `json:"domains"`
 }
 
-type domainJSONImport struct {
-	Domains []domainJSONItem `json:"domains"`
+type exportCategory struct {
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Enabled       bool                `json:"enabled"`
+	Subcategories []exportSubcategory `json:"subcategories"`
+}
+
+type domainJSONExportV2 struct {
+	Version       int                `json:"version"`
+	ExportedAt    string             `json:"exported_at"`
+	EgressEnabled bool               `json:"egress_enabled"`
+	Categories    []exportCategory   `json:"categories"`
+	Uncategorized []domainJSONItemV2 `json:"uncategorized"`
+}
+
+type domainJSONItemImport struct {
+	Domain    string      `json:"domain"`
+	Mode      string      `json:"mode"`
+	Ports     interface{} `json:"ports"`
+	Group     string      `json:"group,omitempty"`
+	Enabled   *bool       `json:"enabled,omitempty"`
+	UseEgress *bool       `json:"use_egress,omitempty"`
+}
+
+type importSubcategory struct {
+	ID      string                 `json:"id"`
+	Name    string                 `json:"name"`
+	Enabled *bool                  `json:"enabled,omitempty"`
+	Domains []domainJSONItemImport `json:"domains"`
+}
+
+type importCategory struct {
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Enabled       *bool               `json:"enabled,omitempty"`
+	Subcategories []importSubcategory `json:"subcategories"`
+}
+
+type domainJSONImportPayload struct {
+	Version       int                    `json:"version"`
+	Categories    []importCategory       `json:"categories"`
+	Uncategorized []domainJSONItemImport `json:"uncategorized"`
+	Domains       []domainJSONItemImport `json:"domains"` // Legacy v1
 }
 
 // egressGlobalEnabled returns true if the egress dialer is configured and enabled.
@@ -888,9 +730,8 @@ func (s *Server) egressGlobalEnabled() bool {
 	return s.egressDialer.Config().Enabled
 }
 
-// handleExportDomainsJSON downloads all domain rules as a JSON file.
+// handleExportDomainsJSON downloads domain rules as a JSON file (version 2 with categories/subcategories).
 // When the global egress proxy is enabled, use_egress is included per domain.
-// When it is disabled, use_egress is omitted entirely from the output.
 func (s *Server) handleExportDomainsJSON(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.sqlStore.ListDomainRules(r.Context())
 	if err != nil {
@@ -899,9 +740,59 @@ func (s *Server) handleExportDomainsJSON(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	nodes, err := s.sqlStore.ListCatalogNodes(r.Context())
+	if err != nil {
+		slog.Error("admin panel catalog nodes export error", "error", err)
+		jsonErr(w, "export failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	egressOn := s.egressGlobalEnabled()
 
-	items := make([]domainJSONItem, 0, len(rows))
+	type catWrapper struct {
+		category      exportCategory
+		subMap        map[string]*exportSubcategory
+		subcategories []*exportSubcategory
+	}
+	catsMap := make(map[string]*catWrapper)
+	var catOrder []string
+	subToCat := make(map[string]string)
+
+	for _, n := range nodes {
+		if n.ParentID == "" {
+			cw := &catWrapper{
+				category: exportCategory{
+					ID:            n.ID,
+					Name:          n.Name,
+					Enabled:       n.Enabled,
+					Subcategories: []exportSubcategory{},
+				},
+				subMap:        make(map[string]*exportSubcategory),
+				subcategories: []*exportSubcategory{},
+			}
+			catsMap[n.ID] = cw
+			catOrder = append(catOrder, n.ID)
+		}
+	}
+
+	for _, n := range nodes {
+		if n.ParentID != "" {
+			sub := &exportSubcategory{
+				ID:      n.ID,
+				Name:    n.Name,
+				Enabled: n.Enabled,
+				Domains: []domainJSONItemV2{},
+			}
+			subToCat[n.ID] = n.ParentID
+			if cw, ok := catsMap[n.ParentID]; ok {
+				cw.subMap[n.ID] = sub
+				cw.subcategories = append(cw.subcategories, sub)
+			}
+		}
+	}
+
+	var uncategorized []domainJSONItemV2
+
 	for _, row := range rows {
 		mode := row.Mode
 		if mode == "" {
@@ -916,24 +807,58 @@ func (s *Server) handleExportDomainsJSON(w http.ResponseWriter, r *http.Request)
 			portsVal = ps.Ports
 		}
 
-		item := domainJSONItem{
-			Domain: row.Domain,
-			Mode:   mode,
-			Ports:  portsVal,
-			Group:  row.GroupName,
+		item := domainJSONItemV2{
+			Domain:  row.Domain,
+			Mode:    mode,
+			Ports:   portsVal,
+			Group:   row.GroupName,
+			Enabled: row.Enabled,
 		}
 		if egressOn {
 			v := row.UseEgressProxy == "true"
 			item.UseEgress = &v
 		}
-		items = append(items, item)
+
+		assigned := false
+		if row.CatalogNode != "" {
+			if parentID, ok := subToCat[row.CatalogNode]; ok {
+				if cw, ok := catsMap[parentID]; ok {
+					if sub, ok := cw.subMap[row.CatalogNode]; ok {
+						sub.Domains = append(sub.Domains, item)
+						assigned = true
+					}
+				}
+			}
+		}
+		if !assigned {
+			uncategorized = append(uncategorized, item)
+		}
 	}
 
-	payload := domainJSONExport{
-		Version:       1,
+	categories := make([]exportCategory, 0, len(catOrder))
+	for _, cid := range catOrder {
+		cw := catsMap[cid]
+		subs := make([]exportSubcategory, 0, len(cw.subcategories))
+		for _, s := range cw.subcategories {
+			subs = append(subs, *s)
+		}
+		cw.category.Subcategories = subs
+		categories = append(categories, cw.category)
+	}
+
+	if categories == nil {
+		categories = []exportCategory{}
+	}
+	if uncategorized == nil {
+		uncategorized = []domainJSONItemV2{}
+	}
+
+	payload := domainJSONExportV2{
+		Version:       2,
 		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
 		EgressEnabled: egressOn,
-		Domains:       items,
+		Categories:    categories,
+		Uncategorized: uncategorized,
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -944,34 +869,47 @@ func (s *Server) handleExportDomainsJSON(w http.ResponseWriter, r *http.Request)
 	_ = enc.Encode(payload)
 }
 
-// handleImportDomainsJSON reads a JSON domain list from the request body and
-// upserts the rules transactionally (add new + update existing; existing domains
-// that are absent from the payload are left untouched).
-//
-// When the global egress switch is off, use_egress values from the JSON are
-// ignored and every rule is imported with use_egress_proxy="false".
+// handleImportDomainsJSON reads a JSON domain payload (v2 or legacy v1) and upserts rules and categories.
 func (s *Server) handleImportDomainsJSON(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 
-	var req domainJSONImport
+	var req domainJSONImportPayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	egressOn := s.egressGlobalEnabled()
+	// Legacy v1 compat: if domains is present, append to uncategorized
+	if len(req.Domains) > 0 {
+		req.Uncategorized = append(req.Uncategorized, req.Domains...)
+	}
 
+	// Total domains cap check (max 10,000 domains)
+	totalDomains := len(req.Uncategorized)
+	for _, c := range req.Categories {
+		for _, sub := range c.Subcategories {
+			totalDomains += len(sub.Domains)
+		}
+	}
+	if totalDomains > 10000 {
+		jsonErr(w, "import payload exceeds maximum limit of 10,000 domains", http.StatusBadRequest)
+		return
+	}
+
+	egressOn := s.egressGlobalEnabled()
 	var failed int
 	var errs []string
-	seen := make(map[string]struct{})
-	var rows []sqlitestore.DomainRuleRow
 
-	for i, item := range req.Domains {
+	var nodes []sqlitestore.CatalogNodeRow
+	var domainRows []sqlitestore.DomainRuleRow
+	seenDomains := make(map[string]struct{})
+
+	parseItem := func(item domainJSONItemImport, catalogNode string, idx int, location string) (sqlitestore.DomainRuleRow, bool) {
 		norm, err := rules.NormalizeDomainInput(item.Domain)
 		if err != nil {
 			failed++
-			errs = append(errs, fmt.Sprintf("item %d (%s): %v", i+1, item.Domain, err))
-			continue
+			errs = append(errs, fmt.Sprintf("%s item %d (%s): %v", location, idx+1, item.Domain, err))
+			return sqlitestore.DomainRuleRow{}, false
 		}
 
 		mode, err := rules.NormalizeMode(item.Mode)
@@ -979,7 +917,6 @@ func (s *Server) handleImportDomainsJSON(w http.ResponseWriter, r *http.Request)
 			mode = "proxy"
 		}
 
-		// Parse ports field — accept []int, "all", or nil (defaults to [443]).
 		var ps rules.PortsSpec
 		switch v := item.Ports.(type) {
 		case string:
@@ -1004,8 +941,8 @@ func (s *Server) handleImportDomainsJSON(w http.ResponseWriter, r *http.Request)
 		}
 		if err != nil {
 			failed++
-			errs = append(errs, fmt.Sprintf("item %d (%s): invalid ports: %v", i+1, norm, err))
-			continue
+			errs = append(errs, fmt.Sprintf("%s item %d (%s): invalid ports: %v", location, idx+1, norm, err))
+			return sqlitestore.DomainRuleRow{}, false
 		}
 
 		useEgress := "false"
@@ -1013,23 +950,75 @@ func (s *Server) handleImportDomainsJSON(w http.ResponseWriter, r *http.Request)
 			useEgress = "true"
 		}
 
-		if _, dup := seen[norm]; dup {
-			continue
+		enabled := true
+		if item.Enabled != nil {
+			enabled = *item.Enabled
 		}
-		seen[norm] = struct{}{}
 
-		rows = append(rows, sqlitestore.DomainRuleRow{
+		if _, dup := seenDomains[norm]; dup {
+			return sqlitestore.DomainRuleRow{}, false
+		}
+		seenDomains[norm] = struct{}{}
+
+		return sqlitestore.DomainRuleRow{
 			Domain:         norm,
 			GroupName:      strings.TrimSpace(item.Group),
 			Ports:          marshalPortsJSON(ps),
 			Mode:           mode,
 			UseEgressProxy: useEgress,
-			Enabled:        true,
-		})
+			Enabled:        enabled,
+			CatalogNode:    catalogNode,
+		}, true
+	}
+
+	// 1. Process Categories and Subcategories
+	for _, c := range req.Categories {
+		cID := strings.ToLower(strings.TrimSpace(c.ID))
+		if cID != "" {
+			cEnabled := true
+			if c.Enabled != nil {
+				cEnabled = *c.Enabled
+			}
+			nodes = append(nodes, sqlitestore.CatalogNodeRow{
+				ID:       cID,
+				ParentID: "",
+				Name:     c.Name,
+				Enabled:  cEnabled,
+			})
+		}
+
+		for _, sub := range c.Subcategories {
+			subID := strings.ToLower(strings.TrimSpace(sub.ID))
+			if subID != "" {
+				subEnabled := true
+				if sub.Enabled != nil {
+					subEnabled = *sub.Enabled
+				}
+				nodes = append(nodes, sqlitestore.CatalogNodeRow{
+					ID:       subID,
+					ParentID: cID,
+					Name:     sub.Name,
+					Enabled:  subEnabled,
+				})
+			}
+
+			for i, item := range sub.Domains {
+				if rRow, ok := parseItem(item, subID, i, "subcategory "+subID); ok {
+					domainRows = append(domainRows, rRow)
+				}
+			}
+		}
+	}
+
+	// 2. Process Uncategorized Domains
+	for i, item := range req.Uncategorized {
+		if rRow, ok := parseItem(item, "", i, "uncategorized"); ok {
+			domainRows = append(domainRows, rRow)
+		}
 	}
 
 	ctx := r.Context()
-	result, err := s.sqlStore.ImportData(ctx, rows, nil, nil)
+	result, err := s.sqlStore.ImportData(ctx, domainRows, nil, nil, nodes)
 	if err != nil {
 		slog.Error("admin panel json import error", "error", err)
 		jsonErr(w, "import database error: "+err.Error(), http.StatusInternalServerError)
@@ -1040,15 +1029,19 @@ func (s *Server) handleImportDomainsJSON(w http.ResponseWriter, r *http.Request)
 		_ = s.refreshDomains(ctx)
 	}
 
-	slog.Info("admin panel json import",
-		"added", result.DomainsAdded, "updated", result.DomainsUpdated,
+	slog.Info("admin panel json import v2",
+		"added", result.DomainsAdded,
+		"updated", result.DomainsUpdated,
+		"categories_added", result.CatalogNodesAdded,
 		"failed", failed,
 		"remote_addr", r.RemoteAddr,
 	)
+
 	jsonOK(w, map[string]interface{}{
-		"domains_added":   result.DomainsAdded,
-		"domains_updated": result.DomainsUpdated,
-		"failed":          failed,
-		"errors":          errs,
+		"domains_added":    result.DomainsAdded,
+		"domains_updated":  result.DomainsUpdated,
+		"categories_added": result.CatalogNodesAdded,
+		"failed":           failed,
+		"errors":           errs,
 	})
 }

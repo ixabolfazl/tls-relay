@@ -15,6 +15,7 @@ It routes selected domains through your server without terminating TLS or decryp
 * TCP/TLS passthrough
 * Custom DNS server
 * Domain-based routing
+* Default domain catalog with hierarchical categories and subcategories
 * Exact domain and subdomain matching
 * Wildcard rules such as `*.example.com`
 * Direct or SOCKS5 outbound routing
@@ -277,6 +278,16 @@ TLS-Relay → SOCKS5 Proxy → Destination
 ```
 
 A domain can also override the global SOCKS5 configuration and use its own proxy or force a direct connection.
+
+## Default Domains
+
+TLS-Relay includes an embedded, curated default domain catalog (`data/default-domains.json`) covering popular communication platforms, developer resources, social networks, and streaming services.
+
+* **Hierarchical Categories & Subcategories**: Domains are organized into categories and subcategories (e.g., `Social Media → Telegram`). Entire categories or subcategories can be toggled on/off in bulk.
+* **Versioned Catalog & Remote Updates**: The web panel checks for upstream catalog updates from GitHub (respecting the outbound egress proxy). An **Update** badge alerts administrators when a newer catalog is available.
+* **Safe Upsert Merge**: Applying catalog updates performs a non-destructive upsert—new domains are added, existing domains are updated, and custom domains are never deleted.
+* **Dry-Run Preview**: A preview dialog shows exact counts of domains added, updated, and unchanged, along with sample domains and version-matching confirmation before applying.
+* **Custom Categories & Subcategories**: Administrators can create, edit, or delete custom categories and subcategories and assign domain rules to them directly from the panel.
 
 ## SOCKS5 Egress
 

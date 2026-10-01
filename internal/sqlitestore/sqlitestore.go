@@ -173,6 +173,7 @@ func (s *Store) migrate() error {
 			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
 			domain               TEXT    NOT NULL UNIQUE,
 			group_name           TEXT    NOT NULL DEFAULT '',
+			catalog_node         TEXT    NOT NULL DEFAULT '',
 			ports                TEXT    NOT NULL DEFAULT '[443]',
 			use_egress_proxy     TEXT    NOT NULL DEFAULT 'default',
 			mode                 TEXT    NOT NULL DEFAULT 'proxy',
@@ -181,6 +182,13 @@ func (s *Store) migrate() error {
 			total_bytes_received INTEGER NOT NULL DEFAULT 0,
 			created_at           DATETIME NOT NULL DEFAULT (datetime('now')),
 			updated_at           DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS catalog_nodes (
+			id         TEXT PRIMARY KEY,
+			parent_id  TEXT NOT NULL DEFAULT '',
+			name       TEXT NOT NULL,
+			enabled    INTEGER NOT NULL DEFAULT 1,
+			sort_order INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS app_settings (
 			key        TEXT PRIMARY KEY,
@@ -282,6 +290,7 @@ func (s *Store) migrate() error {
 	defer rows.Close()
 
 	hasGroupName := false
+	hasCatalogNode := false
 	hasDomainBytesSent := false
 	hasDomainBytesReceived := false
 	hasMode := false
@@ -297,6 +306,8 @@ func (s *Store) migrate() error {
 		switch name {
 		case "group_name":
 			hasGroupName = true
+		case "catalog_node":
+			hasCatalogNode = true
 		case "total_bytes_sent":
 			hasDomainBytesSent = true
 		case "total_bytes_received":
@@ -313,6 +324,14 @@ func (s *Store) migrate() error {
 		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("adding group_name column to domain_rules: %w", err)
 		}
+	}
+	if !hasCatalogNode {
+		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN catalog_node TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adding catalog_node column to domain_rules: %w", err)
+		}
+	}
+	if _, err := s.writer.Exec(`CREATE INDEX IF NOT EXISTS idx_domain_rules_catalog_node ON domain_rules(catalog_node)`); err != nil {
+		return fmt.Errorf("creating idx_domain_rules_catalog_node: %w", err)
 	}
 	if !hasDomainBytesSent {
 		if _, err := s.writer.Exec(`ALTER TABLE domain_rules ADD COLUMN total_bytes_sent INTEGER NOT NULL DEFAULT 0`); err != nil {

@@ -199,8 +199,32 @@ export const api = {
     apiFetch('api/admin/credentials', { method: 'PUT', body: JSON.stringify(payload) }),
   serviceRestart: () => apiFetch('api/service/restart', { method: 'POST' }),
   importData: (jsonData) => apiFetch('api/import', { method: 'POST', body: JSON.stringify(jsonData) }),
-  importDomainsTxt: (text) =>
-    apiFetch('api/domains/import-txt', { method: 'POST', body: text, headers: { 'Content-Type': 'text/plain' } }),
   importDomainsJson: (payload) =>
     apiFetch('api/domains/import-json', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Catalog
+  getCatalog: () => apiFetch('api/catalog'),
+  getCatalogStatus: (refresh = false) =>
+    apiFetch(refresh ? 'api/catalog/status?refresh=1' : 'api/catalog/status'),
+  previewCatalog: (source) =>
+    apiFetch('api/catalog/preview', { method: 'POST', body: JSON.stringify({ source }) }),
+  loadCatalog: (source, expectedVersion) =>
+    apiFetch('api/catalog/load', {
+      method: 'POST',
+      body: JSON.stringify({ source, expected_version: expectedVersion }),
+    }),
+  setCatalogNodeEnabled: (id, enabled) =>
+    apiFetch(`api/catalog/nodes/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  createCatalogNode: (payload) =>
+    apiFetch('api/catalog/nodes', { method: 'POST', body: JSON.stringify(payload) }),
+  updateCatalogNode: (id, payload) =>
+    apiFetch(`api/catalog/nodes/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteCatalogNode: (id) =>
+    apiFetch(`api/catalog/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };

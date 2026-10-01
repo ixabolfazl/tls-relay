@@ -1,5 +1,21 @@
 # Release Notes
 
+## v1.7.0
+
+### Default Domain Catalog & Categories
+* **Embedded Domain Catalog:** Ships with a curated default domain catalog (`data/default-domains.json`) embedded into the binary and loaded automatically on initial clean installations.
+* **Hierarchical Categories & Subcategories:** Domains are organized into categories and subcategories (e.g., `Social Media → Telegram`). Administrators can enable or disable entire categories or subcategories with automatic cascading.
+* **Category & Subcategory CRUD:** Added administrative capability to create, rename, and manage custom categories and subcategories directly from the panel and assign domain rules to them.
+* **Versioned Catalog & Remote Updates:** Tracks installed catalog versions and checks for upstream catalog updates from GitHub (utilizing the egress proxy dialer when configured). Displays an "Update" badge in the web panel when a newer version is available.
+* **Safe Non-Destructive Merge & Preview:** Applying a catalog update is non-destructive—existing domains are updated, missing domains are added, and custom domains are never deleted. A dry-run preview modal displays precise change statistics (added, updated, unchanged) and domain samples before confirmation with version gating.
+
+### Domain Import / Export & Storage Improvements
+* **JSON Export / Import v2:** Redesigned the domain export format (`GET /api/domains/export.json`) to v2, exporting domains hierarchically with categories and subcategories. `POST /api/domains/import-json` supports both v2 and legacy v1 payloads seamlessly.
+* **TXT Format Removal:** Completely removed legacy TXT export and import endpoints (`/api/domains/export.txt` and `/api/domains/import-txt`) and associated UI elements.
+* **ImportData Enabled & Category Preservation:** Fixed full-system data import (`POST /api/import`) to properly honor rule `enabled` state and `catalog_node` associations across migrations and restores.
+
+---
+
 ## v1.6.2
 
 * **DNS Resolver Fix:** Fixed an issue where setting `unknown_domain_policy` to `reject` incorrectly blocked DNS queries for unconfigured domains. Authorized clients now always resolve unlisted domains normally via upstream DNS.

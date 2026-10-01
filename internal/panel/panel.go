@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
+	"github.com/ixabolfazl/tls-relay/internal/catalog"
 	"github.com/ixabolfazl/tls-relay/internal/config"
 	"github.com/ixabolfazl/tls-relay/internal/dnsresolver"
 	"github.com/ixabolfazl/tls-relay/internal/relay"
@@ -297,6 +298,7 @@ type Server struct {
 	portalSrv               PortalHandlerRegistrar
 	version                 string
 	updateChecker           *updatecheck.Checker
+	catalogChecker          *catalog.Checker
 }
 
 // New creates a Server. Username and password are read from SQLite if stored,
@@ -343,20 +345,21 @@ func New(
 	}
 
 	s := &Server{
-		addr:          addr,
-		passHash:      hash,
-		username:      user,
-		serverDomain:  initialDomain,
-		defaultMaxIPs: 3,
-		ruleStore:     rs,
-		accessStore:   as,
-		sqlStore:      sq,
-		refresher:     refresher,
-		sessions:      newSessionStore(),
-		loginLimiter:  newLoginLimiter(5, 5*time.Minute),
-		startTime:     time.Now(),
-		version:       "dev",
-		updateChecker: updatecheck.NewChecker("dev"),
+		addr:           addr,
+		passHash:       hash,
+		username:       user,
+		serverDomain:   initialDomain,
+		defaultMaxIPs:  3,
+		ruleStore:      rs,
+		accessStore:    as,
+		sqlStore:       sq,
+		refresher:      refresher,
+		sessions:       newSessionStore(),
+		loginLimiter:   newLoginLimiter(5, 5*time.Minute),
+		startTime:      time.Now(),
+		version:        "dev",
+		updateChecker:  updatecheck.NewChecker("dev"),
+		catalogChecker: catalog.NewChecker(),
 	}
 	s.lookupEnabled.Store(true)
 	s.lookupRequireRegistered.Store(false)
@@ -561,6 +564,13 @@ func (s *Server) SetUpdateChecker(c *updatecheck.Checker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updateChecker = c
+}
+
+// SetCatalogChecker sets the catalog update checker instance.
+func (s *Server) SetCatalogChecker(c *catalog.Checker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.catalogChecker = c
 }
 
 // ReloadCredentials re-reads admin credentials from SQLite under the mutex and clears all active sessions.
@@ -929,8 +939,6 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(route("POST", "/api/domains/bulk-assign-group"), s.auth(s.handleBulkAssignGroup))
 	mux.HandleFunc(route("POST", "/api/domains/bulk-assign-egress"), s.auth(s.handleBulkAssignEgress))
 	mux.HandleFunc(route("POST", "/api/domains/bulk-assign-mode"), s.auth(s.handleBulkAssignMode))
-	mux.HandleFunc(route("GET", "/api/domains/export.txt"), s.auth(s.handleExportDomainsTXT))
-	mux.HandleFunc(route("POST", "/api/domains/import-txt"), s.auth(s.handleImportDomainsTXT))
 	mux.HandleFunc(route("GET", "/api/domains/export.json"), s.auth(s.handleExportDomainsJSON))
 	mux.HandleFunc(route("POST", "/api/domains/import-json"), s.auth(s.handleImportDomainsJSON))
 	mux.HandleFunc(route("PUT", "/api/domains/{domain}"), s.auth(s.handleUpdateDomain))
@@ -938,6 +946,15 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(route("GET", "/api/domains/{domain}/usage"), s.auth(s.handleGetDomainUsage))
 	mux.HandleFunc(route("GET", "/api/domains/{domain}/usage/monthly"), s.auth(s.handleGetDomainUsageMonthly))
 	mux.HandleFunc(route("GET", "/api/domains/{domain}/usage/users"), s.auth(s.handleGetDomainUsageUsers))
+
+	// Default Domains Catalog.
+	mux.HandleFunc(route("GET", "/api/catalog"), s.auth(s.handleGetCatalog))
+	mux.HandleFunc(route("GET", "/api/catalog/status"), s.auth(s.handleGetCatalogStatus))
+	mux.HandleFunc(route("POST", "/api/catalog/preview"), s.auth(s.handlePreviewCatalog))
+	mux.HandleFunc(route("POST", "/api/catalog/load"), s.auth(s.handleLoadCatalog))
+	mux.HandleFunc(route("POST", "/api/catalog/nodes"), s.auth(s.handleCreateCatalogNode))
+	mux.HandleFunc(route("PUT", "/api/catalog/nodes/{id}"), s.auth(s.handleUpdateCatalogNode))
+	mux.HandleFunc(route("DELETE", "/api/catalog/nodes/{id}"), s.auth(s.handleDeleteCatalogNode))
 
 	// Global blacklist.
 	mux.HandleFunc(route("GET", "/api/blacklist"), s.auth(s.handleListBlacklist))

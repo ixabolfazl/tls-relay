@@ -5,13 +5,13 @@
 
 import { html, raw, createElement } from '../core/dom.js';
 import { parsePorts, formatPorts, parseDomainTokens, isValidDomainToken } from '../domain/rules.js';
-import { createCombobox } from '../ui/combobox.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { store } from '../core/store.js';
 import { toast } from '../ui/toast.js';
 
 export function createDomainRuleForm({
-  initialData = {}, // { domain, group_name, mode, ports, use_egress_proxy, include_subdomains }
+  initialData = {}, // { domain, group_name, catalog_node, mode, ports, use_egress_proxy, include_subdomains }
+  categories = [],
   groups = [],
   isEdit = false,
   layout = isEdit ? 'stacked' : 'grid',
@@ -95,10 +95,20 @@ export function createDomainRuleForm({
             </div>
           `}
 
-      <!-- Group Combobox -->
-      <div class="field">
-        <label class="field-label">Group (optional)</label>
-        <div id="${uid}-group-container"></div>
+      <!-- Category & Subcategory Selection -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="field">
+          <label class="field-label" for="${uid}-category-select">Category</label>
+          <select id="${uid}-category-select" class="select text-sm">
+            <option value="">-- None (Uncategorized) --</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="${uid}-subcategory-select">Subcategory</label>
+          <select id="${uid}-subcategory-select" class="select text-sm">
+            <option value="">-- None --</option>
+          </select>
+        </div>
       </div>
 
       <!-- 2. Permitted Ports (shown for proxy mode) -->
@@ -281,18 +291,87 @@ export function createDomainRuleForm({
     });
   });
 
-  // Render Group Combobox
-  const groupContainer = formWrapper.querySelector(`#${uid}-group-container`);
-  const groupCombobox = createCombobox({
-    options: groups,
-    value: currentGroup,
-    placeholder: 'Select or type group name...',
-    onChange: (newGroup) => {
-      currentGroup = newGroup;
+  // Category & Subcategory Selection
+  const categorySelect = formWrapper.querySelector(`#${uid}-category-select`);
+  const subcategorySelect = formWrapper.querySelector(`#${uid}-subcategory-select`);
+
+  let currentCategories = categories || [];
+
+  function populateCategories(cats) {
+    currentCategories = cats || [];
+    const prevCat = categorySelect ? categorySelect.value : '';
+    if (categorySelect) {
+      categorySelect.innerHTML = '<option value="">-- None (Uncategorized) --</option>';
+      for (const c of currentCategories) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        categorySelect.appendChild(opt);
+      }
+      if (prevCat && currentCategories.some((c) => c.id === prevCat)) {
+        categorySelect.value = prevCat;
+      }
+    }
+    populateSubcategories(categorySelect ? categorySelect.value : '');
+  }
+
+  function populateSubcategories(catId) {
+    if (!subcategorySelect) return;
+    const prevSub = subcategorySelect.value;
+    subcategorySelect.innerHTML = '<option value="">-- None --</option>';
+    if (!catId) return;
+    const cat = currentCategories.find((c) => c.id === catId);
+    if (!cat || !cat.subcategories) return;
+    for (const s of cat.subcategories) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      subcategorySelect.appendChild(opt);
+    }
+    if (prevSub && cat.subcategories.some((s) => s.id === prevSub)) {
+      subcategorySelect.value = prevSub;
+    }
+  }
+
+  function selectCatalogNode(nodeId) {
+    if (!nodeId || !categorySelect) return;
+    for (const c of currentCategories) {
+      if (c.id === nodeId) {
+        categorySelect.value = c.id;
+        populateSubcategories(c.id);
+        if (subcategorySelect) subcategorySelect.value = '';
+        return;
+      }
+      if (c.subcategories) {
+        for (const s of c.subcategories) {
+          if (s.id === nodeId) {
+            categorySelect.value = c.id;
+            populateSubcategories(c.id);
+            if (subcategorySelect) subcategorySelect.value = s.id;
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  if (categorySelect) {
+    categorySelect.addEventListener('change', () => {
+      populateSubcategories(categorySelect.value);
       if (onChange) onChange();
-    },
-  });
-  groupContainer.appendChild(groupCombobox.el);
+    });
+  }
+
+  if (subcategorySelect) {
+    subcategorySelect.addEventListener('change', () => {
+      if (onChange) onChange();
+    });
+  }
+
+  populateCategories(currentCategories);
+  if (initialData.catalog_node) {
+    selectCatalogNode(initialData.catalog_node);
+  }
 
   const domainInputEl = formWrapper.querySelector(`#${uid}-domain-input`);
   const cleanBtnEl = formWrapper.querySelector(`#${uid}-clean-btn`);
@@ -434,10 +513,27 @@ export function createDomainRuleForm({
     const rawPorts = portsInput ? portsInput.value : '';
     const parsedPorts = currentMode === 'proxy' ? parsePorts(rawPorts) : 'all';
 
+    const catId = categorySelect ? categorySelect.value : '';
+    const subId = subcategorySelect ? subcategorySelect.value : '';
+    const chosenNode = subId || catId || '';
+    let chosenGroupName = '';
+    if (catId) {
+      const c = currentCategories.find((cat) => cat.id === catId);
+      if (c) {
+        if (subId && c.subcategories) {
+          const s = c.subcategories.find((sub) => sub.id === subId);
+          chosenGroupName = s ? s.name : c.name;
+        } else {
+          chosenGroupName = c.name;
+        }
+      }
+    }
+
     return {
       domain: domainInput ? domainInput.value.trim() : initialData.domain || '',
       mode: currentMode,
-      group_name: groupCombobox.getValue().trim(),
+      catalog_node: chosenNode,
+      group_name: chosenGroupName,
       ports: parsedPorts,
       include_subdomains: subdomainsCheckbox ? subdomainsCheckbox.checked : false,
       use_egress_proxy: egressVal,
@@ -448,9 +544,8 @@ export function createDomainRuleForm({
     if (data.mode !== undefined) {
       setMode(data.mode);
     }
-    if (data.group_name !== undefined) {
-      groupCombobox.setValue(data.group_name);
-      currentGroup = data.group_name;
+    if (data.catalog_node !== undefined) {
+      selectCatalogNode(data.catalog_node);
     }
     if (data.ports !== undefined) {
       const pInput = formWrapper.querySelector(`#${uid}-ports-input`);
@@ -481,7 +576,12 @@ export function createDomainRuleForm({
     el: formWrapper,
     getData,
     setData,
-    setGroups: (newGroups) => groupCombobox.setOptions(newGroups),
+    setCategories: (cats) => populateCategories(cats),
+    setGroups: (cats) => {
+      if (Array.isArray(cats) && cats.length > 0 && typeof cats[0] === 'object') {
+        populateCategories(cats);
+      }
+    },
     getDomainInput: () => formWrapper.querySelector(`#${uid}-domain-input`),
     setDomain: (val) => {
       const input = formWrapper.querySelector(`#${uid}-domain-input`);

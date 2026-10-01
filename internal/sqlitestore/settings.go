@@ -6,6 +6,10 @@ import (
 	"fmt"
 )
 
+const (
+	SettingCatalogVersion = "catalog_version"
+)
+
 // GetSetting retrieves a setting value by key. Returns value, found bool, error.
 func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error) {
 	var val string

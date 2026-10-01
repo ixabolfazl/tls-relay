@@ -382,157 +382,8 @@ func doAuthedRequest(t *testing.T, srv *panel.Server, method, path, contentType,
 	return rec
 }
 
-func TestExportDomainsTXT_EmptyStore(t *testing.T) {
-	dir := t.TempDir()
-	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
-	defer store.Close()
-
-	rec := doAuthedRequest(t, srv, "GET", "/api/domains/export.txt", "", "", session, csrf)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	ct := rec.Header().Get("Content-Type")
-	if !strings.HasPrefix(ct, "text/plain") {
-		t.Errorf("expected text/plain content type, got %q", ct)
-	}
-	// Should contain header comment lines only
-	body := rec.Body.String()
-	if !strings.Contains(body, "# TLS Relay domain rules export") {
-		t.Errorf("expected export header comment in body, got: %s", body)
-	}
-}
-
-func TestImportDomainsTXT_BasicRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
-	defer store.Close()
-
-	txtPayload := strings.Join([]string{
-		"# comment line",
-		"",
-		"example.com",
-		"direct:bypass.example.com",
-		"block:ads.example.com",
-		"proxy.example.com:443,8443",
-		"egress.example.com use_egress=true",
-	}, "\n")
-
-	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-txt", "text/plain", txtPayload, session, csrf)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on import, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	added := int(result["domains_added"].(float64))
-	if added != 5 {
-		t.Errorf("expected 5 domains added, got %d (result: %v)", added, result)
-	}
-	failed := int(result["failed"].(float64))
-	if failed != 0 {
-		t.Errorf("expected 0 failed, got %d", failed)
-	}
-
-	// Now export and verify the round-trip
-	expRec := doAuthedRequest(t, srv, "GET", "/api/domains/export.txt", "", "", session, csrf)
-	if expRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on export, got %d", expRec.Code)
-	}
-	exported := expRec.Body.String()
-	if !strings.Contains(exported, "example.com") {
-		t.Errorf("exported TXT should contain 'example.com', got: %s", exported)
-	}
-	if !strings.Contains(exported, "direct:bypass.example.com") {
-		t.Errorf("exported TXT should contain 'direct:bypass.example.com', got: %s", exported)
-	}
-	if !strings.Contains(exported, "block:ads.example.com") {
-		t.Errorf("exported TXT should contain 'block:ads.example.com', got: %s", exported)
-	}
-	if !strings.Contains(exported, "use_egress=true") {
-		t.Errorf("exported TXT should contain egress domain with 'use_egress=true', got: %s", exported)
-	}
-}
-
-func TestImportDomainsTXT_DuplicateLinesDeduplicated(t *testing.T) {
-	dir := t.TempDir()
-	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
-	defer store.Close()
-
-	txtPayload := "example.com\nexample.com\ndirect:example.com\n"
-	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-txt", "text/plain", txtPayload, session, csrf)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var result map[string]interface{}
-	_ = json.NewDecoder(rec.Body).Decode(&result)
-	added := int(result["domains_added"].(float64))
-	if added != 1 {
-		t.Errorf("expected 1 domain added (duplicates deduped), got %d", added)
-	}
-}
-
-func TestImportDomainsTXT_InvalidDomain(t *testing.T) {
-	dir := t.TempDir()
-	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
-	defer store.Close()
-
-	txtPayload := "valid.example.com\n!!invalid!!\ngood.example.com\n"
-	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-txt", "text/plain", txtPayload, session, csrf)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 (partial import ok), got %d: %s", rec.Code, rec.Body.String())
-	}
-	var result map[string]interface{}
-	_ = json.NewDecoder(rec.Body).Decode(&result)
-	added := int(result["domains_added"].(float64))
-	failed := int(result["failed"].(float64))
-	if added != 2 {
-		t.Errorf("expected 2 valid domains added, got %d", added)
-	}
-	if failed != 1 {
-		t.Errorf("expected 1 failed domain, got %d", failed)
-	}
-}
-
-func TestImportDomainsTXT_EgressFieldPreserved(t *testing.T) {
-	dir := t.TempDir()
-	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
-	defer store.Close()
-
-	txtPayload := "egress.example.com use_egress=true\nnormal.example.com\n"
-	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-txt", "text/plain", txtPayload, session, csrf)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Check DB directly
-	ctx := context.Background()
-	rows, err := store.ListDomainRules(ctx)
-	if err != nil {
-		t.Fatalf("ListDomainRules failed: %v", err)
-	}
-	found := false
-	for _, row := range rows {
-		if row.Domain == "egress.example.com" {
-			if row.UseEgressProxy != "true" {
-				t.Errorf("expected use_egress_proxy=true for egress.example.com, got %q", row.UseEgressProxy)
-			}
-			found = true
-		}
-		if row.Domain == "normal.example.com" {
-			if row.UseEgressProxy == "true" {
-				t.Errorf("expected use_egress_proxy!=true for normal.example.com, got %q", row.UseEgressProxy)
-			}
-		}
-	}
-	if !found {
-		t.Error("egress.example.com not found in DB after import")
-	}
-}
-
 // ---------------------------------------------------------------------------
-// JSON Export / Import
+// JSON Export / Import (version 2 & v1-compat)
 // ---------------------------------------------------------------------------
 
 func TestExportDomainsJSON_EmptyStore(t *testing.T) {
@@ -552,26 +403,47 @@ func TestExportDomainsJSON_EmptyStore(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if v, _ := payload["version"].(float64); int(v) != 1 {
-		t.Errorf("expected version=1, got %v", payload["version"])
+	if v, _ := payload["version"].(float64); int(v) != 2 {
+		t.Errorf("expected version=2, got %v", payload["version"])
 	}
-	domains, _ := payload["domains"].([]interface{})
-	if len(domains) != 0 {
-		t.Errorf("expected empty domains array, got %d items", len(domains))
+	cats, _ := payload["categories"].([]interface{})
+	if len(cats) != 0 {
+		t.Errorf("expected empty categories array, got %d items", len(cats))
+	}
+	uncat, _ := payload["uncategorized"].([]interface{})
+	if len(uncat) != 0 {
+		t.Errorf("expected empty uncategorized array, got %d items", len(uncat))
 	}
 }
 
-func TestImportDomainsJSON_BasicRoundTrip(t *testing.T) {
+func TestImportDomainsJSON_V2RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
 	defer store.Close()
 
-	body := `{"domains":[
-		{"domain":"example.com","mode":"proxy","ports":[443],"group":"streaming"},
-		{"domain":"bypass.example.com","mode":"direct","ports":[443]},
-		{"domain":"block.example.com","mode":"block","ports":[80,443],"group":"ads"},
-		{"domain":"multi.example.com","mode":"proxy","ports":"all","group":"cdn"}
-	]}`
+	body := `{
+		"version": 2,
+		"categories": [
+			{
+				"id": "social",
+				"name": "Social Media",
+				"enabled": true,
+				"subcategories": [
+					{
+						"id": "social.telegram",
+						"name": "Telegram",
+						"enabled": true,
+						"domains": [
+							{"domain": "telegram.org", "mode": "proxy", "ports": [443]}
+						]
+					}
+				]
+			}
+		],
+		"uncategorized": [
+			{"domain": "example.com", "mode": "direct", "ports": "all", "group": "test"}
+		]
+	}`
 
 	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-json", "application/json", body, session, csrf)
 	if rec.Code != http.StatusOK {
@@ -579,43 +451,85 @@ func TestImportDomainsJSON_BasicRoundTrip(t *testing.T) {
 	}
 	var result map[string]interface{}
 	_ = json.NewDecoder(rec.Body).Decode(&result)
-	if int(result["domains_added"].(float64)) != 4 {
-		t.Errorf("expected 4 added, got %v", result["domains_added"])
+	if int(result["domains_added"].(float64)) != 2 {
+		t.Errorf("expected 2 added, got %v", result["domains_added"])
 	}
-	if int(result["failed"].(float64)) != 0 {
-		t.Errorf("expected 0 failed, got %v", result["failed"])
+	if int(result["categories_added"].(float64)) != 2 {
+		t.Errorf("expected 2 categories added, got %v", result["categories_added"])
 	}
 
-	// Round-trip: export and verify group + mode
+	// Round-trip export v2
 	expRec := doAuthedRequest(t, srv, "GET", "/api/domains/export.json", "", "", session, csrf)
 	if expRec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on export, got %d", expRec.Code)
 	}
 	var exported map[string]interface{}
 	_ = json.NewDecoder(expRec.Body).Decode(&exported)
-	items, _ := exported["domains"].([]interface{})
-	if len(items) != 4 {
-		t.Fatalf("expected 4 domains in export, got %d", len(items))
+	if int(exported["version"].(float64)) != 2 {
+		t.Errorf("expected version 2, got %v", exported["version"])
+	}
+	cats, _ := exported["categories"].([]interface{})
+	if len(cats) != 1 {
+		t.Fatalf("expected 1 category, got %d", len(cats))
+	}
+	cat0 := cats[0].(map[string]interface{})
+	if cat0["id"] != "social" {
+		t.Errorf("expected category social, got %v", cat0["id"])
+	}
+	subs, _ := cat0["subcategories"].([]interface{})
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subcategory, got %d", len(subs))
+	}
+	sub0 := subs[0].(map[string]interface{})
+	doms, _ := sub0["domains"].([]interface{})
+	if len(doms) != 1 {
+		t.Fatalf("expected 1 domain under social.telegram, got %d", len(doms))
+	}
+	d0 := doms[0].(map[string]interface{})
+	if d0["domain"] != "telegram.org" {
+		t.Errorf("expected telegram.org, got %v", d0["domain"])
 	}
 
-	// Verify group is preserved
-	foundGroup := false
-	for _, raw := range items {
-		item := raw.(map[string]interface{})
-		if item["domain"] == "example.com" {
-			if item["group"] != "streaming" {
-				t.Errorf("expected group=streaming, got %v", item["group"])
-			}
-			foundGroup = true
-		}
-		if item["domain"] == "multi.example.com" {
-			if item["ports"] != "all" {
-				t.Errorf("expected ports=all, got %v", item["ports"])
-			}
-		}
+	uncat, _ := exported["uncategorized"].([]interface{})
+	if len(uncat) != 1 {
+		t.Fatalf("expected 1 uncategorized domain, got %d", len(uncat))
 	}
-	if !foundGroup {
-		t.Error("example.com not found in export")
+	u0 := uncat[0].(map[string]interface{})
+	if u0["domain"] != "example.com" {
+		t.Errorf("expected example.com, got %v", u0["domain"])
+	}
+}
+
+func TestImportDomainsJSON_V1Compat(t *testing.T) {
+	dir := t.TempDir()
+	srv, store, _, session, csrf := setupTestPanel(t, filepath.Join(dir, "test.db"))
+	defer store.Close()
+
+	body := `{"domains":[
+		{"domain":"v1.example.com","mode":"proxy","ports":[443],"group":"streaming"}
+	]}`
+
+	rec := doAuthedRequest(t, srv, "POST", "/api/domains/import-json", "application/json", body, session, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on v1 import, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&result)
+	if int(result["domains_added"].(float64)) != 1 {
+		t.Errorf("expected 1 added, got %v", result["domains_added"])
+	}
+
+	// In v2 export, it should be in uncategorized
+	expRec := doAuthedRequest(t, srv, "GET", "/api/domains/export.json", "", "", session, csrf)
+	var exported map[string]interface{}
+	_ = json.NewDecoder(expRec.Body).Decode(&exported)
+	uncat, _ := exported["uncategorized"].([]interface{})
+	if len(uncat) != 1 {
+		t.Fatalf("expected 1 uncategorized domain for v1 import, got %d", len(uncat))
+	}
+	u0 := uncat[0].(map[string]interface{})
+	if u0["domain"] != "v1.example.com" {
+		t.Errorf("expected v1.example.com, got %v", u0["domain"])
 	}
 }
 

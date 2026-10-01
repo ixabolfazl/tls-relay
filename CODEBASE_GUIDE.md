@@ -43,6 +43,7 @@
 *   **`cmd/relay/main.go`**: Service entrypoint, CLI flag parsing (`-config`, `-init-admin`, `-user`, `-pass-stdin`), runtime settings resolution (SQLite `app_settings` > Env > `config.yaml`), and graceful restart channel management.
 *   **`internal/panel`**: Serves the admin panel interface, registers REST endpoints, manages active session cookies, locks out brute-force login attempts, enforces CSRF tokens, and manages dynamic proxy/port settings.
 *   **`internal/sqlitestore`**: Backing SQLite database persisting users, IP allocations, configuration settings (`app_settings`), domain rules, blacklist logs, and telemetry metrics.
+*   **`internal/catalog`**: Parses and validates the default domains catalog (`data/default-domains.json` embedded via `data/embed.go`), expands wildcards, checks remote GitHub updates via singleflight/cached HTTP fetcher with fallback, and computes dry-run previews and non-destructive merge upserts.
 *   **`internal/portal`**: Services the public landing page, client setup guide, and magic-link connection portal to register clients automatically.
 *   **`internal/syncer`**: Coordinates SQLite persistence with in-memory RuleStore and AccessStore snapshots.
 *   **`internal/requestlog`**: Buffers and persists diagnostic event logs asynchronously.
@@ -88,6 +89,7 @@
 | `http_front_max_global_conns` | integer | `5000` | Front router max global concurrent connections |
 | `egress_proxy_enabled` | bool | `false` | Global SOCKS5 egress proxy enabled |
 | `egress_proxy_addr` | `host:port` | empty | SOCKS5 proxy upstream address |
+| `catalog_version` | integer string | empty | Installed default domain catalog version |
 
 ### New API Fields & Query Parameters
 *   `GET /api/request-logs?before_id=<id>&limit=<n>`: Cursor pagination for request logs. Returns `{logs, next_before_id, has_more}`. `total` is only returned when no filters are applied and is backed by a 30s cached count.
@@ -95,10 +97,15 @@
 *   `GET /api/settings` & `PUT /api/settings`: Exposes `lookup_enabled`, `lookup_require_registered`, `http_front_max_conns_per_ip`, `http_front_max_global_conns`, and returns `default_max_ips`.
 *   `POST /api/dns-check/start` (portal): Issues a short-lived 24-character hex probe token, records it in `DNSCheckRegistry`, and returns `{"token": "<hex>"}`. Rate-limited to 5 req/s per IP.
 *   `GET /api/dns-check/result?token=<hex>` (portal): Returns `{"seen": bool, "seen_at": RFC3339, "source_ip": string}`. When `seen` is true the DNS resolver intercepted a probe query for the token, confirming the client routes DNS through the relay.
-*   `GET /api/domains/export.txt` (**v1.5.0**): Downloads all domain rules as `text/plain`. Format: `[mode:]domain[:ports] [use_egress=true]`. Proxy mode and port 443 are omitted.
-*   `POST /api/domains/import-txt` (**v1.5.0**): Accepts `text/plain` body, one rule per line. Parses `direct:`, `block:`, or `proxy:` prefix, optional `:ports` suffix (or `:all`), `use_egress=true` flag. Skips blank lines and `#` comments. Returns `{domains_added, domains_updated, failed, errors[]}`.
-*   `GET /api/domains/export.json` (**v1.6.0**): Downloads all domain rules as `application/json` (`domains.json`). Includes `domain`, `mode`, `ports`, `group`, and conditionally `use_egress` when global egress is enabled.
-*   `POST /api/domains/import-json` (**v1.6.0**): Accepts `application/json` payload `{domains: [...]}`. Upserts domain rules transactionally, preserves groups, and validates/sanitizes domains. Returns `{domains_added, domains_updated, failed, errors[]}`.
+*   `GET /api/domains/export.json` (**v1.7.0 / v2 format**): Downloads all domain rules in format v2 with `version: 2`, `categories` (with nested `subcategories` and domain items), and `uncategorized` domains.
+*   `POST /api/domains/import-json` (**v1.7.0**): Accepts JSON payload in format v2 (or legacy v1 shape `{domains: [...]}`). Upserts domain rules transactionally, preserves `catalog_nodes` and `enabled` flags, and validates/sanitizes domains.
+*   `GET /api/catalog` (**v1.7.0**): Returns hierarchical catalog tree (`categories` → `subcategories`) with `id, name, enabled, domain_count, enabled_domain_count`, plus `installed_version`.
+*   `GET /api/catalog/status?refresh=1` (**v1.7.0**): Returns `{installed_version, embedded_version, remote_version, remote_error, update_available}`.
+*   `POST /api/catalog/preview` (**v1.7.0**): Dry-run catalog apply returning `CatalogApplyResult` with diff metrics and domain samples.
+*   `POST /api/catalog/load` (**v1.7.0**): Applies catalog from `source` (`"embedded"` or `"github"`). Enforces `expected_version` check (409 on mismatch).
+*   `PUT /api/catalog/nodes/{id}` (**v1.7.0**): Updates catalog node enabled status or display name. Cascades category toggles to subcategories and domains.
+*   `POST /api/catalog/nodes` (**v1.7.0**): Creates a new catalog category or subcategory node.
+*   `DELETE /api/catalog/nodes/{id}` (**v1.7.0**): Deletes a catalog node and clears associated `catalog_node` references from domain rules without deleting domains.
 
 ---
 

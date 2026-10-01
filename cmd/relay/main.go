@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ixabolfazl/tls-relay/internal/access"
+	"github.com/ixabolfazl/tls-relay/internal/catalog"
 	"github.com/ixabolfazl/tls-relay/internal/config"
 	"github.com/ixabolfazl/tls-relay/internal/dnsresolver"
 	"github.com/ixabolfazl/tls-relay/internal/frontrouter"
@@ -508,6 +509,34 @@ func run(cfgPath string) error {
 	accessStore.SetEvictionHook(connTracker)
 
 	// -----------------------------------------------------------------------
+	// Default domains catalog initialization (auto-apply only on clean installs)
+	// -----------------------------------------------------------------------
+	if sqlStore != nil {
+		catVer, hasCatVer, err := sqlStore.GetSetting(context.Background(), sqlitestore.SettingCatalogVersion)
+		if err == nil && (!hasCatVer || strings.TrimSpace(catVer) == "") {
+			existingRules, err := sqlStore.ListDomainRules(context.Background())
+			if err == nil && len(existingRules) == 0 {
+				embCat, err := catalog.Embedded()
+				if err == nil {
+					res, err := sqlStore.ApplyCatalog(context.Background(), embCat, false)
+					if err == nil {
+						slog.Info("applied embedded default domains catalog on initial start",
+							"version", res.Version,
+							"categories_added", res.CategoriesAdded,
+							"subcategories_added", res.SubcategoriesAdded,
+							"domains_added", res.DomainsAdded,
+						)
+					} else {
+						slog.Error("failed applying embedded catalog", "error", err)
+					}
+				} else {
+					slog.Error("failed parsing embedded catalog", "error", err)
+				}
+			}
+		}
+	}
+
+	// -----------------------------------------------------------------------
 	// Create syncer and load initial state from SQLite into in-memory caches
 	// -----------------------------------------------------------------------
 	syncer := syncer.New(ruleStore, accessStore, sqlStore)
@@ -637,6 +666,10 @@ func run(cfgPath string) error {
 	panelSrv.SetRequestLogger(reqLogger)
 	panelSrv.SetLimitTracker(limits)
 	panelSrv.SetEgressDialer(egressDialer)
+	catalogChecker := catalog.NewChecker(
+		catalog.WithHTTPClient(egressDialer.HTTPClient(10 * time.Second)),
+	)
+	panelSrv.SetCatalogChecker(catalogChecker)
 	panelSrv.SetPortAllowList(allowList)
 	panelSrv.SetListenPorts(cfg.Listen.Ports)
 	panelSrv.SetListenHTTPPorts(cfg.Listen.HTTPPorts)

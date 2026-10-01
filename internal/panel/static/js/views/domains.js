@@ -10,7 +10,6 @@ import { TableState } from '../ui/table.js';
 import { dialog } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
 import { showMenu } from '../ui/menu.js';
-import { createCombobox } from '../ui/combobox.js';
 import { createSegmentedControl } from '../ui/segmented.js';
 import { createDomainRuleForm } from './domain-rule-form.js';
 import { openUsageReportDialog } from './usage-report.js';
@@ -25,13 +24,8 @@ import {
 
 export function mount(container) {
   let allDomains = [];
-  let groups = [];
+  let catalogCategories = [];
   let activeMode = 'proxy'; // proxy | direct | block
-  let viewMode = 'flat';
-  try {
-    viewMode = localStorage.getItem('relay_domains_view') || 'flat';
-  } catch (_) {} // flat | grouped
-  let expandedGroups = new Set(); // Default: all groups collapsed
   let activeRange = 'today';
   let searchQuery = '';
   // Whether the global egress proxy is enabled. Fetched from settings once on
@@ -53,18 +47,9 @@ export function mount(container) {
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 class="text-2xl font-bold text-txt">Domain Rules</h1>
-            <p class="text-xs text-txt-muted mt-0.5">Manage SNI routing rules, groups, and access policies</p>
+            <p class="text-xs text-txt-muted mt-0.5">Manage SNI routing rules and access policies</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap self-start sm:self-auto">
-            <button id="dom-export-txt-btn" type="button" class="btn btn-secondary btn-sm">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-              <span>Export TXT</span>
-            </button>
-            <label id="dom-import-txt-label" class="btn btn-secondary btn-sm cursor-pointer" role="button" tabindex="0">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-              <span>Import TXT</span>
-              <input id="dom-import-txt-input" type="file" accept=".txt,text/plain" class="hidden" />
-            </label>
             <button id="dom-export-json-btn" type="button" class="btn btn-secondary btn-sm">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
               <span>Export JSON</span>
@@ -110,9 +95,6 @@ export function mount(container) {
               <!-- Mode Tabs -->
               <div id="dom-mode-segmented"></div>
 
-              <!-- Grouped / Flat View Toggle -->
-              <div id="dom-view-segmented"></div>
-
               <!-- Time Range Selector -->
               <div id="dom-range-segmented"></div>
             </div>
@@ -123,7 +105,7 @@ export function mount(container) {
                   id="dom-search-input"
                   type="text"
                   class="input pl-8"
-                  placeholder="Filter domains or groups..."
+                  placeholder="Filter domains..."
                 />
                 <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-txt-subtle pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
@@ -141,7 +123,6 @@ export function mount(container) {
               </button>
             </div>
             <div class="flex items-center gap-2">
-              <button id="dom-bulk-group-btn" type="button" class="btn btn-secondary btn-sm">Assign Group</button>
               <button id="dom-bulk-mode-btn" type="button" class="btn btn-secondary btn-sm">Change Mode</button>
               <button id="dom-bulk-egress-btn" type="button" class="btn btn-secondary btn-sm">Set Egress</button>
               <button id="dom-bulk-delete-btn" type="button" class="btn btn-danger btn-sm">Delete</button>
@@ -206,7 +187,7 @@ export function mount(container) {
     const fieldsRoot = $('#dom-add-form-fields', container);
     fieldsRoot.innerHTML = '';
     addFormObj = createDomainRuleForm({
-      groups,
+      categories: catalogCategories,
       isEdit: false,
     });
     fieldsRoot.appendChild(addFormObj.el);
@@ -246,6 +227,7 @@ export function mount(container) {
       const res = await api.addDomain({
         domain: data.domain,
         group_name: data.group_name,
+        catalog_node: data.catalog_node,
         mode: data.mode,
         ports: Array.isArray(data.ports) ? data.ports.join(',') : data.ports,
         use_egress_proxy: String(data.use_egress_proxy),
@@ -300,26 +282,6 @@ export function mount(container) {
     modeContainer.appendChild(modeSegmented.el);
   }
 
-  // View Mode Segmented (Flat vs Grouped)
-  const viewContainer = $('#dom-view-segmented', container);
-  const viewSegmented = createSegmentedControl({
-    options: [
-      { value: 'flat', label: 'Flat View' },
-      { value: 'grouped', label: 'Grouped View' },
-    ],
-    value: viewMode,
-    size: 'sm',
-    onChange: (val) => {
-      viewMode = val;
-      try {
-        localStorage.setItem('relay_domains_view', val);
-      } catch (_) {}
-      tableState.currentPage = 1;
-      renderTable();
-    },
-  });
-  viewContainer.appendChild(viewSegmented.el);
-
   // Search input
   $('#dom-search-input', container).addEventListener('input', (e) => {
     searchQuery = e.target.value.toLowerCase().trim();
@@ -341,18 +303,14 @@ export function mount(container) {
         // Keep current egressEnabled value.
       }
 
+      try {
+        const catRes = await api.getCatalog();
+        catalogCategories = catRes.categories || [];
+        if (addFormObj) addFormObj.setCategories(catalogCategories);
+      } catch (_) {}
+
       const res = await api.getDomains(activeRange);
       allDomains = res.domains || [];
-
-      // Extract unique groups
-      const groupSet = new Set();
-      for (const d of allDomains) {
-        if (d.group_name && d.group_name.trim()) {
-          groupSet.add(d.group_name.trim());
-        }
-      }
-      groups = Array.from(groupSet).sort();
-      if (addFormObj) addFormObj.setGroups(groups);
 
       initModeSegmented();
       initRangeSegmented();
@@ -425,31 +383,19 @@ export function mount(container) {
       return;
     }
 
-    if (viewMode === 'flat') {
-      const sliceInfo = tableState.getPageSlice(sortedDomains);
-      renderFlatRows(tbody, sliceInfo.slice);
-      renderPagination($('#dom-pagination', container), {
-        currentPage: sliceInfo.currentPage,
-        totalPages: sliceInfo.totalPages,
-        totalItems: sliceInfo.total,
-        pageSize: tableState.pageSize,
-        onPageChange: (newPage) => {
-          tableState.setPage(newPage);
-          renderTable();
-        },
-      });
-      tableState.updateHeaderCheckbox($('#dom-select-all', container), sliceInfo.slice);
-    } else {
-      renderGroupedRows(tbody, sortedDomains);
-      renderPagination($('#dom-pagination', container), {
-        currentPage: 1,
-        totalPages: 1,
-        totalItems: sortedDomains.length,
-        pageSize: sortedDomains.length,
-        onPageChange: () => {},
-      });
-      tableState.updateHeaderCheckbox($('#dom-select-all', container), sortedDomains);
-    }
+    const sliceInfo = tableState.getPageSlice(sortedDomains);
+    renderFlatRows(tbody, sliceInfo.slice);
+    renderPagination($('#dom-pagination', container), {
+      currentPage: sliceInfo.currentPage,
+      totalPages: sliceInfo.totalPages,
+      totalItems: sliceInfo.total,
+      pageSize: tableState.pageSize,
+      onPageChange: (newPage) => {
+        tableState.setPage(newPage);
+        renderTable();
+      },
+    });
+    tableState.updateHeaderCheckbox($('#dom-select-all', container), sliceInfo.slice);
 
     updateBulkBar(filteredDomains);
     applyEgressVisibility();
@@ -477,75 +423,6 @@ export function mount(container) {
     tbody.innerHTML = '';
     for (const d of items) {
       tbody.appendChild(createRowElement(d));
-    }
-  }
-
-  function renderGroupedRows(tbody, items) {
-    tbody.innerHTML = '';
-    const groupMap = new Map();
-
-    for (const d of items) {
-      const g = d.group_name || 'Ungrouped';
-      if (!groupMap.has(g)) groupMap.set(g, []);
-      groupMap.get(g).push(d);
-    }
-
-    for (const [groupName, groupItems] of groupMap.entries()) {
-      const isExpanded = expandedGroups.has(groupName);
-      const isCollapsed = !isExpanded;
-      const groupRow = document.createElement('tr');
-      groupRow.className = 'bg-surface-2/80 border-b border-border font-medium select-none';
-
-      const groupSelectedCount = groupItems.filter((i) => tableState.selectedIds.has(i.domain)).length;
-      const isAllGroupSelected = groupSelectedCount === groupItems.length && groupItems.length > 0;
-      const isSomeGroupSelected = groupSelectedCount > 0 && !isAllGroupSelected;
-
-      groupRow.innerHTML = `
-        <td class="table-td w-10 text-center">
-          <input type="checkbox" class="checkbox group-checkbox mx-auto" ${isAllGroupSelected ? 'checked' : ''} />
-        </td>
-        <td colspan="6" class="table-td cursor-pointer">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2 text-txt">
-              <svg class="w-4 h-4 text-txt-subtle transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-              </svg>
-              <span class="font-semibold">${escapeHtml(groupName)}</span>
-              <span class="badge badge-neutral text-[11px]">${groupItems.length}</span>
-            </div>
-            <span class="text-xs text-txt-subtle">${isExpanded ? 'Click to collapse' : 'Click to expand'}</span>
-          </div>
-        </td>
-      `;
-
-      const groupCheckbox = groupRow.querySelector('.group-checkbox');
-      if (groupCheckbox && isSomeGroupSelected) {
-        groupCheckbox.indeterminate = true;
-      }
-
-      groupCheckbox?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const checked = e.target.checked;
-        tableState.toggleSelectAllVisible(groupItems, checked);
-        renderTable();
-      });
-
-      groupRow.querySelector('td:nth-child(2)')?.addEventListener('click', () => {
-        if (expandedGroups.has(groupName)) {
-          expandedGroups.delete(groupName);
-        } else {
-          expandedGroups.add(groupName);
-        }
-        renderTable();
-      });
-
-      tbody.appendChild(groupRow);
-
-      if (isExpanded) {
-        for (const d of groupItems) {
-          tbody.appendChild(createRowElement(d, true));
-        }
-      }
     }
   }
 
@@ -741,66 +618,6 @@ export function mount(container) {
     }
   });
 
-  // Bulk Assign Group
-  $('#dom-bulk-group-btn', container).addEventListener('click', async () => {
-    const filteredDomains = getFilteredDomains();
-    const selectedDomains = tableState.getSelectedIds(filteredDomains);
-    if (!selectedDomains.length) return;
-
-    const targetDomains = getSelectedTargetDomains(filteredDomains);
-
-    let selectedGroupName = '';
-    const combobox = createCombobox({
-      options: groups,
-      value: '',
-      placeholder: 'Select or type group name...',
-      onChange: (val) => {
-        selectedGroupName = val;
-      },
-    });
-
-    const content = createElement(html`
-      <div class="flex flex-col gap-3">
-        <p class="text-sm text-txt-muted">
-          Select an existing group or type a new group name for <span class="font-semibold text-txt">${selectedDomains.length}</span> selected domain(s):
-        </p>
-        <div class="field pt-1">
-          <label class="field-label">Target Group (leave empty to ungroup)</label>
-          <div id="bulk-group-combobox-container"></div>
-          <span class="field-hint">Choose from existing groups or type a new name.</span>
-        </div>
-      </div>
-    `);
-
-    content.querySelector('#bulk-group-combobox-container').appendChild(combobox.el);
-
-    dialog.open({
-      title: 'Assign Group',
-      content,
-      size: 'md',
-      overflowVisible: true,
-      actions: [
-        { text: 'Cancel', className: 'btn btn-secondary', value: false },
-        {
-          text: 'Assign Group',
-          primary: true,
-          onClick: async (_, { close }) => {
-            const finalGroup = combobox.getValue().trim();
-            close();
-            try {
-              await api.bulkAssignGroup(targetDomains, finalGroup);
-              toast.success(`Assigned group to ${selectedDomains.length} domain(s)`);
-              tableState.clearSelection();
-              await fetchDomains();
-            } catch (err) {
-              toast.error(err.message || 'Failed to assign group');
-            }
-          },
-        },
-      ],
-    });
-  });
-
   // Bulk Assign Mode
   $('#dom-bulk-mode-btn', container).addEventListener('click', async () => {
     const filteredDomains = getFilteredDomains();
@@ -966,7 +783,7 @@ export function mount(container) {
       // Standard single domain edit
       const formObj = createDomainRuleForm({
         initialData: d,
-        groups,
+        categories: catalogCategories,
         isEdit: true,
       });
 
@@ -988,6 +805,7 @@ export function mount(container) {
               try {
                 await api.updateDomain(d.domain, {
                   group_name: data.group_name,
+                  catalog_node: data.catalog_node,
                   mode: data.mode,
                   ports: Array.isArray(data.ports) ? data.ports.join(',') : data.ports,
                   use_egress_proxy: String(data.use_egress_proxy),
@@ -1077,7 +895,7 @@ export function mount(container) {
     const apexWrapper = document.createElement('div');
     const apexForm = createDomainRuleForm({
       initialData: { ...d, domain: d.domain },
-      groups,
+      categories: catalogCategories,
       isEdit: true,
       onChange: () => {
         if (isSynced && !isMirroring) {
@@ -1086,6 +904,7 @@ export function mount(container) {
           wildcardForm.setData({
             mode: data.mode,
             ports: data.ports,
+            catalog_node: data.catalog_node,
             group_name: data.group_name,
             use_egress_proxy: data.use_egress_proxy,
           });
@@ -1101,7 +920,7 @@ export function mount(container) {
     wildcardWrapper.className = 'hidden flex flex-col gap-3';
     const wildcardForm = createDomainRuleForm({
       initialData: { ...d, domain: `*.${d.domain}` },
-      groups,
+      categories: catalogCategories,
       isEdit: true,
       onChange: () => {
         if (isSynced && !isMirroring) {
@@ -1110,6 +929,7 @@ export function mount(container) {
           apexForm.setData({
             mode: data.mode,
             ports: data.ports,
+            catalog_node: data.catalog_node,
             group_name: data.group_name,
             use_egress_proxy: data.use_egress_proxy,
           });
@@ -1175,12 +995,14 @@ export function mount(container) {
               if (isSynced) {
                 await Promise.all([
                   api.updateDomain(d.domain, {
+                    catalog_node: apexData.catalog_node,
                     group_name: apexData.group_name,
                     mode: apexData.mode,
                     ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports,
                     use_egress_proxy: String(apexData.use_egress_proxy),
                   }),
                   api.updateDomain(`*.${d.domain}`, {
+                    catalog_node: apexData.catalog_node,
                     group_name: apexData.group_name,
                     mode: apexData.mode,
                     ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports,
@@ -1191,12 +1013,14 @@ export function mount(container) {
               } else {
                 await Promise.all([
                   api.updateDomain(d.domain, {
+                    catalog_node: apexData.catalog_node,
                     group_name: apexData.group_name,
                     mode: apexData.mode,
                     ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports,
                     use_egress_proxy: String(apexData.use_egress_proxy),
                   }),
                   api.updateDomain(`*.${d.domain}`, {
+                    catalog_node: wildcardData.catalog_node,
                     group_name: wildcardData.group_name,
                     mode: wildcardData.mode,
                     ports: Array.isArray(wildcardData.ports) ? wildcardData.ports.join(',') : wildcardData.ports,
@@ -1293,33 +1117,6 @@ export function mount(container) {
 
   // Initial load
   fetchDomains();
-
-  // TXT Export
-  $('#dom-export-txt-btn', container).addEventListener('click', () => {
-    window.location.href = getApiUrl('api/domains/export.txt');
-  });
-
-  // TXT Import
-  $('#dom-import-txt-input', container).addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const res = await api.importDomainsTxt(text);
-      const failedMsg = res.failed > 0 ? ` (${res.failed} invalid lines skipped)` : '';
-      toast.success(
-        `Imported: ${res.domains_added || 0} added, ${res.domains_updated || 0} updated${failedMsg}`
-      );
-      if (res.errors && res.errors.length > 0) {
-        console.warn('TXT import errors:', res.errors);
-      }
-      await fetchDomains();
-    } catch (err) {
-      toast.error('TXT import failed: ' + (err.message || 'Unknown error'));
-    } finally {
-      e.target.value = '';
-    }
-  });
 
   // JSON Export
   $('#dom-export-json-btn', container).addEventListener('click', () => {
