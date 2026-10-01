@@ -128,10 +128,10 @@ export function mount(container) {
             <table class="table text-xs">
               <thead>
                 <tr>
-                  <th class="table-th">Client IP</th>
+                  <th class="table-th">Client</th>
+                  <th class="table-th">IP Address</th>
                   <th class="table-th">Timestamp</th>
                   <th class="table-th">Type</th>
-                  <th class="table-th">Client</th>
                   <th class="table-th">Domain / Hostname</th>
                   <th class="table-th">Port</th>
                   <th class="table-th">Status</th>
@@ -376,6 +376,9 @@ export function mount(container) {
       const matchedRule = matchRule(log.domain, domainRules);
 
       row.innerHTML = `
+        <td class="table-td font-medium text-txt">
+          ${log.username ? escapeHtml(log.username) : '<span class="text-txt-subtle italic">Anonymous</span>'}
+        </td>
         <td class="table-td font-mono text-txt-muted">
           ${escapeHtml(log.client_ip || '—')}
         </td>
@@ -384,9 +387,6 @@ export function mount(container) {
         </td>
         <td class="table-td">
           ${typeBadge}
-        </td>
-        <td class="table-td font-medium text-txt">
-          ${log.username ? escapeHtml(log.username) : '<span class="text-txt-subtle italic">Anonymous</span>'}
         </td>
         <td class="table-td font-mono font-medium text-txt">
           <div class="flex items-center gap-1.5">
@@ -416,7 +416,6 @@ export function mount(container) {
           }
         </td>
       `;
-
       // Quick add button handler
       const quickAddBtn = row.querySelector('.quick-add-btn');
       if (quickAddBtn) {

@@ -12,9 +12,9 @@ const TONE_CLASSES = {
 };
 
 const STATUS_DEFINITIONS = {
-  // Success
-  resolved: { label: 'Resolved', tone: 'success' },
-  relayed: { label: 'Relayed', tone: 'success' },
+  // Success / Info
+  resolved: { label: 'Resolved', tone: 'info' },    // DNS resolution — sky/blue
+  relayed: { label: 'Relayed', tone: 'success' },   // TLS relay — emerald/green
   // Legacy statuses kept for rows already in the DB — render consistently.
   connected: { label: 'Relayed', tone: 'success' },
   closed: { label: 'Relayed', tone: 'success' },

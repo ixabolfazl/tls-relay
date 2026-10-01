@@ -564,7 +564,6 @@ func (s *Server) handleToggleDomainEnabled(w http.ResponseWriter, r *http.Reques
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
-
 func (s *Server) handleBulkDeleteDomains(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Domains []string `json:"domains"`

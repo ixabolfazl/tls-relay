@@ -418,16 +418,9 @@ export function mount(container) {
           ${formatRelativeTime(u.last_seen_at)}
         </td>
         <td class="table-td text-right font-mono text-xs tabular-nums">
-          <div class="flex flex-col items-end gap-0.5">
-            <div class="flex items-center gap-1 text-violet-600 dark:text-violet-400">
-              <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
-              <span>${(u.total_bytes_sent || 0) > 0 ? formatBytes(u.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}</span>
-            </div>
-            <div class="flex items-center gap-1 text-sky-600 dark:text-sky-400">
-              <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
-              <span>${(u.total_bytes_received || 0) > 0 ? formatBytes(u.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}</span>
-            </div>
-          </div>
+          <span class="${totalBandwidth > 0 ? 'text-txt' : 'text-txt-subtle'}">
+            ${totalBandwidth > 0 ? formatBytes(totalBandwidth) : '0 B'}
+          </span>
         </td>
         <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
           ${(u.total_dns_queries || 0) > 0 ? formatCount(u.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}

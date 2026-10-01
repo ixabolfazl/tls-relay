@@ -1,5 +1,16 @@
 # Release Notes
 
+## v1.7.2
+
+* **UI Improvements:** Improved the UI across the following pages:
+  * **Domain Rules (Tree View):** Group toggle, collapse all, smart search, usage stats in headers, and per-row metrics.
+  * **Domain Rules (Flat View):** Merged Mode/Egress column, subcategory labels, and combined traffic totals.
+  * **Users:** Combined traffic total.
+  * **Logs:** Reordered columns and distinct Relayed/Resolved badge colors.
+  * **Settings:** Default DNS domain field and lookup card visibility fix.
+
+---
+
 ## v1.7.1
 
 * **Flat & Categorized Tree Views:** Switch between a unified flat list and a hierarchical tree view (Category → Subcategory → Domains) with full inline edit, delete, and toggle controls.

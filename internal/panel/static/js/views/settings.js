@@ -195,7 +195,7 @@ export function mount(container) {
                       <span class="text-xs text-txt-muted">Allow domain support checks from landing and setup portal pages</span>
                     </label>
                   </div>
-                  <div class="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
+                  <div id="set-lookup-require-registered-card" class="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
                     <input id="set-lookup-require-registered-switch" type="checkbox" class="checkbox" />
                     <label for="set-lookup-require-registered-switch" class="flex flex-col cursor-pointer select-none">
                       <span class="text-sm font-medium text-txt">Require Registered Client IP</span>
@@ -273,6 +273,15 @@ export function mount(container) {
                     <span id="set-dns-test-status" class="text-xs text-txt-muted"></span>
                   </div>
                   <div id="set-dns-test-results" class="space-y-1.5 text-xs empty:hidden"></div>
+                </div>
+
+                <!-- Default Domain for DNS -->
+                <div class="pt-2 border-t border-border">
+                  <div class="field">
+                    <label class="field-label" for="set-default-domain-input">Default DNS Response Domain</label>
+                    <input id="set-default-domain-input" type="text" class="input font-mono text-sm" placeholder="e.g. relay.example.com" />
+                    <span class="field-hint">Domain returned as the resolved address for domains configured in Proxy mode. Leave empty to use server IP.</span>
+                  </div>
                 </div>
               </div>
               <div class="card-footer">
@@ -609,6 +618,7 @@ export function mount(container) {
       // Lookup policy
       $('#set-lookup-enabled-switch', container).checked = settings.lookup_enabled !== false;
       $('#set-lookup-require-registered-switch', container).checked = Boolean(settings.lookup_require_registered);
+      updateLookupRequireVisibility();
 
       // Network: Permitted Ports
       $('#set-allowed-ports-input', container).value = Array.isArray(settings.allowed_dest_ports)
@@ -620,6 +630,10 @@ export function mount(container) {
       dnsServers = rawDNS ? rawDNS.split(',').map((s) => s.trim()).filter(Boolean) : ['1.1.1.1:53'];
       if (dnsServers.length === 0) dnsServers = ['1.1.1.1:53'];
       renderDNSServers();
+
+      // Default DNS domain
+      const defaultDomainInput = $('#set-default-domain-input', container);
+      if (defaultDomainInput) defaultDomainInput.value = settings.default_domain || '';
 
       // Egress
       $('#set-egress-enabled-switch', container).checked = Boolean(settings.egress_proxy_enabled);
@@ -712,6 +726,14 @@ export function mount(container) {
       if (radio.checked) updatePolicyRadioStyles(radio.value);
     });
   });
+
+  // Lookup require-registered card visibility
+  function updateLookupRequireVisibility() {
+    const lookupEnabled = $('#set-lookup-enabled-switch', container)?.checked;
+    const card = $('#set-lookup-require-registered-card', container);
+    if (card) card.style.display = lookupEnabled ? '' : 'none';
+  }
+  $('#set-lookup-enabled-switch', container).addEventListener('change', updateLookupRequireVisibility);
 
   // Port preset buttons click handler
   $$('.port-preset-btn', container).forEach((btn) => {
@@ -1127,9 +1149,12 @@ export function mount(container) {
       return;
     }
 
+    const defaultDomain = ($('#set-default-domain-input', container)?.value || '').trim();
+
     try {
       await api.updateSettings({
         dns_upstream_addr: addrs.join(','),
+        ...(defaultDomain !== undefined ? { default_domain: defaultDomain } : {}),
       });
       toast.success('Upstream DNS resolvers saved successfully');
       await loadSettings();

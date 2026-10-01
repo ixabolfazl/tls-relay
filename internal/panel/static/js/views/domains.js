@@ -114,6 +114,11 @@ export function mount(container) {
             <div class="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0">
               <!-- Routing Mode Filter (flat mode only) -->
               <div id="dom-mode-segmented"></div>
+              <!-- Collapse All button (tree mode only) -->
+              <button id="dom-collapse-all-btn" type="button" class="hidden btn btn-secondary btn-sm">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                <span>Collapse All</span>
+              </button>
               <!-- Time Range Selector -->
               <div id="dom-range-segmented"></div>
             </div>
@@ -157,9 +162,8 @@ export function mount(container) {
                       <span id="sort-icon-domain" class="text-txt-subtle text-xs">↑</span>
                     </div>
                   </th>
-                  <th class="table-th">Routing Mode</th>
+                  <th class="table-th">Mode / Egress</th>
                   <th class="table-th">Ports</th>
-                  <th class="table-th">Egress</th>
                   <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
                     <div class="flex items-center justify-end gap-1.5">
                       <span>Traffic</span>
@@ -207,6 +211,7 @@ export function mount(container) {
     const flatTab = $('#dom-tab-flat', container);
     const treeTab = $('#dom-tab-tree', container);
     const modeSegEl = $('#dom-mode-segmented', container);
+    const collapseBtn = $('#dom-collapse-all-btn', container);
 
     if (tab === 'flat') {
       flatTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-primary-500 text-primary-600';
@@ -214,18 +219,27 @@ export function mount(container) {
       $('#dom-flat-container', container).classList.remove('hidden');
       $('#dom-tree-container', container).classList.add('hidden');
       if (modeSegEl) modeSegEl.style.display = '';
+      if (collapseBtn) collapseBtn.classList.add('hidden');
     } else {
       flatTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-transparent text-txt-muted hover:text-txt';
       treeTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-primary-500 text-primary-600';
       $('#dom-flat-container', container).classList.add('hidden');
       $('#dom-tree-container', container).classList.remove('hidden');
       if (modeSegEl) modeSegEl.style.display = 'none';
+      if (collapseBtn) collapseBtn.classList.remove('hidden');
     }
     renderView();
   }
 
   $('#dom-tab-flat', container).addEventListener('click', () => applyViewTab('flat'));
   $('#dom-tab-tree', container).addEventListener('click', () => applyViewTab('tree'));
+
+  // ─── Collapse All (tree view) ─────────────────────────────────────────────────
+  $('#dom-collapse-all-btn', container).addEventListener('click', () => {
+    expandedCats.clear();
+    expandedSubs.clear();
+    renderTreeView();
+  });
 
   // ─── Add Form ─────────────────────────────────────────────────────────────────
   let addFormObj = null;
@@ -441,11 +455,7 @@ export function mount(container) {
   }
 
   function applyEgressVisibility() {
-    const egressTh = container.querySelector('thead th:nth-child(5)');
-    if (egressTh) egressTh.style.display = egressEnabled ? '' : 'none';
-    container.querySelectorAll('tbody td:nth-child(5)').forEach((td) => {
-      td.style.display = egressEnabled ? '' : 'none';
-    });
+    // Egress is now shown inline in the Mode/Egress column — only hide the bulk button when disabled
     const bulkEgressBtn = $('#dom-bulk-egress-btn', container);
     if (bulkEgressBtn) bulkEgressBtn.style.display = egressEnabled ? '' : 'none';
   }
@@ -465,10 +475,24 @@ export function mount(container) {
 
     const isMerged = Boolean(d.is_merged);
     const isEgress = String(d.use_egress_proxy) === 'true';
+    const totalBytes = (d.total_bytes_sent || 0) + (d.total_bytes_received || 0);
+
+    // Build subcategory label for merged domains
+    let subLabel = '';
+    if (d.catalog_node) {
+      // Find the subcategory name from catalog
+      for (const cat of catalogCategories) {
+        const sub = (cat.subcategories || []).find((s) => s.id === d.catalog_node);
+        if (sub) { subLabel = sub.name; break; }
+        if (cat.id === d.catalog_node) { subLabel = cat.name; break; }
+      }
+    } else if (d.group_name) {
+      subLabel = d.group_name;
+    }
 
     let domainDisplay = escapeHtml(d.domain);
     if (isMerged) {
-      domainDisplay = `<span class="font-semibold text-txt">${escapeHtml(d.domain)}</span> <span class="badge badge-primary text-[10px] ml-1.5 font-sans font-medium">+ sub domains</span>`;
+      domainDisplay = `<span class="font-semibold text-txt">${escapeHtml(d.domain)}</span> <span class="badge badge-primary text-[10px] ml-1.5 font-sans font-medium">+ subdomains</span>${subLabel ? ` <span class="text-[10px] text-txt-muted font-sans ml-0.5">${escapeHtml(subLabel)}</span>` : ''}`;
     }
 
     row.innerHTML = `
@@ -481,28 +505,18 @@ export function mount(container) {
         </div>
       </td>
       <td class="table-td text-xs">
-        ${modeBadgeHtml(d.mode || 'proxy')}
+        <div class="flex items-center gap-1.5 flex-wrap">
+          ${modeBadgeHtml(d.mode || 'proxy')}
+          ${egressEnabled && isEgress ? `<span class="badge text-[10px] bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25">Egress</span>` : ''}
+        </div>
       </td>
       <td class="table-td font-mono text-xs text-txt-muted">
         ${formatPorts(d.ports)}
       </td>
-      <td class="table-td text-xs">
-        ${egressEnabled
-          ? (isEgress ? `<span class="badge badge-success">Enabled</span>` : `<span class="text-txt-subtle">—</span>`)
-          : `<span class="text-txt-subtle text-[11px]">—</span>`
-        }
-      </td>
       <td class="table-td text-right font-mono text-xs tabular-nums">
-        <div class="flex flex-col items-end gap-0.5">
-          <div class="flex items-center gap-1 text-violet-600 dark:text-violet-400">
-            <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
-            <span>${(d.total_bytes_sent || 0) > 0 ? formatBytes(d.total_bytes_sent) : '<span class="text-txt-subtle">0 B</span>'}</span>
-          </div>
-          <div class="flex items-center gap-1 text-sky-600 dark:text-sky-400">
-            <svg class="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
-            <span>${(d.total_bytes_received || 0) > 0 ? formatBytes(d.total_bytes_received) : '<span class="text-txt-subtle">0 B</span>'}</span>
-          </div>
-        </div>
+        <span class="${totalBytes > 0 ? 'text-txt' : 'text-txt-subtle'}">
+          ${totalBytes > 0 ? formatBytes(totalBytes) : '0 B'}
+        </span>
       </td>
       <td class="table-td text-right font-mono text-xs tabular-nums text-txt-muted">
         ${(d.total_dns_queries || 0) > 0 ? formatCount(d.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
@@ -979,6 +993,29 @@ export function mount(container) {
   }
 
   // ─── Tree View ────────────────────────────────────────────────────────────────
+
+  // Helper: sum traffic bytes across a list of domain objects
+  function sumBytes(domains) {
+    return domains.reduce((s, d) => s + (d.total_bytes_sent || 0) + (d.total_bytes_received || 0), 0);
+  }
+  function sumDnsQueries(domains) {
+    return domains.reduce((s, d) => s + (d.total_dns_queries || 0), 0);
+  }
+
+  // Helper: toggle all domains in a node
+  async function toggleNodeDomains(nodeId, enabled, domainsInNode) {
+    const allTargets = [];
+    for (const d of domainsInNode) {
+      allTargets.push(d.domain);
+      if (d.is_merged) allTargets.push(`*.${d.domain}`);
+    }
+    for (const domain of allTargets) {
+      try { await api.toggleDomain(domain, enabled); } catch (_) {}
+    }
+    toast.success(`${enabled ? 'Enabled' : 'Disabled'} ${domainsInNode.length} domain(s)`);
+    await fetchDomains();
+  }
+
   function renderTreeView() {
     const treeContainer = $('#dom-tree-container', container);
     treeContainer.innerHTML = '';
@@ -991,6 +1028,34 @@ export function mount(container) {
 
     for (const cat of sortedCats) {
       const subs = [...(cat.subcategories || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+      // Smart search: only show categories that have matching domains
+      if (searchQuery) {
+        let catHasMatch = false;
+        for (const sub of subs) {
+          const subDomains = allDomains.filter((d) => d.catalog_node === sub.id);
+          if (subDomains.some((d) => d.domain.toLowerCase().includes(searchQuery) || (d.group_name && d.group_name.toLowerCase().includes(searchQuery)))) {
+            catHasMatch = true;
+            break;
+          }
+        }
+        // also check direct cat domains
+        if (!catHasMatch) {
+          const directDoms = allDomains.filter((d) => d.catalog_node === cat.id);
+          catHasMatch = directDoms.some((d) => d.domain.toLowerCase().includes(searchQuery) || (d.group_name && d.group_name.toLowerCase().includes(searchQuery)));
+        }
+        if (!catHasMatch) {
+          // still track domains in cats for uncategorized calculation
+          for (const sub of subs) {
+            allDomains.filter((d) => d.catalog_node === sub.id).forEach((d) => domainsInCats.add(d.domain));
+          }
+          allDomains.filter((d) => d.catalog_node === cat.id).forEach((d) => domainsInCats.add(d.domain));
+          continue;
+        }
+        // auto-expand category when search finds results
+        expandedCats.add(cat.id);
+      }
+
       const catEl = buildCategoryBlock(cat, subs, domainsInCats);
       treeContainer.appendChild(catEl);
     }
@@ -1004,19 +1069,33 @@ export function mount(container) {
     const mergedUncat = mergeApexWildcard(filteredUncat).sort((a, b) => a.domain.localeCompare(b.domain));
 
     if (mergedUncat.length > 0 || !searchQuery) {
+      if (searchQuery && mergedUncat.length > 0) expandedCats.add('__uncat__');
       const uncatEl = buildUncategorizedBlock(mergedUncat);
       treeContainer.appendChild(uncatEl);
     }
 
     // No pagination in tree view — hide
     $('#dom-pagination', container).innerHTML = '';
-    // Hide bulk bar in tree view (TODO: could extend later)
+    // Hide flat bulk bar in tree view
     $('#dom-bulk-bar', container).classList.add('hidden');
   }
 
   function buildCategoryBlock(cat, subs, domainsInCats) {
-    const catId = `dom-tree-cat-${CSS.escape(cat.id)}`;
     const isExpanded = expandedCats.has(cat.id);
+
+    // Gather ALL domains in this category (for usage stats + group toggle)
+    const allCatDomains = [];
+    for (const sub of subs) {
+      const subDoms = allDomains.filter((d) => d.catalog_node === sub.id);
+      subDoms.forEach((d) => { allCatDomains.push(d); domainsInCats.add(d.domain); });
+    }
+    // also direct cat-level (no subcategory)
+    const directDoms = allDomains.filter((d) => d.catalog_node === cat.id);
+    directDoms.forEach((d) => { allCatDomains.push(d); domainsInCats.add(d.domain); });
+
+    const catTotalBytes = sumBytes(allCatDomains);
+    const catDnsQueries = sumDnsQueries(allCatDomains);
+    const allEnabled = allCatDomains.length > 0 && allCatDomains.every((d) => d.enabled !== false);
 
     const catEl = document.createElement('div');
     catEl.className = 'border-b border-border last:border-b-0';
@@ -1025,13 +1104,21 @@ export function mount(container) {
     catHeader.className = 'flex items-center justify-between px-4 py-3 bg-surface-2/60 hover:bg-surface-hover transition-colors cursor-pointer select-none';
 
     catHeader.innerHTML = `
-      <div class="flex items-center gap-3 min-w-0">
+      <div class="flex items-center gap-3 min-w-0 flex-1">
         <svg class="w-4 h-4 text-txt-muted transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''} cat-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
         <span class="text-sm font-semibold text-txt truncate">${escapeHtml(cat.name)}</span>
         <span class="text-xs font-mono text-txt-subtle truncate">${escapeHtml(cat.id)}</span>
         <span class="badge badge-neutral text-[10px] font-mono">${cat.enabled_domain_count || 0}/${cat.domain_count || 0}</span>
+        ${catTotalBytes > 0 ? `<span class="text-[10px] text-txt-muted font-mono tabular-nums">${formatBytes(catTotalBytes)}</span>` : ''}
+        ${catDnsQueries > 0 ? `<span class="text-[10px] text-txt-subtle tabular-nums">${formatCount(catDnsQueries)} DNS</span>` : ''}
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
+        <label class="relative inline-flex items-center cursor-pointer cat-group-toggle" title="${allEnabled ? 'Disable all in category' : 'Enable all in category'}">
+          <input type="checkbox" class="cat-enabled-cb sr-only" ${allEnabled ? 'checked' : ''} />
+          <div class="w-7 h-3.5 rounded-full transition-colors ${allEnabled ? 'bg-emerald-500' : 'bg-surface-3 border border-border'} relative">
+            <div class="absolute top-0.5 ${allEnabled ? 'left-3.5' : 'left-0.5'} w-2.5 h-2.5 bg-white rounded-full shadow transition-all"></div>
+          </div>
+        </label>
         <button type="button" class="btn btn-ghost btn-xs text-primary-600 cat-add-sub-btn">+ Sub</button>
         <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt cat-edit-btn" title="Edit Category">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
@@ -1043,10 +1130,18 @@ export function mount(container) {
     `;
 
     catHeader.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button') || e.target.closest('.cat-group-toggle')) return;
       if (expandedCats.has(cat.id)) expandedCats.delete(cat.id);
       else expandedCats.add(cat.id);
       renderTreeView();
+    });
+
+    // Group toggle
+    const groupToggleCb = catHeader.querySelector('.cat-enabled-cb');
+    groupToggleCb.addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const enabled = e.target.checked;
+      await toggleNodeDomains(cat.id, enabled, allCatDomains);
     });
 
     catHeader.querySelector('.cat-add-sub-btn').addEventListener('click', (e) => { e.stopPropagation(); openAddSubcategoryModal(cat); });
@@ -1065,12 +1160,6 @@ export function mount(container) {
       }
 
       catEl.appendChild(subsEl);
-    } else {
-      // Count domains even when collapsed
-      for (const sub of subs) {
-        const subDomains = allDomains.filter((d) => d.catalog_node === sub.id);
-        subDomains.forEach((d) => domainsInCats.add(d.domain));
-      }
     }
 
     return catEl;
@@ -1079,18 +1168,27 @@ export function mount(container) {
   function buildSubcategoryBlock(sub, parentCat, domainsInCats) {
     const isExpanded = expandedSubs.has(sub.id);
 
-    // Get domains for this subcategory
-    let subDomains = allDomains.filter((d) => d.catalog_node === sub.id);
-    subDomains.forEach((d) => domainsInCats.add(d.domain));
+    // Get ALL domains for this subcategory (for stats + toggle)
+    const allSubDomains = allDomains.filter((d) => d.catalog_node === sub.id);
+    allSubDomains.forEach((d) => domainsInCats.add(d.domain));
 
-    if (searchQuery) {
-      subDomains = subDomains.filter((d) =>
-        d.domain.toLowerCase().includes(searchQuery) ||
-        (d.group_name && d.group_name.toLowerCase().includes(searchQuery))
-      );
+    // Filtered domains for display
+    let displayDomains = searchQuery
+      ? allSubDomains.filter((d) =>
+          d.domain.toLowerCase().includes(searchQuery) ||
+          (d.group_name && d.group_name.toLowerCase().includes(searchQuery))
+        )
+      : allSubDomains;
+
+    // Smart search: auto-expand subcategory when it has matches
+    if (searchQuery && displayDomains.length > 0) {
+      expandedSubs.add(sub.id);
     }
 
-    const mergedDomains = mergeApexWildcard(subDomains).sort((a, b) => a.domain.localeCompare(b.domain));
+    const mergedDomains = mergeApexWildcard(displayDomains).sort((a, b) => a.domain.localeCompare(b.domain));
+    const subTotalBytes = sumBytes(allSubDomains);
+    const subDnsQueries = sumDnsQueries(allSubDomains);
+    const allEnabled = allSubDomains.length > 0 && allSubDomains.every((d) => d.enabled !== false);
 
     const subEl = document.createElement('div');
     subEl.className = 'ml-4 border-l-2 border-border/40';
@@ -1099,13 +1197,21 @@ export function mount(container) {
     subHeader.className = 'flex items-center justify-between px-4 py-2.5 bg-surface hover:bg-surface-2/40 transition-colors cursor-pointer select-none';
 
     subHeader.innerHTML = `
-      <div class="flex items-center gap-2.5 min-w-0">
+      <div class="flex items-center gap-2.5 min-w-0 flex-1">
         <svg class="w-3.5 h-3.5 text-txt-subtle transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''} sub-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
         <span class="text-xs font-semibold text-txt truncate">${escapeHtml(sub.name)}</span>
         <span class="text-[11px] font-mono text-txt-subtle truncate">${escapeHtml(sub.id)}</span>
-        <span class="badge badge-neutral text-[10px] font-mono">${mergedDomains.length} domains</span>
+        <span class="badge badge-neutral text-[10px] font-mono">${allSubDomains.length} domains</span>
+        ${subTotalBytes > 0 ? `<span class="text-[10px] text-txt-muted font-mono tabular-nums">${formatBytes(subTotalBytes)}</span>` : ''}
+        ${subDnsQueries > 0 ? `<span class="text-[10px] text-txt-subtle tabular-nums">${formatCount(subDnsQueries)} DNS</span>` : ''}
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
+        <label class="relative inline-flex items-center cursor-pointer sub-group-toggle" title="${allEnabled ? 'Disable all in subcategory' : 'Enable all in subcategory'}">
+          <input type="checkbox" class="sub-enabled-cb sr-only" ${allEnabled ? 'checked' : ''} />
+          <div class="w-7 h-3.5 rounded-full transition-colors ${allEnabled ? 'bg-emerald-500' : 'bg-surface-3 border border-border'} relative">
+            <div class="absolute top-0.5 ${allEnabled ? 'left-3.5' : 'left-0.5'} w-2.5 h-2.5 bg-white rounded-full shadow transition-all"></div>
+          </div>
+        </label>
         <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt sub-edit-btn" title="Edit Subcategory">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
         </button>
@@ -1116,10 +1222,18 @@ export function mount(container) {
     `;
 
     subHeader.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button') || e.target.closest('.sub-group-toggle')) return;
       if (expandedSubs.has(sub.id)) expandedSubs.delete(sub.id);
       else expandedSubs.add(sub.id);
       renderTreeView();
+    });
+
+    // Subcategory group toggle
+    const subToggleCb = subHeader.querySelector('.sub-enabled-cb');
+    subToggleCb.addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const enabled = e.target.checked;
+      await toggleNodeDomains(sub.id, enabled, allSubDomains);
     });
 
     subHeader.querySelector('.sub-edit-btn').addEventListener('click', (e) => { e.stopPropagation(); openEditNodeModal(sub); });
@@ -1127,7 +1241,7 @@ export function mount(container) {
 
     subEl.appendChild(subHeader);
 
-    if (isExpanded && mergedDomains.length > 0) {
+    if (expandedSubs.has(sub.id) && mergedDomains.length > 0) {
       const domsEl = document.createElement('div');
       domsEl.className = 'divide-y divide-border/30';
 
@@ -1136,7 +1250,7 @@ export function mount(container) {
       }
 
       subEl.appendChild(domsEl);
-    } else if (isExpanded && mergedDomains.length === 0) {
+    } else if (expandedSubs.has(sub.id) && mergedDomains.length === 0) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'ml-8 px-4 py-3 text-xs text-txt-subtle italic';
       emptyEl.textContent = searchQuery ? 'No domains matching your search in this subcategory' : 'No domains in this subcategory';
@@ -1195,6 +1309,7 @@ export function mount(container) {
     const isEnabled = d.enabled !== false;
     const isMerged = Boolean(d.is_merged);
     const isEgress = String(d.use_egress_proxy) === 'true';
+    const totalBytes = (d.total_bytes_sent || 0) + (d.total_bytes_received || 0);
 
     const row = document.createElement('div');
     row.className = `flex items-center justify-between px-8 py-2.5 hover:bg-surface-2/30 transition-colors ${!isEnabled ? 'opacity-50' : ''}`;
@@ -1204,10 +1319,12 @@ export function mount(container) {
         <span class="font-mono text-xs text-txt truncate ${!isEnabled ? 'line-through text-txt-muted' : ''}">${escapeHtml(d.domain)}</span>
         ${isMerged ? `<span class="badge badge-primary text-[10px] font-sans shrink-0">+ sub</span>` : ''}
         ${modeBadgeHtml(d.mode || 'proxy')}
-        ${egressEnabled && isEgress ? `<span class="badge badge-success text-[10px] shrink-0">Egress</span>` : ''}
+        ${egressEnabled && isEgress ? `<span class="badge text-[10px] shrink-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25">Egress</span>` : ''}
       </div>
       <div class="flex items-center gap-2 shrink-0 ml-3">
         <span class="text-[11px] text-txt-subtle font-mono">${formatPorts(d.ports)}</span>
+        ${totalBytes > 0 ? `<span class="text-[10px] font-mono tabular-nums text-txt-muted">${formatBytes(totalBytes)}</span>` : ''}
+        ${(d.total_dns_queries || 0) > 0 ? `<span class="text-[10px] text-txt-subtle tabular-nums">${formatCount(d.total_dns_queries)} DNS</span>` : ''}
         <label class="relative inline-flex items-center cursor-pointer" title="${isEnabled ? 'Disable' : 'Enable'}">
           <input type="checkbox" class="tree-enable-toggle sr-only" ${isEnabled ? 'checked' : ''} />
           <div class="w-7 h-3.5 rounded-full transition-colors ${isEnabled ? 'bg-emerald-500' : 'bg-surface-3 border border-border'} relative">
