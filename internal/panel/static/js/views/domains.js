@@ -381,6 +381,10 @@ export function mount(container) {
     }
   }
 
+  function egressBadgeHtml() {
+    return `<span class="badge text-[10px] shrink-0 font-medium bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/40">Egress</span>`;
+  }
+
   // ─── Filter logic ─────────────────────────────────────────────────────────────
   function getFilteredDomains() {
     let filtered = activeMode === 'all'
@@ -507,7 +511,7 @@ export function mount(container) {
       <td class="table-td text-xs">
         <div class="flex items-center gap-1.5 flex-wrap">
           ${modeBadgeHtml(d.mode || 'proxy')}
-          ${egressEnabled && isEgress ? `<span class="badge text-[10px] bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25">Egress</span>` : ''}
+          ${egressEnabled && isEgress ? egressBadgeHtml() : ''}
         </div>
       </td>
       <td class="table-td font-mono text-xs text-txt-muted">
@@ -607,21 +611,25 @@ export function mount(container) {
     const selectAllBtn = $('#dom-bulk-select-all-btn', container);
     const allCountSpan = $('#dom-bulk-all-count', container);
 
-    const selectedCount = tableState.getSelectedCount(filteredDomains.length);
+    const targetList = filteredDomains || getFilteredDomains();
+    const selectedCount = tableState.selectedIds.size;
 
     if (selectedCount > 0) {
       bulkBar.classList.remove('hidden');
       bulkCountEl.textContent = `${selectedCount} selected`;
 
-      // Show "Select all matching" only when current page is fully selected but not yet all
-      const sortedDomains = tableState.getSortedItems(filteredDomains, {});
-      const sliceInfo = tableState.getPageSlice(sortedDomains);
-      const visibleIds = sliceInfo.slice.map((d) => d.domain);
-      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => tableState.selectedIds.has(id));
+      if (viewTab === 'flat') {
+        const sortedDomains = tableState.getSortedItems(targetList, {});
+        const sliceInfo = tableState.getPageSlice(sortedDomains);
+        const visibleIds = sliceInfo.slice.map((d) => d.domain);
+        const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => tableState.selectedIds.has(id));
 
-      if (!tableState.selectAllMatching && allVisibleSelected && selectedCount < filteredDomains.length) {
-        selectAllBtn.classList.remove('hidden');
-        allCountSpan.textContent = filteredDomains.length;
+        if (!tableState.selectAllMatching && allVisibleSelected && selectedCount < targetList.length) {
+          selectAllBtn.classList.remove('hidden');
+          allCountSpan.textContent = targetList.length;
+        } else {
+          selectAllBtn.classList.add('hidden');
+        }
       } else {
         selectAllBtn.classList.add('hidden');
       }
@@ -632,20 +640,21 @@ export function mount(container) {
 
   $('#dom-bulk-select-all-btn', container).addEventListener('click', () => {
     tableState.selectAllMatching = true;
-    renderTable();
+    renderView();
   });
 
   $('#dom-bulk-clear-btn', container).addEventListener('click', () => {
     tableState.clearSelection();
-    renderTable();
+    renderView();
   });
 
   function getSelectedTargetDomains(filteredDomains) {
-    const selectedIds = tableState.getSelectedIds(filteredDomains);
+    const targetList = filteredDomains || getFilteredDomains();
+    const selectedIds = tableState.getSelectedIds(targetList.length ? targetList : allDomains);
     if (!selectedIds.length) return [];
 
     const domainMap = new Map();
-    for (const d of filteredDomains) {
+    for (const d of allDomains) {
       domainMap.set(d.domain, d);
     }
 
@@ -1025,39 +1034,45 @@ export function mount(container) {
 
     // Collect all domains with a catalog_node
     const domainsInCats = new Set();
+    let renderedBlocksCount = 0;
 
     for (const cat of sortedCats) {
-      const subs = [...(cat.subcategories || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      const allSubs = [...(cat.subcategories || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-      // Smart search: only show categories that have matching domains
+      // In search mode, filter subcategories to only those with matching domains
+      let matchedSubs = allSubs;
       if (searchQuery) {
-        let catHasMatch = false;
-        for (const sub of subs) {
+        matchedSubs = allSubs.filter((sub) => {
           const subDomains = allDomains.filter((d) => d.catalog_node === sub.id);
-          if (subDomains.some((d) => d.domain.toLowerCase().includes(searchQuery) || (d.group_name && d.group_name.toLowerCase().includes(searchQuery)))) {
-            catHasMatch = true;
-            break;
-          }
-        }
-        // also check direct cat domains
-        if (!catHasMatch) {
-          const directDoms = allDomains.filter((d) => d.catalog_node === cat.id);
-          catHasMatch = directDoms.some((d) => d.domain.toLowerCase().includes(searchQuery) || (d.group_name && d.group_name.toLowerCase().includes(searchQuery)));
-        }
-        if (!catHasMatch) {
-          // still track domains in cats for uncategorized calculation
-          for (const sub of subs) {
+          return subDomains.some((d) =>
+            d.domain.toLowerCase().includes(searchQuery) ||
+            (d.group_name && d.group_name.toLowerCase().includes(searchQuery))
+          );
+        });
+
+        const directCatDoms = allDomains.filter((d) => d.catalog_node === cat.id);
+        const hasDirectMatch = directCatDoms.some((d) =>
+          d.domain.toLowerCase().includes(searchQuery) ||
+          (d.group_name && d.group_name.toLowerCase().includes(searchQuery))
+        );
+
+        if (matchedSubs.length === 0 && !hasDirectMatch) {
+          // Track domains for uncategorized calculation even when hidden
+          for (const sub of allSubs) {
             allDomains.filter((d) => d.catalog_node === sub.id).forEach((d) => domainsInCats.add(d.domain));
           }
           allDomains.filter((d) => d.catalog_node === cat.id).forEach((d) => domainsInCats.add(d.domain));
           continue;
         }
-        // auto-expand category when search finds results
+
+        // Auto-expand category and matching subcategories
         expandedCats.add(cat.id);
+        matchedSubs.forEach((sub) => expandedSubs.add(sub.id));
       }
 
-      const catEl = buildCategoryBlock(cat, subs, domainsInCats);
+      const catEl = buildCategoryBlock(cat, matchedSubs, domainsInCats);
       treeContainer.appendChild(catEl);
+      renderedBlocksCount++;
     }
 
     // Uncategorized
@@ -1068,24 +1083,39 @@ export function mount(container) {
 
     const mergedUncat = mergeApexWildcard(filteredUncat).sort((a, b) => a.domain.localeCompare(b.domain));
 
-    if (mergedUncat.length > 0 || !searchQuery) {
-      if (searchQuery && mergedUncat.length > 0) expandedCats.add('__uncat__');
+    if (mergedUncat.length > 0) {
+      if (searchQuery) expandedCats.add('__uncat__');
       const uncatEl = buildUncategorizedBlock(mergedUncat);
       treeContainer.appendChild(uncatEl);
+      renderedBlocksCount++;
+    }
+
+    if (renderedBlocksCount === 0 && searchQuery) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'py-16 text-center text-txt-subtle';
+      emptyEl.innerHTML = `
+        <div class="flex flex-col items-center justify-center gap-2">
+          <svg class="w-8 h-8 text-txt-subtle/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <span class="text-sm">No domains or categories match "<strong>${escapeHtml(searchQuery)}</strong>"</span>
+        </div>
+      `;
+      treeContainer.appendChild(emptyEl);
     }
 
     // No pagination in tree view — hide
     $('#dom-pagination', container).innerHTML = '';
-    // Hide flat bulk bar in tree view
-    $('#dom-bulk-bar', container).classList.add('hidden');
+    // Update bulk bar in tree view
+    updateBulkBar(getFilteredDomains());
   }
 
   function buildCategoryBlock(cat, subs, domainsInCats) {
     const isExpanded = expandedCats.has(cat.id);
 
-    // Gather ALL domains in this category (for usage stats + group toggle)
+    // Gather ALL domains in this category (for usage stats + group toggle + selection)
     const allCatDomains = [];
-    for (const sub of subs) {
+    for (const sub of (cat.subcategories || [])) {
       const subDoms = allDomains.filter((d) => d.catalog_node === sub.id);
       subDoms.forEach((d) => { allCatDomains.push(d); domainsInCats.add(d.domain); });
     }
@@ -1097,6 +1127,9 @@ export function mount(container) {
     const catDnsQueries = sumDnsQueries(allCatDomains);
     const allEnabled = allCatDomains.length > 0 && allCatDomains.every((d) => d.enabled !== false);
 
+    const isCatAllSelected = allCatDomains.length > 0 && allCatDomains.every((d) => tableState.selectedIds.has(d.domain));
+    const isCatSomeSelected = !isCatAllSelected && allCatDomains.some((d) => tableState.selectedIds.has(d.domain));
+
     const catEl = document.createElement('div');
     catEl.className = 'border-b border-border last:border-b-0';
 
@@ -1105,6 +1138,7 @@ export function mount(container) {
 
     catHeader.innerHTML = `
       <div class="flex items-center gap-3 min-w-0 flex-1">
+        <input type="checkbox" class="cat-select-cb checkbox checkbox-sm shrink-0" title="Select all in category" ${isCatAllSelected ? 'checked' : ''} />
         <svg class="w-4 h-4 text-txt-muted transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''} cat-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
         <span class="text-sm font-semibold text-txt truncate">${escapeHtml(cat.name)}</span>
         <span class="text-xs font-mono text-txt-subtle truncate">${escapeHtml(cat.id)}</span>
@@ -1129,8 +1163,23 @@ export function mount(container) {
       </div>
     `;
 
+    const catSelectCb = catHeader.querySelector('.cat-select-cb');
+    if (isCatSomeSelected) {
+      catSelectCb.indeterminate = true;
+    }
+    catSelectCb.addEventListener('click', (e) => e.stopPropagation());
+    catSelectCb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const checked = e.target.checked;
+      allCatDomains.forEach((d) => {
+        if (checked) tableState.selectedIds.add(d.domain);
+        else tableState.selectedIds.delete(d.domain);
+      });
+      renderView();
+    });
+
     catHeader.addEventListener('click', (e) => {
-      if (e.target.closest('button') || e.target.closest('.cat-group-toggle')) return;
+      if (e.target.closest('button') || e.target.closest('.cat-group-toggle') || e.target.closest('.cat-select-cb')) return;
       if (expandedCats.has(cat.id)) expandedCats.delete(cat.id);
       else expandedCats.add(cat.id);
       renderTreeView();
@@ -1168,7 +1217,7 @@ export function mount(container) {
   function buildSubcategoryBlock(sub, parentCat, domainsInCats) {
     const isExpanded = expandedSubs.has(sub.id);
 
-    // Get ALL domains for this subcategory (for stats + toggle)
+    // Get ALL domains for this subcategory (for stats + toggle + selection)
     const allSubDomains = allDomains.filter((d) => d.catalog_node === sub.id);
     allSubDomains.forEach((d) => domainsInCats.add(d.domain));
 
@@ -1180,15 +1229,13 @@ export function mount(container) {
         )
       : allSubDomains;
 
-    // Smart search: auto-expand subcategory when it has matches
-    if (searchQuery && displayDomains.length > 0) {
-      expandedSubs.add(sub.id);
-    }
-
     const mergedDomains = mergeApexWildcard(displayDomains).sort((a, b) => a.domain.localeCompare(b.domain));
     const subTotalBytes = sumBytes(allSubDomains);
     const subDnsQueries = sumDnsQueries(allSubDomains);
     const allEnabled = allSubDomains.length > 0 && allSubDomains.every((d) => d.enabled !== false);
+
+    const isSubAllSelected = allSubDomains.length > 0 && allSubDomains.every((d) => tableState.selectedIds.has(d.domain));
+    const isSubSomeSelected = !isSubAllSelected && allSubDomains.some((d) => tableState.selectedIds.has(d.domain));
 
     const subEl = document.createElement('div');
     subEl.className = 'ml-4 border-l-2 border-border/40';
@@ -1198,6 +1245,7 @@ export function mount(container) {
 
     subHeader.innerHTML = `
       <div class="flex items-center gap-2.5 min-w-0 flex-1">
+        <input type="checkbox" class="sub-select-cb checkbox checkbox-sm shrink-0" title="Select all in subcategory" ${isSubAllSelected ? 'checked' : ''} />
         <svg class="w-3.5 h-3.5 text-txt-subtle transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''} sub-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
         <span class="text-xs font-semibold text-txt truncate">${escapeHtml(sub.name)}</span>
         <span class="text-[11px] font-mono text-txt-subtle truncate">${escapeHtml(sub.id)}</span>
@@ -1221,8 +1269,23 @@ export function mount(container) {
       </div>
     `;
 
+    const subSelectCb = subHeader.querySelector('.sub-select-cb');
+    if (isSubSomeSelected) {
+      subSelectCb.indeterminate = true;
+    }
+    subSelectCb.addEventListener('click', (e) => e.stopPropagation());
+    subSelectCb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const checked = e.target.checked;
+      allSubDomains.forEach((d) => {
+        if (checked) tableState.selectedIds.add(d.domain);
+        else tableState.selectedIds.delete(d.domain);
+      });
+      renderView();
+    });
+
     subHeader.addEventListener('click', (e) => {
-      if (e.target.closest('button') || e.target.closest('.sub-group-toggle')) return;
+      if (e.target.closest('button') || e.target.closest('.sub-group-toggle') || e.target.closest('.sub-select-cb')) return;
       if (expandedSubs.has(sub.id)) expandedSubs.delete(sub.id);
       else expandedSubs.add(sub.id);
       renderTreeView();
@@ -1250,19 +1313,16 @@ export function mount(container) {
       }
 
       subEl.appendChild(domsEl);
-    } else if (expandedSubs.has(sub.id) && mergedDomains.length === 0) {
-      const emptyEl = document.createElement('div');
-      emptyEl.className = 'ml-8 px-4 py-3 text-xs text-txt-subtle italic';
-      emptyEl.textContent = searchQuery ? 'No domains matching your search in this subcategory' : 'No domains in this subcategory';
-      subEl.appendChild(emptyEl);
     }
 
     return subEl;
   }
 
   function buildUncategorizedBlock(mergedDomains) {
-    const uncatId = 'dom-tree-uncat';
     const isExpanded = expandedCats.has('__uncat__');
+
+    const isUncatAllSelected = mergedDomains.length > 0 && mergedDomains.every((d) => tableState.selectedIds.has(d.domain));
+    const isUncatSomeSelected = !isUncatAllSelected && mergedDomains.some((d) => tableState.selectedIds.has(d.domain));
 
     const el = document.createElement('div');
     el.className = 'border-b border-border last:border-b-0';
@@ -1272,13 +1332,30 @@ export function mount(container) {
 
     header.innerHTML = `
       <div class="flex items-center gap-3 min-w-0">
+        <input type="checkbox" class="uncat-select-cb checkbox checkbox-sm shrink-0" title="Select all uncategorized" ${isUncatAllSelected ? 'checked' : ''} />
         <svg class="w-4 h-4 text-txt-muted transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
         <span class="text-sm font-semibold text-txt-muted">Uncategorized</span>
         <span class="badge badge-neutral text-[10px] font-mono">${mergedDomains.length}</span>
       </div>
     `;
 
-    header.addEventListener('click', () => {
+    const uncatSelectCb = header.querySelector('.uncat-select-cb');
+    if (isUncatSomeSelected) {
+      uncatSelectCb.indeterminate = true;
+    }
+    uncatSelectCb.addEventListener('click', (e) => e.stopPropagation());
+    uncatSelectCb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const checked = e.target.checked;
+      mergedDomains.forEach((d) => {
+        if (checked) tableState.selectedIds.add(d.domain);
+        else tableState.selectedIds.delete(d.domain);
+      });
+      renderView();
+    });
+
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.uncat-select-cb')) return;
       if (expandedCats.has('__uncat__')) expandedCats.delete('__uncat__');
       else expandedCats.add('__uncat__');
       renderTreeView();
@@ -1306,20 +1383,22 @@ export function mount(container) {
   }
 
   function createTreeDomainRow(d) {
+    const isSelected = tableState.selectedIds.has(d.domain);
     const isEnabled = d.enabled !== false;
     const isMerged = Boolean(d.is_merged);
     const isEgress = String(d.use_egress_proxy) === 'true';
     const totalBytes = (d.total_bytes_sent || 0) + (d.total_bytes_received || 0);
 
     const row = document.createElement('div');
-    row.className = `flex items-center justify-between px-8 py-2.5 hover:bg-surface-2/30 transition-colors ${!isEnabled ? 'opacity-50' : ''}`;
+    row.className = `flex items-center justify-between px-8 py-2.5 hover:bg-surface-2/30 transition-colors ${isSelected ? 'bg-primary-soft/40' : ''} ${!isEnabled ? 'opacity-50' : ''}`;
 
     row.innerHTML = `
       <div class="flex items-center gap-2.5 min-w-0 flex-1">
+        <input type="checkbox" class="tree-dom-cb checkbox checkbox-sm shrink-0" ${isSelected ? 'checked' : ''} />
         <span class="font-mono text-xs text-txt truncate ${!isEnabled ? 'line-through text-txt-muted' : ''}">${escapeHtml(d.domain)}</span>
         ${isMerged ? `<span class="badge badge-primary text-[10px] font-sans shrink-0">+ sub</span>` : ''}
         ${modeBadgeHtml(d.mode || 'proxy')}
-        ${egressEnabled && isEgress ? `<span class="badge text-[10px] shrink-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25">Egress</span>` : ''}
+        ${egressEnabled && isEgress ? egressBadgeHtml() : ''}
       </div>
       <div class="flex items-center gap-2 shrink-0 ml-3">
         <span class="text-[11px] text-txt-subtle font-mono">${formatPorts(d.ports)}</span>
@@ -1336,6 +1415,14 @@ export function mount(container) {
         </button>
       </div>
     `;
+
+    // Row selection checkbox
+    const domCb = row.querySelector('.tree-dom-cb');
+    domCb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      tableState.toggleSelect(d.domain, e.target.checked);
+      renderView();
+    });
 
     // Enable toggle
     const enableToggle = row.querySelector('.tree-enable-toggle');

@@ -128,8 +128,8 @@ export function mount(container) {
             <table class="table text-xs">
               <thead>
                 <tr>
-                  <th class="table-th">Client</th>
                   <th class="table-th">IP Address</th>
+                  <th class="table-th">Client</th>
                   <th class="table-th">Timestamp</th>
                   <th class="table-th">Type</th>
                   <th class="table-th">Domain / Hostname</th>
@@ -376,11 +376,11 @@ export function mount(container) {
       const matchedRule = matchRule(log.domain, domainRules);
 
       row.innerHTML = `
-        <td class="table-td font-medium text-txt">
-          ${log.username ? escapeHtml(log.username) : '<span class="text-txt-subtle italic">Anonymous</span>'}
-        </td>
-        <td class="table-td font-mono text-txt-muted">
+        <td class="table-td font-mono text-txt">
           ${escapeHtml(log.client_ip || '—')}
+        </td>
+        <td class="table-td font-medium text-txt-muted">
+          ${log.username ? escapeHtml(log.username) : '<span class="text-txt-subtle italic">Anonymous</span>'}
         </td>
         <td class="table-td text-txt-muted tabular-nums whitespace-nowrap">
           ${formatDateTime(log.timestamp)}
