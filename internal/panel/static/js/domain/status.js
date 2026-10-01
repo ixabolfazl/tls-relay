@@ -19,9 +19,9 @@ const STATUS_DEFINITIONS = {
   connected: { label: 'Relayed', tone: 'success' },
   closed: { label: 'Relayed', tone: 'success' },
 
-  // Info
-  forwarded: { label: 'Forwarded', tone: 'info' },
-  forwarded_unauthorized: { label: 'Passthrough', tone: 'info' },
+  // Warning / Forwarding
+  forwarded: { label: 'Forwarded', tone: 'warning' },
+  forwarded_unauthorized: { label: 'Passthrough', tone: 'warning' },
   resolved_empty: { label: 'Empty Answer', tone: 'info' },
   redirected_https: { label: 'Redirected HTTPS', tone: 'info' },
 
