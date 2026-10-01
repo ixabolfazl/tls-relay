@@ -117,6 +117,11 @@ export const api = {
   addDomain: (payload) => apiFetch('api/domains', { method: 'POST', body: JSON.stringify(payload) }),
   updateDomain: (domain, payload) =>
     apiFetch(`api/domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  toggleDomain: (domain, enabled) =>
+    apiFetch(`api/domains/${encodeURIComponent(domain)}/toggle`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
   deleteDomain: (domain) =>
     apiFetch(`api/domains/${encodeURIComponent(domain)}`, { method: 'DELETE' }),
   bulkDeleteDomains: (domains) =>

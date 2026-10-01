@@ -106,6 +106,7 @@
 *   `PUT /api/catalog/nodes/{id}` (**v1.7.0**): Updates catalog node enabled status or display name. Cascades category toggles to subcategories and domains.
 *   `POST /api/catalog/nodes` (**v1.7.0**): Creates a new catalog category or subcategory node.
 *   `DELETE /api/catalog/nodes/{id}` (**v1.7.0**): Deletes a catalog node and clears associated `catalog_node` references from domain rules without deleting domains.
+*   `PATCH /api/domains/{domain}/toggle` (**v1.7.2**): Accepts body `{"enabled": bool}` to toggle active status of a single domain rule without deletion.
 
 ---
 
@@ -147,12 +148,12 @@ internal/panel/static/
     views/
       login.js                     # Login view with lockout handling
       dashboard.js                 # Real-time metrics dashboard and activity sparklines
-      domains.js                   # Domain rules management, grouped/flat views, and bulk actions
+      domains.js                   # Domain rules: flat & tree views, per-domain toggle, category CRUD dialog
       users.js                     # User accounts, IP quotas, magic links, and live presence
       blacklist.js                 # IP & CIDR blacklist management
       logs.js                      # Request logs viewer with live filtering and quick-add rules
       usage-report.js              # Bandwidth and DNS query breakdowns by user and domain
-      settings.js                  # Access policies, network listeners, egress proxy, and service restart
+      settings.js                  # Access policies, network listeners, egress proxy, catalog updates, and restart
       domain-rule-form.js          # Shared domain rule creation and edit form
   pages/                           # Served static page partials (asserted by Go tests)
     dashboard.html, domains.html, users.html, blacklist.html, request-logs.html, settings.html

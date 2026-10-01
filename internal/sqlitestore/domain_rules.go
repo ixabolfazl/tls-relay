@@ -154,6 +154,19 @@ func (s *Store) DeleteDomainRule(ctx context.Context, domain string) error {
 	return err
 }
 
+// SetDomainRuleEnabled toggles the enabled state of a domain rule.
+func (s *Store) SetDomainRuleEnabled(ctx context.Context, domain string, enabled bool) error {
+	v := 0
+	if enabled {
+		v = 1
+	}
+	_, err := s.writer.ExecContext(ctx,
+		`UPDATE domain_rules SET enabled = ?, updated_at = datetime('now') WHERE domain = ?`,
+		v, domain,
+	)
+	return err
+}
+
 type domainRuleRawPayload struct {
 	GroupName      string          `json:"group_name,omitempty"`
 	Ports          json.RawMessage `json:"ports"`

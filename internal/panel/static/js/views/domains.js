@@ -1,6 +1,6 @@
 /**
- * Domains view: rule management, live input preview, grouped/flat views, and bulk actions.
- * Fixes B2 (bulk select scoping), B3 (segmented toggles), B4 (merged mode), B10 (usage sort).
+ * Domains view: flat + tree (categorized) tabs, routing mode filter, single-domain enable/disable,
+ * category/subcategory management, fixed select-all, and bulk actions.
  */
 
 import { html, raw, setHtml, $, $$, escapeHtml, createElement } from '../core/dom.js';
@@ -25,11 +25,18 @@ import {
 export function mount(container) {
   let allDomains = [];
   let catalogCategories = [];
-  let activeMode = 'proxy'; // proxy | direct | block
+  // 'all' | 'proxy' | 'direct' | 'block'
+  let activeMode = 'all';
   let activeRange = 'today';
   let searchQuery = '';
-  // Whether the global egress proxy is enabled. Fetched from settings once on
-  // mount and used to hide the Egress column/button when the feature is off.
+  // 'flat' | 'tree'
+  let viewTab = 'flat';
+  try { viewTab = localStorage.getItem('relay_domains_view') || 'flat'; } catch (_) {}
+
+  // Expanded state for tree view
+  let expandedCats = new Set();
+  let expandedSubs = new Set();
+
   let egressEnabled = true;
 
   const tableState = new TableState({
@@ -39,6 +46,7 @@ export function mount(container) {
     getId: (d) => d.domain,
   });
 
+  // ─── Shell HTML ──────────────────────────────────────────────────────────────
   setHtml(
     container,
     html`
@@ -47,9 +55,13 @@ export function mount(container) {
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 class="text-2xl font-bold text-txt">Domain Rules</h1>
-            <p class="text-xs text-txt-muted mt-0.5">Manage SNI routing rules and access policies</p>
+            <p class="text-xs text-txt-muted mt-0.5">Manage SNI routing rules, categories, and access policies</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+            <button id="dom-manage-cats-btn" type="button" class="btn btn-secondary btn-sm">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+              <span>Categories</span>
+            </button>
             <button id="dom-export-json-btn" type="button" class="btn btn-secondary btn-sm">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
               <span>Export JSON</span>
@@ -64,7 +76,6 @@ export function mount(container) {
               <span>Add Domain Rule</span>
             </button>
           </div>
-
         </div>
 
         <!-- Add Domain Card (Collapsible) -->
@@ -78,7 +89,6 @@ export function mount(container) {
           <div class="card-body">
             <form id="dom-add-form" class="space-y-4">
               <div id="dom-add-form-fields"></div>
-
               <div class="flex items-center justify-end gap-3 pt-2">
                 <button id="dom-cancel-add-btn" type="button" class="btn btn-secondary">Cancel</button>
                 <button id="dom-submit-add-btn" type="submit" class="btn btn-primary">Save Rules</button>
@@ -89,24 +99,27 @@ export function mount(container) {
 
         <!-- Domains List Card -->
         <div class="card">
+          <!-- View Tab Switcher -->
+          <div class="flex items-center gap-1 border-b border-border px-4 pt-3">
+            <button id="dom-tab-flat" type="button" class="dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-primary-500 text-primary-600">
+              Flat View
+            </button>
+            <button id="dom-tab-tree" type="button" class="dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-transparent text-txt-muted hover:text-txt">
+              Categorized View
+            </button>
+          </div>
+
           <!-- Toolbar -->
           <div class="p-4 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div class="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0">
-              <!-- Mode Tabs -->
+              <!-- Routing Mode Filter (flat mode only) -->
               <div id="dom-mode-segmented"></div>
-
               <!-- Time Range Selector -->
               <div id="dom-range-segmented"></div>
             </div>
-
             <div class="flex items-center gap-3">
               <div class="relative w-full sm:w-64">
-                <input
-                  id="dom-search-input"
-                  type="text"
-                  class="input pl-8"
-                  placeholder="Filter domains..."
-                />
+                <input id="dom-search-input" type="text" class="input pl-8" placeholder="Filter domains..." />
                 <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-txt-subtle pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                 </svg>
@@ -130,8 +143,8 @@ export function mount(container) {
             </div>
           </div>
 
-          <!-- Table Container -->
-          <div class="overflow-x-auto">
+          <!-- Flat Table Container -->
+          <div id="dom-flat-container" class="overflow-x-auto">
             <table class="table">
               <thead>
                 <tr>
@@ -141,9 +154,10 @@ export function mount(container) {
                   <th class="table-th cursor-pointer select-none" data-sort="domain">
                     <div class="flex items-center gap-1.5">
                       <span>Domain</span>
-                      <span id="sort-icon-domain" class="text-txt-subtle text-xs">↕</span>
+                      <span id="sort-icon-domain" class="text-txt-subtle text-xs">↑</span>
                     </div>
                   </th>
+                  <th class="table-th">Routing Mode</th>
                   <th class="table-th">Ports</th>
                   <th class="table-th">Egress</th>
                   <th class="table-th cursor-pointer select-none text-right" data-sort="usage">
@@ -158,12 +172,13 @@ export function mount(container) {
                       <span id="sort-icon-queries" class="text-txt-subtle text-xs">↕</span>
                     </div>
                   </th>
+                  <th class="table-th w-20 text-right">Active</th>
                   <th class="table-th w-16 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody id="dom-table-body">
                 <tr>
-                  <td colspan="7" class="table-td text-center py-12 text-txt-subtle">
+                  <td colspan="9" class="table-td text-center py-12 text-txt-subtle">
                     <div class="flex flex-col items-center justify-center gap-2">
                       <div class="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                       <span>Loading domain rules...</span>
@@ -174,6 +189,9 @@ export function mount(container) {
             </table>
           </div>
 
+          <!-- Tree View Container -->
+          <div id="dom-tree-container" class="hidden divide-y divide-border"></div>
+
           <!-- Pagination Footer -->
           <div id="dom-pagination" class="card-footer"></div>
         </div>
@@ -181,19 +199,43 @@ export function mount(container) {
     `
   );
 
-  // Setup Add Form Component
+  // ─── View Tab Switcher ────────────────────────────────────────────────────────
+  function applyViewTab(tab) {
+    viewTab = tab;
+    try { localStorage.setItem('relay_domains_view', tab); } catch (_) {}
+
+    const flatTab = $('#dom-tab-flat', container);
+    const treeTab = $('#dom-tab-tree', container);
+    const modeSegEl = $('#dom-mode-segmented', container);
+
+    if (tab === 'flat') {
+      flatTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-primary-500 text-primary-600';
+      treeTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-transparent text-txt-muted hover:text-txt';
+      $('#dom-flat-container', container).classList.remove('hidden');
+      $('#dom-tree-container', container).classList.add('hidden');
+      if (modeSegEl) modeSegEl.style.display = '';
+    } else {
+      flatTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-transparent text-txt-muted hover:text-txt';
+      treeTab.className = 'dom-view-tab px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors border-primary-500 text-primary-600';
+      $('#dom-flat-container', container).classList.add('hidden');
+      $('#dom-tree-container', container).classList.remove('hidden');
+      if (modeSegEl) modeSegEl.style.display = 'none';
+    }
+    renderView();
+  }
+
+  $('#dom-tab-flat', container).addEventListener('click', () => applyViewTab('flat'));
+  $('#dom-tab-tree', container).addEventListener('click', () => applyViewTab('tree'));
+
+  // ─── Add Form ─────────────────────────────────────────────────────────────────
   let addFormObj = null;
   function initAddForm() {
     const fieldsRoot = $('#dom-add-form-fields', container);
     fieldsRoot.innerHTML = '';
-    addFormObj = createDomainRuleForm({
-      categories: catalogCategories,
-      isEdit: false,
-    });
+    addFormObj = createDomainRuleForm({ categories: catalogCategories, isEdit: false });
     fieldsRoot.appendChild(addFormObj.el);
   }
 
-  // Toggle Add card
   const addCard = $('#dom-add-card', container);
   $('#dom-toggle-add-btn', container).addEventListener('click', () => {
     addCard.classList.remove('hidden');
@@ -203,20 +245,15 @@ export function mount(container) {
   $('#dom-close-add-btn', container).addEventListener('click', () => addCard.classList.add('hidden'));
   $('#dom-cancel-add-btn', container).addEventListener('click', () => addCard.classList.add('hidden'));
 
-  // Submit Add Form
   $('#dom-add-form', container).addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!addFormObj) return;
 
     const data = addFormObj.getData();
     const tokens = parseDomainTokens(data.domain);
-    if (tokens.length === 0) {
-      toast.error('Please enter at least one domain');
-      return;
-    }
+    if (tokens.length === 0) { toast.error('Please enter at least one domain'); return; }
     if (data.mode === 'proxy' && (!data.ports || data.ports === '')) {
-      toast.error('Please enter valid port numbers (e.g. 443, 8443) or "all"');
-      return;
+      toast.error('Please enter valid port numbers (e.g. 443, 8443) or "all"'); return;
     }
 
     const submitBtn = $('#dom-submit-add-btn', container);
@@ -236,7 +273,6 @@ export function mount(container) {
 
       const addedCount = res.added || 0;
       const updatedCount = res.updated || 0;
-      const skippedCount = res.skipped || 0;
       const errors = res.errors || [];
 
       if (errors.length > 0) {
@@ -255,9 +291,10 @@ export function mount(container) {
     }
   });
 
-  // Mode Segmented Control
+  // ─── Mode Filter Segmented ────────────────────────────────────────────────────
   let modeSegmented = null;
   function initModeSegmented() {
+    const total = allDomains.length;
     const proxyCount = allDomains.filter((d) => (d.mode || 'proxy') === 'proxy').length;
     const directCount = allDomains.filter((d) => d.mode === 'direct').length;
     const blockCount = allDomains.filter((d) => d.mode === 'block').length;
@@ -266,6 +303,7 @@ export function mount(container) {
     modeContainer.innerHTML = '';
     modeSegmented = createSegmentedControl({
       options: [
+        { value: 'all', label: 'All', count: total },
         { value: 'proxy', label: 'Proxy', count: proxyCount },
         { value: 'direct', label: 'Direct', count: directCount },
         { value: 'block', label: 'Block', count: blockCount },
@@ -282,26 +320,21 @@ export function mount(container) {
     modeContainer.appendChild(modeSegmented.el);
   }
 
-  // Search input
+  // ─── Search ───────────────────────────────────────────────────────────────────
   $('#dom-search-input', container).addEventListener('input', (e) => {
     searchQuery = e.target.value.toLowerCase().trim();
     tableState.clearSelection();
     tableState.currentPage = 1;
-    renderTable();
+    renderView();
   });
 
-  // Fetch Domains
+  // ─── Fetch ────────────────────────────────────────────────────────────────────
   async function fetchDomains() {
     try {
-      // Fetch settings first so egress visibility is correct before the table
-      // renders. Swallow errors — if settings are unavailable we keep the
-      // current value (default: visible).
       try {
         const settings = await api.getSettings();
         egressEnabled = Boolean(settings.egress_proxy_enabled);
-      } catch (_) {
-        // Keep current egressEnabled value.
-      }
+      } catch (_) {}
 
       try {
         const catRes = await api.getCatalog();
@@ -314,37 +347,54 @@ export function mount(container) {
 
       initModeSegmented();
       initRangeSegmented();
-      renderTable();
+      renderView();
     } catch (err) {
       $('#dom-table-body', container).innerHTML = `
-        <tr>
-          <td colspan="11" class="table-td text-center py-8 text-danger">
-            Failed to load domain rules: ${escapeHtml(err.message)}
-          </td>
-        </tr>
+        <tr><td colspan="9" class="table-td text-center py-8 text-danger">
+          Failed to load domain rules: ${escapeHtml(err.message)}
+        </td></tr>
       `;
     }
   }
 
-  // Filter & Merge logic
-  function getFilteredDomains() {
-    // 1. Filter by active mode
-    let filtered = allDomains.filter((d) => (d.mode || 'proxy') === activeMode);
+  // ─── Routing Mode Badge ───────────────────────────────────────────────────────
+  function modeBadgeHtml(mode) {
+    switch (mode) {
+      case 'proxy':   return `<span class="badge badge-success text-[10px]">Proxy</span>`;
+      case 'direct':  return `<span class="badge badge-info text-[10px]">Direct</span>`;
+      case 'block':   return `<span class="badge badge-danger text-[10px]">Block</span>`;
+      default:        return `<span class="badge badge-success text-[10px]">Proxy</span>`;
+    }
+  }
 
-    // 2. Search query
+  // ─── Filter logic ─────────────────────────────────────────────────────────────
+  function getFilteredDomains() {
+    let filtered = activeMode === 'all'
+      ? [...allDomains]
+      : allDomains.filter((d) => (d.mode || 'proxy') === activeMode);
+
     if (searchQuery) {
       filtered = filtered.filter(
         (d) =>
           d.domain.toLowerCase().includes(searchQuery) ||
-          (d.group_name && d.group_name.toLowerCase().includes(searchQuery))
+          (d.group_name && d.group_name.toLowerCase().includes(searchQuery)) ||
+          (d.catalog_node && d.catalog_node.toLowerCase().includes(searchQuery))
       );
     }
 
-    // 3. Merge identical apex + wildcard counterpart rules (fixes B4)
     return mergeApexWildcard(filtered);
   }
 
-  // Render Table
+  // ─── Render dispatcher ────────────────────────────────────────────────────────
+  function renderView() {
+    if (viewTab === 'flat') {
+      renderTable();
+    } else {
+      renderTreeView();
+    }
+  }
+
+  // ─── Flat Table ───────────────────────────────────────────────────────────────
   function renderTable() {
     const tbody = $('#dom-table-body', container);
     const filteredDomains = getFilteredDomains();
@@ -366,19 +416,11 @@ export function mount(container) {
 
     if (sortedDomains.length === 0) {
       tbody.innerHTML = `
-        <tr>
-          <td colspan="11" class="table-td text-center py-12 text-txt-subtle italic">
-            ${searchQuery ? 'No domains matching your search' : 'No domain rules in this mode'}
-          </td>
-        </tr>
+        <tr><td colspan="9" class="table-td text-center py-12 text-txt-subtle italic">
+          ${searchQuery ? 'No domains matching your search' : 'No domain rules'}
+        </td></tr>
       `;
-      renderPagination($('#dom-pagination', container), {
-        currentPage: 1,
-        totalPages: 1,
-        totalItems: 0,
-        pageSize: tableState.pageSize,
-        onPageChange: () => {},
-      });
+      renderPagination($('#dom-pagination', container), { currentPage: 1, totalPages: 1, totalItems: 0, pageSize: tableState.pageSize, onPageChange: () => {} });
       updateBulkBar(filteredDomains);
       return;
     }
@@ -390,10 +432,7 @@ export function mount(container) {
       totalPages: sliceInfo.totalPages,
       totalItems: sliceInfo.total,
       pageSize: tableState.pageSize,
-      onPageChange: (newPage) => {
-        tableState.setPage(newPage);
-        renderTable();
-      },
+      onPageChange: (newPage) => { tableState.setPage(newPage); renderTable(); },
     });
     tableState.updateHeaderCheckbox($('#dom-select-all', container), sliceInfo.slice);
 
@@ -401,20 +440,12 @@ export function mount(container) {
     applyEgressVisibility();
   }
 
-  // Show or hide the Egress column (header + all cells) and the bulk 'Set
-  // Egress' button based on the global egress_proxy_enabled setting.
   function applyEgressVisibility() {
-    // Column header: the 4th <th> in thead (0-indexed: checkbox, domain,
-    // ports, egress)
-    const egressTh = container.querySelector('thead th:nth-child(4)');
+    const egressTh = container.querySelector('thead th:nth-child(5)');
     if (egressTh) egressTh.style.display = egressEnabled ? '' : 'none';
-
-    // Per-row egress cells
-    container.querySelectorAll('tbody td:nth-child(4)').forEach((td) => {
+    container.querySelectorAll('tbody td:nth-child(5)').forEach((td) => {
       td.style.display = egressEnabled ? '' : 'none';
     });
-
-    // Bulk action button
     const bulkEgressBtn = $('#dom-bulk-egress-btn', container);
     if (bulkEgressBtn) bulkEgressBtn.style.display = egressEnabled ? '' : 'none';
   }
@@ -426,36 +457,31 @@ export function mount(container) {
     }
   }
 
-  function createRowElement(d, isIndented = false) {
+  function createRowElement(d) {
     const isSelected = tableState.selectedIds.has(d.domain);
     const row = document.createElement('tr');
-    row.className = `table-row ${isSelected ? 'table-row-selected' : ''}`;
+    const isEnabled = d.enabled !== false; // default true
+    row.className = `table-row ${isSelected ? 'table-row-selected' : ''} ${!isEnabled ? 'opacity-50' : ''}`;
 
     const isMerged = Boolean(d.is_merged);
     const isEgress = String(d.use_egress_proxy) === 'true';
-    const totalBytes = (d.total_bytes_sent || 0) + (d.total_bytes_received || 0);
 
     let domainDisplay = escapeHtml(d.domain);
     if (isMerged) {
       domainDisplay = `<span class="font-semibold text-txt">${escapeHtml(d.domain)}</span> <span class="badge badge-primary text-[10px] ml-1.5 font-sans font-medium">+ sub domains</span>`;
     }
 
-    let modeBadge = '';
-    if (d.mode === 'direct') {
-      modeBadge = `<span class="badge badge-info ml-1.5">Direct</span>`;
-    } else if (d.mode === 'block') {
-      modeBadge = `<span class="badge badge-danger ml-1.5">Block</span>`;
-    }
-
     row.innerHTML = `
       <td class="table-td w-10 text-center">
         <input type="checkbox" class="checkbox row-checkbox mx-auto" ${isSelected ? 'checked' : ''} />
       </td>
-      <td class="table-td font-mono text-xs ${isIndented ? 'pl-8' : ''}">
-        <div class="flex items-center">
+      <td class="table-td font-mono text-xs">
+        <div class="flex items-center gap-1.5 flex-wrap">
           ${domainDisplay}
-          ${modeBadge}
         </div>
+      </td>
+      <td class="table-td text-xs">
+        ${modeBadgeHtml(d.mode || 'proxy')}
       </td>
       <td class="table-td font-mono text-xs text-txt-muted">
         ${formatPorts(d.ports)}
@@ -482,24 +508,52 @@ export function mount(container) {
         ${(d.total_dns_queries || 0) > 0 ? formatCount(d.total_dns_queries) : '<span class="text-txt-subtle">0</span>'}
       </td>
       <td class="table-td text-right">
+        <label class="relative inline-flex items-center cursor-pointer" title="${isEnabled ? 'Disable domain' : 'Enable domain'}">
+          <input type="checkbox" class="dom-enable-toggle sr-only" ${isEnabled ? 'checked' : ''} />
+          <div class="w-8 h-4 rounded-full transition-colors ${isEnabled ? 'bg-emerald-500' : 'bg-surface-3 border border-border'} relative">
+            <div class="absolute top-0.5 ${isEnabled ? 'left-4' : 'left-0.5'} w-3 h-3 bg-white rounded-full shadow transition-all"></div>
+          </div>
+        </label>
+      </td>
+      <td class="table-td text-right">
         <button type="button" class="dom-row-menu-btn btn-icon-sm text-txt-muted hover:text-txt" aria-label="Domain actions">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
         </button>
       </td>
     `;
 
-    // Row selection toggle
+    // Row checkbox
     const checkbox = row.querySelector('.row-checkbox');
     checkbox.addEventListener('change', (e) => {
       tableState.toggleSelect(d.domain, e.target.checked);
-      renderTable();
+      row.className = `table-row ${e.target.checked ? 'table-row-selected' : ''} ${!isEnabled ? 'opacity-50' : ''}`;
+      const filteredDomains = getFilteredDomains();
+      tableState.updateHeaderCheckbox($('#dom-select-all', container), tableState.getPageSlice(tableState.getSortedItems(filteredDomains, {})).slice);
+      updateBulkBar(filteredDomains);
+    });
+
+    // Enable toggle
+    const enableToggle = row.querySelector('.dom-enable-toggle');
+    enableToggle.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      try {
+        await api.toggleDomain(d.domain, enabled);
+        if (d.is_merged) {
+          try { await api.toggleDomain(`*.${d.domain}`, enabled); } catch (_) {}
+        }
+        toast.success(`Domain ${d.domain} ${enabled ? 'enabled' : 'disabled'}`);
+        await fetchDomains();
+      } catch (err) {
+        toast.error(err.message || 'Failed to toggle domain');
+        e.target.checked = !enabled;
+      }
     });
 
     // Row actions menu
     const menuBtn = row.querySelector('.dom-row-menu-btn');
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const menuItems = [
+      showMenu(menuBtn, [
         {
           text: 'Usage Analytics',
           icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
@@ -517,24 +571,22 @@ export function mount(container) {
           icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>`,
           onClick: () => deleteDomainRule(d),
         },
-      ];
-
-      showMenu(menuBtn, menuItems);
+      ]);
     });
 
     return row;
   }
 
-  // Header checkbox (Select All Visible)
+  // ─── Header select-all ─────────────────────────────────────────────────────────
   $('#dom-select-all', container).addEventListener('click', (e) => {
     const filteredDomains = getFilteredDomains();
-    const visibleItems =
-      viewMode === 'flat' ? tableState.getPageSlice(filteredDomains).slice : filteredDomains;
+    const sortedDomains = tableState.getSortedItems(filteredDomains, {});
+    const visibleItems = tableState.getPageSlice(sortedDomains).slice;
     tableState.toggleSelectAllVisible(visibleItems, e.target.checked);
     renderTable();
   });
 
-  // Bulk actions bar updates (fixes B2)
+  // ─── Bulk Bar ─────────────────────────────────────────────────────────────────
   function updateBulkBar(filteredDomains) {
     const bulkBar = $('#dom-bulk-bar', container);
     const bulkCountEl = $('#dom-bulk-count', container);
@@ -547,8 +599,13 @@ export function mount(container) {
       bulkBar.classList.remove('hidden');
       bulkCountEl.textContent = `${selectedCount} selected`;
 
-      // If only current page is selected, offer "Select all N matching"
-      if (!tableState.selectAllMatching && selectedCount < filteredDomains.length) {
+      // Show "Select all matching" only when current page is fully selected but not yet all
+      const sortedDomains = tableState.getSortedItems(filteredDomains, {});
+      const sliceInfo = tableState.getPageSlice(sortedDomains);
+      const visibleIds = sliceInfo.slice.map((d) => d.domain);
+      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => tableState.selectedIds.has(id));
+
+      if (!tableState.selectAllMatching && allVisibleSelected && selectedCount < filteredDomains.length) {
         selectAllBtn.classList.remove('hidden');
         allCountSpan.textContent = filteredDomains.length;
       } else {
@@ -589,7 +646,7 @@ export function mount(container) {
     return Array.from(new Set(expanded));
   }
 
-  // Bulk Delete
+  // ─── Bulk Delete ──────────────────────────────────────────────────────────────
   $('#dom-bulk-delete-btn', container).addEventListener('click', async () => {
     const filteredDomains = getFilteredDomains();
     const selectedDomains = tableState.getSelectedIds(filteredDomains);
@@ -618,7 +675,7 @@ export function mount(container) {
     }
   });
 
-  // Bulk Assign Mode
+  // ─── Bulk Change Mode ─────────────────────────────────────────────────────────
   $('#dom-bulk-mode-btn', container).addEventListener('click', async () => {
     const filteredDomains = getFilteredDomains();
     const selectedDomains = tableState.getSelectedIds(filteredDomains);
@@ -631,15 +688,15 @@ export function mount(container) {
     const modeStyles = {
       proxy: {
         active: 'flex items-start gap-3 p-3 rounded-xl border border-emerald-500 bg-emerald-500/15 dark:bg-emerald-950/40 ring-1 ring-emerald-500/30 cursor-pointer transition-colors',
-        inactive: 'flex items-start gap-3 p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 dark:bg-emerald-950/10 hover:border-emerald-500/40 hover:bg-emerald-500/10 cursor-pointer transition-colors',
+        inactive: 'flex items-start gap-3 p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 dark:bg-emerald-950/10 hover:border-emerald-500/40 cursor-pointer transition-colors',
       },
       direct: {
         active: 'flex items-start gap-3 p-3 rounded-xl border border-zinc-500 dark:border-zinc-400 bg-zinc-500/15 dark:bg-zinc-800/60 ring-1 ring-zinc-500/30 cursor-pointer transition-colors',
-        inactive: 'flex items-start gap-3 p-3 rounded-xl border border-zinc-500/20 bg-zinc-500/5 dark:bg-zinc-800/20 hover:border-zinc-500/40 hover:bg-zinc-500/10 cursor-pointer transition-colors',
+        inactive: 'flex items-start gap-3 p-3 rounded-xl border border-zinc-500/20 bg-zinc-500/5 dark:bg-zinc-800/20 hover:border-zinc-500/40 cursor-pointer transition-colors',
       },
       block: {
         active: 'flex items-start gap-3 p-3 rounded-xl border border-red-500 bg-red-500/15 dark:bg-red-950/40 ring-1 ring-red-500/30 cursor-pointer transition-colors',
-        inactive: 'flex items-start gap-3 p-3 rounded-xl border border-red-500/20 bg-red-500/5 dark:bg-red-950/10 hover:border-red-500/40 hover:bg-red-500/10 cursor-pointer transition-colors',
+        inactive: 'flex items-start gap-3 p-3 rounded-xl border border-red-500/20 bg-red-500/5 dark:bg-red-950/10 hover:border-red-500/40 cursor-pointer transition-colors',
       },
     };
 
@@ -647,38 +704,32 @@ export function mount(container) {
       <div class="flex flex-col gap-3">
         <p class="text-sm text-txt-muted">Select new routing mode for <span class="font-semibold text-txt">${selectedDomains.length}</span> selected rule(s):</p>
         <div class="space-y-2 pt-1">
-          <!-- Proxy Option (Green) -->
           <label class="${modeStyles.proxy.active}" id="${bUid}-mode-opt-proxy">
-            <input type="radio" name="${bUid}_routing_mode" value="proxy" class="radio radio-emerald mt-0.5 shrink-0 text-emerald-600 focus:ring-emerald-500" checked />
+            <input type="radio" name="${bUid}_routing_mode" value="proxy" class="radio radio-emerald mt-0.5 shrink-0" checked />
             <div class="flex flex-col min-w-0">
               <span class="text-sm font-semibold text-txt">Proxy (Relay)</span>
-              <span class="text-xs text-txt-muted mt-0.5 leading-relaxed">Relay TLS connections and log SNI traffic.</span>
+              <span class="text-xs text-txt-muted mt-0.5">Relay TLS connections and log SNI traffic.</span>
             </div>
           </label>
-
-          <!-- Direct Option (Gray) -->
           <label class="${modeStyles.direct.inactive}" id="${bUid}-mode-opt-direct">
-            <input type="radio" name="${bUid}_routing_mode" value="direct" class="radio radio-zinc mt-0.5 shrink-0 text-zinc-600 focus:ring-zinc-500" />
+            <input type="radio" name="${bUid}_routing_mode" value="direct" class="radio radio-zinc mt-0.5 shrink-0" />
             <div class="flex flex-col min-w-0">
               <span class="text-sm font-semibold text-txt">Direct (Bypass)</span>
-              <span class="text-xs text-txt-muted mt-0.5 leading-relaxed">Bypass relay and resolve client directly to target.</span>
+              <span class="text-xs text-txt-muted mt-0.5">Bypass relay and resolve client directly to target.</span>
             </div>
           </label>
-
-          <!-- Block Option (Red) -->
           <label class="${modeStyles.block.inactive}" id="${bUid}-mode-opt-block">
-            <input type="radio" name="${bUid}_routing_mode" value="block" class="radio radio-red mt-0.5 shrink-0 text-red-600 focus:ring-red-500" />
+            <input type="radio" name="${bUid}_routing_mode" value="block" class="radio radio-red mt-0.5 shrink-0" />
             <div class="flex flex-col min-w-0">
               <span class="text-sm font-semibold text-txt">Block (Reject)</span>
-              <span class="text-xs text-txt-muted mt-0.5 leading-relaxed">Drop and reject all DNS and TLS queries.</span>
+              <span class="text-xs text-txt-muted mt-0.5">Drop and reject all DNS and TLS queries.</span>
             </div>
           </label>
         </div>
       </div>
     `);
 
-    const radioInputs = content.querySelectorAll(`input[name="${bUid}_routing_mode"]`);
-    radioInputs.forEach((radio) => {
+    content.querySelectorAll(`input[name="${bUid}_routing_mode"]`).forEach((radio) => {
       radio.addEventListener('change', () => {
         if (!radio.checked) return;
         selectedMode = radio.value;
@@ -716,14 +767,13 @@ export function mount(container) {
     });
   });
 
-  // Bulk Assign Egress
+  // ─── Bulk Egress ──────────────────────────────────────────────────────────────
   $('#dom-bulk-egress-btn', container).addEventListener('click', () => {
     const filteredDomains = getFilteredDomains();
     const selectedDomains = tableState.getSelectedIds(filteredDomains);
     if (!selectedDomains.length) return;
 
     const targetDomains = getSelectedTargetDomains(filteredDomains);
-
     const contentEl = document.createElement('div');
     contentEl.className = 'text-sm text-txt-muted leading-relaxed';
     contentEl.textContent = `Choose an egress proxy configuration for ${selectedDomains.length} selected domain(s):`;
@@ -733,12 +783,7 @@ export function mount(container) {
       content: contentEl,
       size: 'sm',
       actions: [
-        {
-          text: 'Cancel',
-          className: 'btn btn-secondary',
-          value: 'cancel',
-          onClick: (_, { close }) => close('cancel'),
-        },
+        { text: 'Cancel', className: 'btn btn-secondary', value: 'cancel', onClick: (_, { close }) => close('cancel') },
         {
           text: 'Disable egress',
           className: 'btn btn-secondary text-danger hover:bg-danger-soft',
@@ -777,15 +822,10 @@ export function mount(container) {
     });
   });
 
-  // Edit Domain Dialog
+  // ─── Edit Dialog ──────────────────────────────────────────────────────────────
   function openEditDomainDialog(d) {
     if (!d.is_merged) {
-      // Standard single domain edit
-      const formObj = createDomainRuleForm({
-        initialData: d,
-        categories: catalogCategories,
-        isEdit: true,
-      });
+      const formObj = createDomainRuleForm({ initialData: d, categories: catalogCategories, isEdit: true });
 
       dialog.open({
         title: `Edit Rule: ${d.domain}`,
@@ -798,10 +838,6 @@ export function mount(container) {
             primary: true,
             onClick: async (_, { close }) => {
               const data = formObj.getData();
-              if (data.mode === 'proxy' && (!data.ports || data.ports === '')) {
-                toast.error('Please enter valid port numbers (e.g. 443, 8443) or "all"');
-                return;
-              }
               try {
                 await api.updateDomain(d.domain, {
                   group_name: data.group_name,
@@ -809,8 +845,10 @@ export function mount(container) {
                   mode: data.mode,
                   ports: Array.isArray(data.ports) ? data.ports.join(',') : data.ports,
                   use_egress_proxy: String(data.use_egress_proxy),
+                  include_subdomains: Boolean(data.include_subdomains),
+                  delete_wildcard_counterpart: data.include_subdomains === false,
                 });
-                toast.success(`Domain ${d.domain} updated`);
+                toast.success(`Rule for ${d.domain} updated`);
                 close();
                 await fetchDomains();
               } catch (err) {
@@ -823,75 +861,10 @@ export function mount(container) {
       return;
     }
 
-    // Merged domain edit (Apex + Wildcard)
-    const modalContent = document.createElement('div');
-    modalContent.className = 'flex flex-col gap-4';
-
-    // Segmented tab switcher & Sync toggle
-    const topBar = document.createElement('div');
-    topBar.className = 'flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border';
-
-    let activeSubTab = 'apex';
+    // Merged apex + wildcard edit
     let isSynced = true;
     let isMirroring = false;
 
-    const tabSegmented = createSegmentedControl({
-      options: [
-        { value: 'apex', label: `${d.domain} (Apex)` },
-        { value: 'wildcard', label: `*.${d.domain} (Subdomains)` },
-      ],
-      value: activeSubTab,
-      size: 'sm',
-      onChange: (val) => {
-        activeSubTab = val;
-        if (val === 'apex') {
-          apexWrapper.classList.remove('hidden');
-          wildcardWrapper.classList.add('hidden');
-        } else {
-          apexWrapper.classList.add('hidden');
-          wildcardWrapper.classList.remove('hidden');
-        }
-      },
-    });
-
-    const syncBox = document.createElement('div');
-    syncBox.className = 'flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-2/60 border border-border shrink-0';
-    syncBox.innerHTML = `
-      <input type="checkbox" id="edit-sync-toggle" class="checkbox" checked />
-      <label for="edit-sync-toggle" class="text-xs font-medium text-txt cursor-pointer select-none">
-        Sync both rules
-      </label>
-      <span id="edit-sync-indicator" class="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Synchronized"></span>
-    `;
-
-    topBar.appendChild(tabSegmented.el);
-    topBar.appendChild(syncBox);
-    modalContent.appendChild(topBar);
-
-    const syncCheckbox = syncBox.querySelector('#edit-sync-toggle');
-    const syncIndicator = syncBox.querySelector('#edit-sync-indicator');
-
-    syncCheckbox.addEventListener('change', () => {
-      isSynced = syncCheckbox.checked;
-      if (isSynced) {
-        syncIndicator.className = 'w-2 h-2 rounded-full bg-emerald-500 shrink-0';
-        syncIndicator.title = 'Synchronized';
-        // Mirror active tab to other tab
-        const srcData = activeSubTab === 'apex' ? apexForm.getData() : wildcardForm.getData();
-        const targetForm = activeSubTab === 'apex' ? wildcardForm : apexForm;
-        targetForm.setData({
-          mode: srcData.mode,
-          ports: srcData.ports,
-          group_name: srcData.group_name,
-          use_egress_proxy: srcData.use_egress_proxy,
-        });
-      } else {
-        syncIndicator.className = 'w-2 h-2 rounded-full bg-amber-500 shrink-0';
-        syncIndicator.title = 'Independent settings';
-      }
-    });
-
-    // Apex form wrapper
     const apexWrapper = document.createElement('div');
     const apexForm = createDomainRuleForm({
       initialData: { ...d, domain: d.domain },
@@ -901,21 +874,13 @@ export function mount(container) {
         if (isSynced && !isMirroring) {
           isMirroring = true;
           const data = apexForm.getData();
-          wildcardForm.setData({
-            mode: data.mode,
-            ports: data.ports,
-            catalog_node: data.catalog_node,
-            group_name: data.group_name,
-            use_egress_proxy: data.use_egress_proxy,
-          });
+          wildcardForm.setData({ mode: data.mode, ports: data.ports, catalog_node: data.catalog_node, group_name: data.group_name, use_egress_proxy: data.use_egress_proxy });
           isMirroring = false;
         }
       },
     });
     apexWrapper.appendChild(apexForm.el);
-    modalContent.appendChild(apexWrapper);
 
-    // Wildcard form wrapper
     const wildcardWrapper = document.createElement('div');
     wildcardWrapper.className = 'hidden flex flex-col gap-3';
     const wildcardForm = createDomainRuleForm({
@@ -926,53 +891,38 @@ export function mount(container) {
         if (isSynced && !isMirroring) {
           isMirroring = true;
           const data = wildcardForm.getData();
-          apexForm.setData({
-            mode: data.mode,
-            ports: data.ports,
-            catalog_node: data.catalog_node,
-            group_name: data.group_name,
-            use_egress_proxy: data.use_egress_proxy,
-          });
+          apexForm.setData({ mode: data.mode, ports: data.ports, catalog_node: data.catalog_node, group_name: data.group_name, use_egress_proxy: data.use_egress_proxy });
           isMirroring = false;
         }
       },
     });
     wildcardWrapper.appendChild(wildcardForm.el);
 
-    // Option to delete wildcard rule from within the wildcard tab
-    const wcActions = document.createElement('div');
-    wcActions.className = 'pt-3 border-t border-border flex items-center justify-between';
-    wcActions.innerHTML = `
-      <span class="text-xs text-txt-subtle">Want to delete only the wildcard rule?</span>
-      <button type="button" class="btn btn-ghost btn-xs text-danger hover:bg-danger-soft">
-        Delete *.${escapeHtml(d.domain)}
-      </button>
+    const syncToggle = document.createElement('div');
+    syncToggle.innerHTML = `
+      <div class="flex items-center gap-3 p-3 rounded-xl bg-surface-2/50 border border-border">
+        <label class="relative inline-flex items-center cursor-pointer gap-2 select-none">
+          <input id="sync-toggle-cb" type="checkbox" class="checkbox" checked />
+          <span class="text-xs font-medium text-txt">Sync apex + wildcard settings</span>
+        </label>
+      </div>
     `;
-    const deleteWcBtn = wcActions.querySelector('button');
-    deleteWcBtn.addEventListener('click', async () => {
-      const confirmed = await dialog.confirm({
-        title: `Delete Wildcard Rule: *.${d.domain}`,
-        message: `Are you sure you want to remove the wildcard rule (*.${d.domain})? The apex rule (${d.domain}) will remain active.`,
-        confirmText: 'Delete Wildcard Rule',
-        danger: true,
-      });
-      if (!confirmed) return;
-      try {
-        await api.deleteDomain(`*.${d.domain}`);
-        toast.success(`Wildcard rule *.${d.domain} deleted`);
-        editDialogObj.close();
-        await fetchDomains();
-      } catch (err) {
-        toast.error(err.message || 'Failed to delete wildcard rule');
-      }
+    const syncCb = syncToggle.querySelector('#sync-toggle-cb');
+    syncCb.addEventListener('change', () => {
+      isSynced = syncCb.checked;
+      wildcardWrapper.className = isSynced ? 'hidden flex flex-col gap-3' : 'flex flex-col gap-3';
     });
-    wildcardWrapper.appendChild(wcActions);
-    modalContent.appendChild(wildcardWrapper);
 
-    const editDialogObj = dialog.open({
-      title: `Edit Rule: ${d.domain} & *.${d.domain}`,
-      content: modalContent,
-      size: 'md',
+    const contentWrap = document.createElement('div');
+    contentWrap.className = 'space-y-4';
+    contentWrap.appendChild(syncToggle);
+    contentWrap.appendChild(apexWrapper);
+    contentWrap.appendChild(wildcardWrapper);
+
+    dialog.open({
+      title: `Edit Merged Rule: ${d.domain}`,
+      content: contentWrap,
+      size: 'lg',
       actions: [
         { text: 'Cancel', className: 'btn btn-secondary', value: false },
         {
@@ -980,59 +930,24 @@ export function mount(container) {
           primary: true,
           onClick: async (_, { close }) => {
             const apexData = apexForm.getData();
-            const wildcardData = wildcardForm.getData();
-
-            if (apexData.mode === 'proxy' && (!apexData.ports || apexData.ports === '')) {
-              toast.error('Please enter valid port numbers for apex rule (e.g. 443) or "all"');
-              return;
-            }
-            if (wildcardData.mode === 'proxy' && (!wildcardData.ports || wildcardData.ports === '')) {
-              toast.error('Please enter valid port numbers for wildcard rule (e.g. 443) or "all"');
-              return;
-            }
-
+            const wildcardData = isSynced ? apexData : wildcardForm.getData();
             try {
               if (isSynced) {
                 await Promise.all([
-                  api.updateDomain(d.domain, {
-                    catalog_node: apexData.catalog_node,
-                    group_name: apexData.group_name,
-                    mode: apexData.mode,
-                    ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports,
-                    use_egress_proxy: String(apexData.use_egress_proxy),
-                  }),
-                  api.updateDomain(`*.${d.domain}`, {
-                    catalog_node: apexData.catalog_node,
-                    group_name: apexData.group_name,
-                    mode: apexData.mode,
-                    ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports,
-                    use_egress_proxy: String(apexData.use_egress_proxy),
-                  }),
+                  api.updateDomain(d.domain, { catalog_node: apexData.catalog_node, group_name: apexData.group_name, mode: apexData.mode, ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports, use_egress_proxy: String(apexData.use_egress_proxy) }),
+                  api.updateDomain(`*.${d.domain}`, { catalog_node: apexData.catalog_node, group_name: apexData.group_name, mode: apexData.mode, ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports, use_egress_proxy: String(apexData.use_egress_proxy) }),
                 ]);
-                toast.success(`Domain ${d.domain} and *.${d.domain} updated`);
               } else {
                 await Promise.all([
-                  api.updateDomain(d.domain, {
-                    catalog_node: apexData.catalog_node,
-                    group_name: apexData.group_name,
-                    mode: apexData.mode,
-                    ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports,
-                    use_egress_proxy: String(apexData.use_egress_proxy),
-                  }),
-                  api.updateDomain(`*.${d.domain}`, {
-                    catalog_node: wildcardData.catalog_node,
-                    group_name: wildcardData.group_name,
-                    mode: wildcardData.mode,
-                    ports: Array.isArray(wildcardData.ports) ? wildcardData.ports.join(',') : wildcardData.ports,
-                    use_egress_proxy: String(wildcardData.use_egress_proxy),
-                  }),
+                  api.updateDomain(d.domain, { catalog_node: apexData.catalog_node, group_name: apexData.group_name, mode: apexData.mode, ports: Array.isArray(apexData.ports) ? apexData.ports.join(',') : apexData.ports, use_egress_proxy: String(apexData.use_egress_proxy) }),
+                  api.updateDomain(`*.${d.domain}`, { catalog_node: wildcardData.catalog_node, group_name: wildcardData.group_name, mode: wildcardData.mode, ports: Array.isArray(wildcardData.ports) ? wildcardData.ports.join(',') : wildcardData.ports, use_egress_proxy: String(wildcardData.use_egress_proxy) }),
                 ]);
-                toast.success(`Independent configurations saved for ${d.domain} and *.${d.domain}`);
               }
+              toast.success(`Rules for ${d.domain} updated`);
               close();
               await fetchDomains();
             } catch (err) {
-              toast.error(err.message || 'Failed to update domain rule');
+              toast.error(err.message || 'Failed to update domain rules');
             }
           },
         },
@@ -1040,12 +955,12 @@ export function mount(container) {
     });
   }
 
-  // Delete Single Domain
+  // ─── Delete ───────────────────────────────────────────────────────────────────
   async function deleteDomainRule(d) {
     const confirmed = await dialog.confirm({
       title: `Delete Rule: ${d.domain}`,
-      message: `Are you sure you want to delete the routing rule for ${d.domain}?`,
-      confirmText: 'Delete',
+      message: `Are you sure you want to permanently remove the rule for "${d.domain}"?${d.is_merged ? ' This will also delete the wildcard (*.domain) counterpart.' : ''}`,
+      confirmText: 'Delete Rule',
       danger: true,
     });
 
@@ -1054,12 +969,7 @@ export function mount(container) {
     try {
       await api.deleteDomain(d.domain);
       if (d.is_merged) {
-        // Also delete wildcard counterpart
-        try {
-          await api.deleteDomain(`*.${d.domain}`);
-        } catch {
-          // Ignore if already gone
-        }
+        try { await api.deleteDomain(`*.${d.domain}`); } catch { }
       }
       toast.success(`Domain ${d.domain} deleted`);
       await fetchDomains();
@@ -1068,7 +978,574 @@ export function mount(container) {
     }
   }
 
-  // Range Segmented Control
+  // ─── Tree View ────────────────────────────────────────────────────────────────
+  function renderTreeView() {
+    const treeContainer = $('#dom-tree-container', container);
+    treeContainer.innerHTML = '';
+
+    // Sort categories alphabetically
+    const sortedCats = [...catalogCategories].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    // Collect all domains with a catalog_node
+    const domainsInCats = new Set();
+
+    for (const cat of sortedCats) {
+      const subs = [...(cat.subcategories || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      const catEl = buildCategoryBlock(cat, subs, domainsInCats);
+      treeContainer.appendChild(catEl);
+    }
+
+    // Uncategorized
+    const uncatDomains = allDomains.filter((d) => !domainsInCats.has(d.domain) && !domainsInCats.has(`*.${d.domain}`));
+    const filteredUncat = searchQuery
+      ? uncatDomains.filter((d) => d.domain.toLowerCase().includes(searchQuery) || (d.group_name && d.group_name.toLowerCase().includes(searchQuery)))
+      : uncatDomains;
+
+    const mergedUncat = mergeApexWildcard(filteredUncat).sort((a, b) => a.domain.localeCompare(b.domain));
+
+    if (mergedUncat.length > 0 || !searchQuery) {
+      const uncatEl = buildUncategorizedBlock(mergedUncat);
+      treeContainer.appendChild(uncatEl);
+    }
+
+    // No pagination in tree view — hide
+    $('#dom-pagination', container).innerHTML = '';
+    // Hide bulk bar in tree view (TODO: could extend later)
+    $('#dom-bulk-bar', container).classList.add('hidden');
+  }
+
+  function buildCategoryBlock(cat, subs, domainsInCats) {
+    const catId = `dom-tree-cat-${CSS.escape(cat.id)}`;
+    const isExpanded = expandedCats.has(cat.id);
+
+    const catEl = document.createElement('div');
+    catEl.className = 'border-b border-border last:border-b-0';
+
+    const catHeader = document.createElement('div');
+    catHeader.className = 'flex items-center justify-between px-4 py-3 bg-surface-2/60 hover:bg-surface-hover transition-colors cursor-pointer select-none';
+
+    catHeader.innerHTML = `
+      <div class="flex items-center gap-3 min-w-0">
+        <svg class="w-4 h-4 text-txt-muted transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''} cat-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        <span class="text-sm font-semibold text-txt truncate">${escapeHtml(cat.name)}</span>
+        <span class="text-xs font-mono text-txt-subtle truncate">${escapeHtml(cat.id)}</span>
+        <span class="badge badge-neutral text-[10px] font-mono">${cat.enabled_domain_count || 0}/${cat.domain_count || 0}</span>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <button type="button" class="btn btn-ghost btn-xs text-primary-600 cat-add-sub-btn">+ Sub</button>
+        <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt cat-edit-btn" title="Edit Category">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+        </button>
+        <button type="button" class="btn-icon-xs text-txt-muted hover:text-danger cat-delete-btn" title="Delete Category">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+        </button>
+      </div>
+    `;
+
+    catHeader.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (expandedCats.has(cat.id)) expandedCats.delete(cat.id);
+      else expandedCats.add(cat.id);
+      renderTreeView();
+    });
+
+    catHeader.querySelector('.cat-add-sub-btn').addEventListener('click', (e) => { e.stopPropagation(); openAddSubcategoryModal(cat); });
+    catHeader.querySelector('.cat-edit-btn').addEventListener('click', (e) => { e.stopPropagation(); openEditNodeModal(cat); });
+    catHeader.querySelector('.cat-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); confirmDeleteNode(cat); });
+
+    catEl.appendChild(catHeader);
+
+    if (isExpanded) {
+      const subsEl = document.createElement('div');
+      subsEl.className = 'divide-y divide-border/50';
+
+      for (const sub of subs) {
+        const subBlock = buildSubcategoryBlock(sub, cat, domainsInCats);
+        subsEl.appendChild(subBlock);
+      }
+
+      catEl.appendChild(subsEl);
+    } else {
+      // Count domains even when collapsed
+      for (const sub of subs) {
+        const subDomains = allDomains.filter((d) => d.catalog_node === sub.id);
+        subDomains.forEach((d) => domainsInCats.add(d.domain));
+      }
+    }
+
+    return catEl;
+  }
+
+  function buildSubcategoryBlock(sub, parentCat, domainsInCats) {
+    const isExpanded = expandedSubs.has(sub.id);
+
+    // Get domains for this subcategory
+    let subDomains = allDomains.filter((d) => d.catalog_node === sub.id);
+    subDomains.forEach((d) => domainsInCats.add(d.domain));
+
+    if (searchQuery) {
+      subDomains = subDomains.filter((d) =>
+        d.domain.toLowerCase().includes(searchQuery) ||
+        (d.group_name && d.group_name.toLowerCase().includes(searchQuery))
+      );
+    }
+
+    const mergedDomains = mergeApexWildcard(subDomains).sort((a, b) => a.domain.localeCompare(b.domain));
+
+    const subEl = document.createElement('div');
+    subEl.className = 'ml-4 border-l-2 border-border/40';
+
+    const subHeader = document.createElement('div');
+    subHeader.className = 'flex items-center justify-between px-4 py-2.5 bg-surface hover:bg-surface-2/40 transition-colors cursor-pointer select-none';
+
+    subHeader.innerHTML = `
+      <div class="flex items-center gap-2.5 min-w-0">
+        <svg class="w-3.5 h-3.5 text-txt-subtle transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''} sub-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        <span class="text-xs font-semibold text-txt truncate">${escapeHtml(sub.name)}</span>
+        <span class="text-[11px] font-mono text-txt-subtle truncate">${escapeHtml(sub.id)}</span>
+        <span class="badge badge-neutral text-[10px] font-mono">${mergedDomains.length} domains</span>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt sub-edit-btn" title="Edit Subcategory">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+        </button>
+        <button type="button" class="btn-icon-xs text-txt-muted hover:text-danger sub-delete-btn" title="Delete Subcategory">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+        </button>
+      </div>
+    `;
+
+    subHeader.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (expandedSubs.has(sub.id)) expandedSubs.delete(sub.id);
+      else expandedSubs.add(sub.id);
+      renderTreeView();
+    });
+
+    subHeader.querySelector('.sub-edit-btn').addEventListener('click', (e) => { e.stopPropagation(); openEditNodeModal(sub); });
+    subHeader.querySelector('.sub-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); confirmDeleteNode(sub); });
+
+    subEl.appendChild(subHeader);
+
+    if (isExpanded && mergedDomains.length > 0) {
+      const domsEl = document.createElement('div');
+      domsEl.className = 'divide-y divide-border/30';
+
+      for (const d of mergedDomains) {
+        domsEl.appendChild(createTreeDomainRow(d));
+      }
+
+      subEl.appendChild(domsEl);
+    } else if (isExpanded && mergedDomains.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'ml-8 px-4 py-3 text-xs text-txt-subtle italic';
+      emptyEl.textContent = searchQuery ? 'No domains matching your search in this subcategory' : 'No domains in this subcategory';
+      subEl.appendChild(emptyEl);
+    }
+
+    return subEl;
+  }
+
+  function buildUncategorizedBlock(mergedDomains) {
+    const uncatId = 'dom-tree-uncat';
+    const isExpanded = expandedCats.has('__uncat__');
+
+    const el = document.createElement('div');
+    el.className = 'border-b border-border last:border-b-0';
+
+    const header = document.createElement('div');
+    header.className = 'flex items-center justify-between px-4 py-3 bg-surface-2/30 hover:bg-surface-hover transition-colors cursor-pointer select-none';
+
+    header.innerHTML = `
+      <div class="flex items-center gap-3 min-w-0">
+        <svg class="w-4 h-4 text-txt-muted transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        <span class="text-sm font-semibold text-txt-muted">Uncategorized</span>
+        <span class="badge badge-neutral text-[10px] font-mono">${mergedDomains.length}</span>
+      </div>
+    `;
+
+    header.addEventListener('click', () => {
+      if (expandedCats.has('__uncat__')) expandedCats.delete('__uncat__');
+      else expandedCats.add('__uncat__');
+      renderTreeView();
+    });
+
+    el.appendChild(header);
+
+    if (isExpanded) {
+      if (mergedDomains.length === 0) {
+        const emptyEl = document.createElement('div');
+        emptyEl.className = 'px-8 py-4 text-xs text-txt-subtle italic';
+        emptyEl.textContent = 'All domains are categorized';
+        el.appendChild(emptyEl);
+      } else {
+        const domsEl = document.createElement('div');
+        domsEl.className = 'divide-y divide-border/30';
+        for (const d of mergedDomains) {
+          domsEl.appendChild(createTreeDomainRow(d));
+        }
+        el.appendChild(domsEl);
+      }
+    }
+
+    return el;
+  }
+
+  function createTreeDomainRow(d) {
+    const isEnabled = d.enabled !== false;
+    const isMerged = Boolean(d.is_merged);
+    const isEgress = String(d.use_egress_proxy) === 'true';
+
+    const row = document.createElement('div');
+    row.className = `flex items-center justify-between px-8 py-2.5 hover:bg-surface-2/30 transition-colors ${!isEnabled ? 'opacity-50' : ''}`;
+
+    row.innerHTML = `
+      <div class="flex items-center gap-2.5 min-w-0 flex-1">
+        <span class="font-mono text-xs text-txt truncate ${!isEnabled ? 'line-through text-txt-muted' : ''}">${escapeHtml(d.domain)}</span>
+        ${isMerged ? `<span class="badge badge-primary text-[10px] font-sans shrink-0">+ sub</span>` : ''}
+        ${modeBadgeHtml(d.mode || 'proxy')}
+        ${egressEnabled && isEgress ? `<span class="badge badge-success text-[10px] shrink-0">Egress</span>` : ''}
+      </div>
+      <div class="flex items-center gap-2 shrink-0 ml-3">
+        <span class="text-[11px] text-txt-subtle font-mono">${formatPorts(d.ports)}</span>
+        <label class="relative inline-flex items-center cursor-pointer" title="${isEnabled ? 'Disable' : 'Enable'}">
+          <input type="checkbox" class="tree-enable-toggle sr-only" ${isEnabled ? 'checked' : ''} />
+          <div class="w-7 h-3.5 rounded-full transition-colors ${isEnabled ? 'bg-emerald-500' : 'bg-surface-3 border border-border'} relative">
+            <div class="absolute top-0.5 ${isEnabled ? 'left-3.5' : 'left-0.5'} w-2.5 h-2.5 bg-white rounded-full shadow transition-all"></div>
+          </div>
+        </label>
+        <button type="button" class="tree-row-menu-btn btn-icon-sm text-txt-muted hover:text-txt" aria-label="Domain actions">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
+        </button>
+      </div>
+    `;
+
+    // Enable toggle
+    const enableToggle = row.querySelector('.tree-enable-toggle');
+    enableToggle.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      try {
+        await api.toggleDomain(d.domain, enabled);
+        if (d.is_merged) {
+          try { await api.toggleDomain(`*.${d.domain}`, enabled); } catch (_) {}
+        }
+        toast.success(`Domain ${d.domain} ${enabled ? 'enabled' : 'disabled'}`);
+        await fetchDomains();
+      } catch (err) {
+        toast.error(err.message || 'Failed to toggle domain');
+        e.target.checked = !enabled;
+      }
+    });
+
+    // Row menu
+    const menuBtn = row.querySelector('.tree-row-menu-btn');
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showMenu(menuBtn, [
+        {
+          text: 'Usage Analytics',
+          icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
+          onClick: () => openUsageReportDialog({ kind: 'domain', name: d.domain }),
+        },
+        {
+          text: 'Edit Rule',
+          icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>`,
+          onClick: () => openEditDomainDialog(d),
+        },
+        { divider: true },
+        {
+          text: 'Delete Rule',
+          danger: true,
+          icon: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>`,
+          onClick: () => deleteDomainRule(d),
+        },
+      ]);
+    });
+
+    return row;
+  }
+
+  // ─── Category Management Modals ───────────────────────────────────────────────
+  function openCategoryManagerDialog() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'space-y-4';
+
+    function renderModalTree() {
+      wrapper.innerHTML = '';
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'btn btn-secondary btn-sm w-full';
+      addBtn.innerHTML = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg> Add Category`;
+      addBtn.addEventListener('click', () => openAddCategoryModal().then(() => fetchDomains().then(renderModalTree)));
+      wrapper.appendChild(addBtn);
+
+      if (catalogCategories.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'text-xs text-txt-subtle text-center py-4';
+        empty.textContent = 'No categories yet. Add one to get started.';
+        wrapper.appendChild(empty);
+        return;
+      }
+
+      const treeEl = document.createElement('div');
+      treeEl.className = 'rounded-xl border border-border overflow-hidden divide-y divide-border bg-surface';
+
+      const sortedCats = [...catalogCategories].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+      for (const cat of sortedCats) {
+        const catRow = document.createElement('div');
+        catRow.className = 'p-3 flex items-center justify-between gap-2 bg-surface-2/40 hover:bg-surface-2/80 transition-colors';
+        catRow.innerHTML = `
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-sm font-semibold text-txt truncate">${escapeHtml(cat.name)}</span>
+            <span class="text-[11px] font-mono text-txt-subtle truncate">${escapeHtml(cat.id)}</span>
+            <span class="badge badge-neutral text-[10px]">${(cat.subcategories || []).length} subs</span>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <button type="button" class="btn btn-ghost btn-xs text-primary-600 modal-add-sub-btn">+ Sub</button>
+            <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt modal-edit-cat-btn"><svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg></button>
+            <button type="button" class="btn-icon-xs text-txt-muted hover:text-danger modal-delete-cat-btn"><svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+          </div>
+        `;
+
+        catRow.querySelector('.modal-add-sub-btn').addEventListener('click', () =>
+          openAddSubcategoryModal(cat).then(() => fetchDomains().then(renderModalTree))
+        );
+        catRow.querySelector('.modal-edit-cat-btn').addEventListener('click', () =>
+          openEditNodeModal(cat).then(() => fetchDomains().then(renderModalTree))
+        );
+        catRow.querySelector('.modal-delete-cat-btn').addEventListener('click', () =>
+          confirmDeleteNode(cat).then(() => fetchDomains().then(renderModalTree))
+        );
+
+        treeEl.appendChild(catRow);
+
+        const subs = [...(cat.subcategories || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        for (const sub of subs) {
+          const subRow = document.createElement('div');
+          subRow.className = 'pl-8 pr-3 py-2.5 flex items-center justify-between gap-2 border-l-2 border-primary-300/40 ml-4 hover:bg-surface-hover transition-colors';
+          subRow.innerHTML = `
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-xs font-medium text-txt truncate">${escapeHtml(sub.name)}</span>
+              <span class="text-[11px] font-mono text-txt-subtle truncate">${escapeHtml(sub.id)}</span>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              <button type="button" class="btn-icon-xs text-txt-muted hover:text-txt modal-edit-sub-btn"><svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg></button>
+              <button type="button" class="btn-icon-xs text-txt-muted hover:text-danger modal-delete-sub-btn"><svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+            </div>
+          `;
+
+          subRow.querySelector('.modal-edit-sub-btn').addEventListener('click', () =>
+            openEditNodeModal(sub).then(() => fetchDomains().then(renderModalTree))
+          );
+          subRow.querySelector('.modal-delete-sub-btn').addEventListener('click', () =>
+            confirmDeleteNode(sub).then(() => fetchDomains().then(renderModalTree))
+          );
+
+          treeEl.appendChild(subRow);
+        }
+      }
+
+      wrapper.appendChild(treeEl);
+    }
+
+    renderModalTree();
+
+    dialog.open({
+      title: 'Manage Categories & Subcategories',
+      content: wrapper,
+      size: 'md',
+      actions: [{ text: 'Close', className: 'btn btn-secondary', value: false }],
+    });
+  }
+
+  function openAddCategoryModal() {
+    return new Promise((resolve) => {
+      const content = document.createElement('div');
+      content.className = 'space-y-4';
+      content.innerHTML = `
+        <div class="field">
+          <label class="field-label" for="add-cat-name-input">Category Name</label>
+          <input id="add-cat-name-input" type="text" class="input" placeholder="e.g. Streaming & Media" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="add-cat-id-input">Category ID (unique, lowercase)</label>
+          <input id="add-cat-id-input" type="text" class="input font-mono" placeholder="e.g. streaming" />
+        </div>
+      `;
+
+      const nameInput = content.querySelector('#add-cat-name-input');
+      const idInput = content.querySelector('#add-cat-id-input');
+
+      nameInput.addEventListener('input', () => {
+        if (!idInput.dataset.manual) {
+          idInput.value = nameInput.value.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        }
+      });
+      idInput.addEventListener('input', () => { idInput.dataset.manual = 'true'; });
+
+      dialog.open({
+        title: 'Add Catalog Category',
+        content,
+        size: 'sm',
+        actions: [
+          { text: 'Cancel', className: 'btn btn-secondary', value: false, onClick: (_, { close }) => { close(); resolve(); } },
+          {
+            text: 'Create Category',
+            primary: true,
+            onClick: async (_, { close }) => {
+              const name = nameInput.value.trim();
+              const id = idInput.value.trim().toLowerCase();
+              if (!name || !id) { toast.error('Both name and ID are required'); return; }
+              try {
+                await api.createCatalogNode({ id, name, parent_id: '' });
+                toast.success(`Category "${name}" created`);
+                close();
+                resolve();
+              } catch (err) {
+                toast.error(err.message || 'Failed to create category');
+              }
+            },
+          },
+        ],
+      });
+    });
+  }
+
+  function openAddSubcategoryModal(parentCat) {
+    return new Promise((resolve) => {
+      const content = document.createElement('div');
+      content.className = 'space-y-4';
+      content.innerHTML = `
+        <div class="field">
+          <label class="field-label">Parent Category</label>
+          <input type="text" class="input bg-surface-2" value="${escapeHtml(parentCat.name)} (${escapeHtml(parentCat.id)})" readonly />
+        </div>
+        <div class="field">
+          <label class="field-label" for="add-sub-name-input">Subcategory Name</label>
+          <input id="add-sub-name-input" type="text" class="input" placeholder="e.g. Netflix" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="add-sub-id-input">Subcategory ID</label>
+          <div class="flex items-center">
+            <span class="px-3 py-2 bg-surface-2 border border-r-0 border-border rounded-l-lg text-xs font-mono text-txt-muted">${escapeHtml(parentCat.id)}.</span>
+            <input id="add-sub-id-input" type="text" class="input font-mono rounded-l-none" placeholder="netflix" />
+          </div>
+        </div>
+      `;
+
+      const nameInput = content.querySelector('#add-sub-name-input');
+      const idInput = content.querySelector('#add-sub-id-input');
+
+      nameInput.addEventListener('input', () => {
+        if (!idInput.dataset.manual) {
+          idInput.value = nameInput.value.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        }
+      });
+      idInput.addEventListener('input', () => { idInput.dataset.manual = 'true'; });
+
+      dialog.open({
+        title: `Add Subcategory to ${parentCat.name}`,
+        content,
+        size: 'sm',
+        actions: [
+          { text: 'Cancel', className: 'btn btn-secondary', value: false, onClick: (_, { close }) => { close(); resolve(); } },
+          {
+            text: 'Create Subcategory',
+            primary: true,
+            onClick: async (_, { close }) => {
+              const name = nameInput.value.trim();
+              const subSlug = idInput.value.trim().toLowerCase();
+              if (!name || !subSlug) { toast.error('Both name and ID are required'); return; }
+              const id = `${parentCat.id}.${subSlug}`;
+              try {
+                await api.createCatalogNode({ id, name, parent_id: parentCat.id });
+                toast.success(`Subcategory "${name}" created`);
+                close();
+                expandedCats.add(parentCat.id);
+                resolve();
+              } catch (err) {
+                toast.error(err.message || 'Failed to create subcategory');
+              }
+            },
+          },
+        ],
+      });
+    });
+  }
+
+  function openEditNodeModal(node) {
+    return new Promise((resolve) => {
+      const content = document.createElement('div');
+      content.className = 'space-y-4';
+      content.innerHTML = `
+        <div class="field">
+          <label class="field-label">Node ID</label>
+          <input type="text" class="input bg-surface-2 font-mono" value="${escapeHtml(node.id)}" readonly />
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-node-name-input">Display Name</label>
+          <input id="edit-node-name-input" type="text" class="input" value="${escapeHtml(node.name)}" />
+        </div>
+      `;
+
+      const nameInput = content.querySelector('#edit-node-name-input');
+
+      dialog.open({
+        title: `Edit ${node.parent_id ? 'Subcategory' : 'Category'}`,
+        content,
+        size: 'sm',
+        actions: [
+          { text: 'Cancel', className: 'btn btn-secondary', value: false, onClick: (_, { close }) => { close(); resolve(); } },
+          {
+            text: 'Save Changes',
+            primary: true,
+            onClick: async (_, { close }) => {
+              const name = nameInput.value.trim();
+              if (!name) { toast.error('Name cannot be empty'); return; }
+              try {
+                await api.updateCatalogNode(node.id, { name });
+                toast.success('Updated successfully');
+                close();
+                resolve();
+              } catch (err) {
+                toast.error(err.message || 'Failed to update');
+              }
+            },
+          },
+        ],
+      });
+    });
+  }
+
+  function confirmDeleteNode(node) {
+    return new Promise((resolve) => {
+      const isSub = Boolean(node.parent_id);
+      dialog.confirm({
+        title: `Delete ${isSub ? 'Subcategory' : 'Category'}: ${node.name}`,
+        message: `Are you sure you want to delete "${node.name}" (${node.id})? Existing domain rules assigned to it will remain intact and become uncategorized.`,
+        confirmText: 'Delete Node',
+        danger: true,
+      }).then(async (confirmed) => {
+        if (!confirmed) { resolve(); return; }
+        try {
+          await api.deleteCatalogNode(node.id);
+          toast.success(`Deleted "${node.name}"`);
+          resolve();
+        } catch (err) {
+          toast.error(err.message || 'Failed to delete');
+          resolve();
+        }
+      });
+    });
+  }
+
+  // Categories button
+  $('#dom-manage-cats-btn', container).addEventListener('click', () => {
+    openCategoryManagerDialog();
+  });
+
+  // ─── Range Segmented ──────────────────────────────────────────────────────────
   let rangeSegObj = null;
   function initRangeSegmented() {
     const el = $('#dom-range-segmented', container);
@@ -1083,16 +1560,13 @@ export function mount(container) {
       ],
       value: activeRange,
       size: 'sm',
-      onChange: (val) => {
-        activeRange = val;
-        fetchDomains();
-      },
+      onChange: (val) => { activeRange = val; fetchDomains(); },
     });
     el.innerHTML = '';
     el.appendChild(rangeSegObj.el);
   }
 
-  // Sorting header click listeners
+  // ─── Sort header ──────────────────────────────────────────────────────────────
   $$('[data-sort]', container).forEach((th) => {
     th.addEventListener('click', () => {
       const key = th.dataset.sort;
@@ -1115,7 +1589,11 @@ export function mount(container) {
     });
   }
 
-  // Initial load
+  // ─── Init ─────────────────────────────────────────────────────────────────────
+  // Apply initial view tab
+  applyViewTab(viewTab);
+
+  // Initial data load
   fetchDomains();
 
   // JSON Export
@@ -1132,9 +1610,7 @@ export function mount(container) {
       const payload = JSON.parse(text);
       const res = await api.importDomainsJson(payload);
       const failedMsg = res.failed > 0 ? ` (${res.failed} invalid items skipped)` : '';
-      toast.success(
-        `Imported: ${res.domains_added || 0} added, ${res.domains_updated || 0} updated${failedMsg}`
-      );
+      toast.success(`Imported: ${res.domains_added || 0} added, ${res.domains_updated || 0} updated${failedMsg}`);
       if (res.errors && res.errors.length > 0) {
         console.warn('JSON import errors:', res.errors);
       }
@@ -1147,8 +1623,6 @@ export function mount(container) {
   });
 
   return {
-    unmount: () => {
-      container.innerHTML = '';
-    },
+    unmount: () => { container.innerHTML = ''; },
   };
 }

@@ -507,7 +507,7 @@ export function mount(container) {
               <div class="card-header flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h2 class="text-base font-semibold text-txt">Default Domains</h2>
-                  <p class="text-xs text-txt-muted">Manage pre-configured domain catalogs, update rules from GitHub, and toggle categories</p>
+                  <p class="text-xs text-txt-muted">Manage pre-configured domain catalogs and update rules from GitHub</p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap self-start sm:self-auto">
                   <button id="set-catalog-check-btn" type="button" class="btn btn-secondary btn-sm">
@@ -518,10 +518,6 @@ export function mount(container) {
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
                     <span>Load Default Domains</span>
                     <span id="set-catalog-update-badge" class="hidden inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500 text-white uppercase tracking-wider">Update</span>
-                  </button>
-                  <button id="set-catalog-add-cat-btn" type="button" class="btn btn-secondary btn-sm">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    <span>Add Category</span>
                   </button>
                 </div>
               </div>
@@ -546,15 +542,10 @@ export function mount(container) {
                   </div>
                 </div>
 
-                <!-- Category & Subcategory Tree -->
-                <div class="space-y-2">
-                  <div class="flex items-center justify-between">
-                    <h4 class="text-sm font-semibold text-txt">Catalog Categories & Subcategories</h4>
-                    <span class="text-xs text-txt-subtle">Toggle switch enables/disables domains in real time</span>
-                  </div>
-                  <div id="set-catalog-tree-container" class="rounded-xl border border-border overflow-hidden divide-y divide-border bg-surface">
-                    <div class="p-6 text-center text-xs text-txt-subtle">Loading catalog...</div>
-                  </div>
+                <!-- Info note -->
+                <div class="p-3 rounded-xl border border-border/60 bg-surface-2/30 text-xs text-txt-muted leading-relaxed">
+                  <svg class="w-4 h-4 inline mr-1.5 text-primary-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  To manage categories &amp; subcategories or toggle which domains are active, visit the <strong>Domain Rules</strong> page and use the <strong>Categories</strong> button or switch to <strong>Categorized View</strong>.
                 </div>
               </div>
             </section>
@@ -565,6 +556,7 @@ export function mount(container) {
   );
 
   // Timezones select population
+
   const tzSelect = $('#set-timezone-select', container);
   for (const tz of TIMEZONES) {
     const opt = document.createElement('option');
@@ -1979,14 +1971,9 @@ export function mount(container) {
     }
   });
 
-  // Handle Add Category button click
-  $('#set-catalog-add-cat-btn', container)?.addEventListener('click', () => {
-    openAddCategoryModal();
-  });
-
   loadSettings();
   loadCatalogStatus(false);
-  loadCatalogTree();
+
 
   return {
     unmount: () => {

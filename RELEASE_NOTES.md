@@ -1,5 +1,16 @@
 # Release Notes
 
+## v1.7.1
+
+* **Flat & Categorized Tree Views:** Switch between a unified flat list and a hierarchical tree view (Category → Subcategory → Domains) with full inline edit, delete, and toggle controls.
+* **Per-Domain Enable / Disable:** Toggle individual domain rules on or off without deleting them via a new switch control and `PATCH /api/domains/{domain}/toggle` endpoint.
+* **Integrated Category Management:** Moved category and subcategory creation and editing from Settings into a dedicated dialog directly on the Domain Rules page.
+* **Unified Mode Filtering:** Flat view now displays all routing modes (Proxy, Direct, Block) together with an instant mode filter and badge indicators.
+* **Table Selection Fixes:** Resolved select-all and indeterminate checkbox state issues for bulk operations.
+* **Simplified Settings:** Streamlined the Default Domains section in Settings to focus exclusively on catalog version status and updates.
+
+---
+
 ## v1.7.0
 
 ### Default Domain Catalog & Categories

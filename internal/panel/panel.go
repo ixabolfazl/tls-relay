@@ -942,6 +942,7 @@ func (s *Server) registerRoutesWithPrefix(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(route("GET", "/api/domains/export.json"), s.auth(s.handleExportDomainsJSON))
 	mux.HandleFunc(route("POST", "/api/domains/import-json"), s.auth(s.handleImportDomainsJSON))
 	mux.HandleFunc(route("PUT", "/api/domains/{domain}"), s.auth(s.handleUpdateDomain))
+	mux.HandleFunc(route("PATCH", "/api/domains/{domain}/toggle"), s.auth(s.handleToggleDomainEnabled))
 	mux.HandleFunc(route("DELETE", "/api/domains/{domain}"), s.auth(s.handleDeleteDomain))
 	mux.HandleFunc(route("GET", "/api/domains/{domain}/usage"), s.auth(s.handleGetDomainUsage))
 	mux.HandleFunc(route("GET", "/api/domains/{domain}/usage/monthly"), s.auth(s.handleGetDomainUsageMonthly))

@@ -23,6 +23,7 @@ type domainEntry struct {
 	Ports              interface{} `json:"ports"` // []int or "all"
 	UseEgressProxy     string      `json:"use_egress_proxy"`
 	Mode               string      `json:"mode"`
+	Enabled            bool        `json:"enabled"`
 	TotalBytesSent     int64       `json:"total_bytes_sent"`
 	TotalBytesReceived int64       `json:"total_bytes_received"`
 	TotalDNSQueries    int64       `json:"total_dns_queries"`
@@ -88,6 +89,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 					Ports:              portsVal,
 					UseEgressProxy:     proxyVal,
 					Mode:               modeVal,
+					Enabled:            rRow.Enabled,
 					TotalBytesSent:     u.BytesSent,
 					TotalBytesReceived: u.BytesReceived,
 					TotalDNSQueries:    dnsMap[rRow.Domain],
@@ -529,6 +531,39 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 	slog.Info("admin panel domain rule deleted", "domain", domain, "remote_addr", r.RemoteAddr)
 	jsonOK(w, map[string]string{"status": "ok"})
 }
+
+// handleToggleDomainEnabled enables or disables a single domain rule.
+// PATCH /api/domains/{domain}/toggle  body: {"enabled": true}
+func (s *Server) handleToggleDomainEnabled(w http.ResponseWriter, r *http.Request) {
+	domain := parseDomainParam(r)
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	if s.sqlStore == nil {
+		jsonErr(w, "database unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.sqlStore.SetDomainRuleEnabled(ctx, domain, req.Enabled); err != nil {
+		slog.Error("admin panel toggle domain enabled error", "domain", domain, "error", err)
+		jsonErr(w, "database error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.refreshDomains(ctx); err != nil {
+		slog.Error("admin panel refresh domains error", "error", err)
+	}
+
+	slog.Info("admin panel domain rule toggled", "domain", domain, "enabled", req.Enabled, "remote_addr", r.RemoteAddr)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
 
 func (s *Server) handleBulkDeleteDomains(w http.ResponseWriter, r *http.Request) {
 	var req struct {
